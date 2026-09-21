@@ -195,12 +195,15 @@ const syncCJCatalog = async () => {
   const headers = getCjHeaders();
   if (!headers) return;
 
-  console.log("🔄 Starting CJ Dropshipping catalog sync...");
+  console.log("🔄 Starting CJ Dropshipping catalog sync (Filtered for Beauty & Cosmetics)...");
 
   let pageNum = 1;
   const pageSize = 50;
   let hasMoreProducts = true;
   let totalProcessed = 0;
+
+  // 1. STRICT CATEGORY FILTER: Only allow beauty and skincare-related terms
+  const beautyKeywords = ['beauty', 'skin', 'cosmetic', 'makeup', 'health', 'hair', 'face', 'care', 'lotion', 'serum', 'cream', 'cleanser'];
 
   try {
     while (hasMoreProducts) {
@@ -215,14 +218,24 @@ const syncCJCatalog = async () => {
       }
 
       for (const item of cjProducts) {
-        const title = item.productName || item.nameEn;
+        // 2. ENFORCE ENGLISH: Prioritize 'nameEn' over standard name
+        const title = item.nameEn || item.productNameEn || item.productName;
         const baseSku = item.productSku || item.sku;
+        const category = (item.categoryName || '').toLowerCase();
+        
         if (!title || !baseSku) continue;
+
+        // Apply the strict beauty filter
+        const isBeautyProduct = beautyKeywords.some(kw => category.includes(kw) || title.toLowerCase().includes(kw));
+        if (!isBeautyProduct) {
+          continue; // Skip electronics, home goods, and non-beauty items
+        }
 
         const desc = item.description || item.productDescription || '';
         const img = item.productImage || item.image;
         
-        const retailMarkup = 2.5;
+        // 3. 350% RETAIL MARKUP
+        const retailMarkup = 3.5;
 
         let rawBasePrice = parseFloat(item.sellPrice || item.price || 0);
         
@@ -242,7 +255,8 @@ const syncCJCatalog = async () => {
           const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice);
           return {
             sku: v.vid || v.variantSku || baseSku, 
-            variantName: v.variantName || v.variantKey || 'Standard Option',
+            // Force English variant names
+            variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
             price: variantRawPrice * retailMarkup, 
             imageUrl: v.variantImage || img
           };
@@ -273,7 +287,7 @@ const syncCJCatalog = async () => {
       await delay(500); 
     }
     
-    console.log(`🚀 Full CJ catalog sync complete! Processed ${totalProcessed} items.`);
+    console.log(`🚀 CJ catalog sync complete! Processed ${totalProcessed} Beauty/Skincare items.`);
   } catch (error) {
     console.error("❌ Error during CJ sync:", error?.response?.data || error.message);
   }
