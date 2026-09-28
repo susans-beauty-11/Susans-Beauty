@@ -625,7 +625,6 @@ function App() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   
   const [adminData, setAdminData] = useState({ users: [], blueprints: [], orders: [] });
-  const [selectedAdminBlueprint, setSelectedAdminBlueprint] = useState(null);
   
   const [userRecommendations, setUserRecommendations] = useState([]);
   const [userOrders, setUserOrders] = useState([]);
@@ -894,7 +893,6 @@ function App() {
     setHasCompletedQuiz(false);
     setCart([]);
     setAdminData({ users: [], blueprints: [], orders: [] });
-    setSelectedAdminBlueprint(null);
     setUserRecommendations([]);
     setUserOrders([]);
     setStep(0);
@@ -906,8 +904,6 @@ function App() {
       {isLoading && <FallingSparkles/>}
 
       <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} />
-      
-    
 
       {(step === 1 || step === 5 || step === 6) && (
         <div style={{ position: 'fixed', top: '30px', right: '30px', zIndex: 1000 }}>
@@ -1210,7 +1206,7 @@ function App() {
 
         {step === 6 && (
           <div style={{ animation: 'fadeIn 1s ease' }}>
-             <AdminDashboard adminData={adminData} onLogout={handleLogOut} />
+             <AdminDashboard adminData={adminData} onLogout={handleLogOut} backendProducts={backendProducts} />
           </div>
         )}
 
