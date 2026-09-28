@@ -1,15 +1,16 @@
 {
   "files": {
     "main.css": "/static/css/main.9214cbf5.css",
-    "main.js": "/static/js/main.9f9166cf.js",
+    "main.js": "/static/js/main.dab0f18b.js",
     "static/js/453.6a44dda7.chunk.js": "/static/js/453.6a44dda7.chunk.js",
+    "static/media/susans-logo.png": "/static/media/susans-logo.54343bfd64df1700550f.png",
     "index.html": "/index.html",
     "main.9214cbf5.css.map": "/static/css/main.9214cbf5.css.map",
-    "main.9f9166cf.js.map": "/static/js/main.9f9166cf.js.map",
+    "main.dab0f18b.js.map": "/static/js/main.dab0f18b.js.map",
     "453.6a44dda7.chunk.js.map": "/static/js/453.6a44dda7.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.9214cbf5.css",
-    "static/js/main.9f9166cf.js"
+    "static/js/main.dab0f18b.js"
   ]
 }

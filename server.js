@@ -30,21 +30,6 @@ const authLimiter = rateLimit({
   message: 'Too many authentication attempts, please try again after 15 minutes'
 });
 
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  
-  if (!token) return res.status(401).json({ error: 'Access denied. No token provided.' });
-
-  try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
-    req.user = verified;
-    next();
-  } catch (err) {
-    res.status(400).json({ error: 'Invalid or expired token.' });
-  }
-};
-
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------- EMAIL TRANSPORTER ---------------- //
@@ -75,16 +60,60 @@ const sendEmail = async (to, subject, htmlContent) => {
 // ---------------- MONGODB SCHEMAS ---------------- //
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true, index: true },
   password: { type: String, required: true },
+  role: { 
+    type: String, 
+    enum: ['client', 'staff', 'admin'], 
+    default: 'client',
+    index: true 
+  },
   membershipTier: { type: String, default: 'luminary' },
   recommendedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
 
+const serviceSchema = new mongoose.Schema({
+  name: { type: String, required: true, index: true },
+  description: { type: String },
+  durationInMinutes: { type: Number, required: true },
+  price: { type: Number, required: true },
+  imageUrl: { type: String },
+  isActive: { type: Boolean, default: true }
+}, { timestamps: true });
+const Service = mongoose.model('Service', serviceSchema);
+
+const appointmentSchema = new mongoose.Schema({
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true, index: true },
+  startTime: { type: Date, required: true, index: true },
+  endTime: { type: Date, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending', 'confirmed', 'completed', 'cancelled'], 
+    default: 'pending',
+    index: true
+  },
+  depositPaid: { type: Boolean, default: false },
+  notes: { type: String }
+}, { timestamps: true });
+appointmentSchema.index({ staffId: 1, startTime: 1, endTime: 1 });
+const Appointment = mongoose.model('Appointment', appointmentSchema);
+
+const reviewSchema = new mongoose.Schema({
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', required: true, unique: true },
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true, index: true },
+  rating: { type: Number, required: true, min: 1, max: 5 },
+  comment: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+const Review = mongoose.model('Review', reviewSchema);
+
 const consultationSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
   skinType: String,
   primaryGoal: String,
   climate: String,
@@ -100,10 +129,10 @@ const consultationSchema = new mongoose.Schema({
 const Consultation = mongoose.model('Consultation', consultationSchema);
 
 const productSchema = new mongoose.Schema({
-  title: { type: String, required: true },
+  title: { type: String, required: true, index: true },
   description: String,
   imageUrl: String,
-  tags: [String],
+  tags: { type: [String], index: true },
   variants: [{
     sku: { type: String, required: true },
     variantName: String, 
@@ -118,63 +147,70 @@ const orderSchema = new mongoose.Schema({
   items: Array,
   totalAmount: Number,
   shipping_address: { type: mongoose.Schema.Types.Mixed },
-  customerEmail: String, 
-  status: { type: String, default: 'Pending' },
+  customerEmail: { type: String, index: true },
+  status: { type: String, default: 'Pending', index: true },
   tracking_code: String,
   createdAt: { type: Date, default: Date.now }
 });
 const Order = mongoose.model('Order', orderSchema);
 
-// ---------------- ADMIN MIDDLEWARE ---------------- //
-const requireAdmin = async (req, res, next) => {
+// ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
+
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Access denied. No token provided.' });
+  }
+
   try {
-    const user = await User.findById(req.user._id);
-    if (user && user.membershipTier.trim().toLowerCase() === 'admin') {
-      next();
-    } else {
-      res.status(403).json({ error: 'Access denied. Admin portal clearance required.' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+    
+    // Fetch user to guarantee they still exist and retrieve their current role
+    const user = await User.findById(decoded._id).select('_id name email role membershipTier');
+    
+    if (!user) {
+      return res.status(401).json({ error: 'The user associated with this token no longer exists.' });
     }
+
+    req.user = user; 
+    next();
   } catch (err) {
-    res.status(500).json({ error: 'Server error validating admin privileges.' });
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    } else if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid or tampered token.' });
+    }
+    return res.status(500).json({ error: 'Internal server error during authentication.' });
   }
 };
 
-// ---------------- STRICT TITLE & CATEGORY CLASSIFIER ---------------- //
-const categorizeProduct = (title = '', categoryName = '') => {
-  const t = `${title} ${categoryName}`.toLowerCase();
+// RBAC Factory Function
+const requireRole = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user || !req.user.role) {
+      return res.status(403).json({ error: 'Access denied. Role information missing.' });
+    }
 
-  const isDevice = (
-    t.includes('shaver') || t.includes('razor') || t.includes('epilator') ||
-    t.includes('trimmer') || t.includes('hair removal') || t.includes('massager') ||
-    t.includes('blackhead remover') || t.includes('beauty instrument') ||
-    t.includes('cleaning instrument') || t.includes('brush machine') ||
-    t.includes('hair clipper') || t.includes('depilator') || t.includes('facial tool') ||
-    t.includes('gua sha') || t.includes('derma roller') || t.includes('pore vacuum')
-  );
+    // Support legacy admin accounts that might still rely on membershipTier
+    const isLegacyAdmin = req.user.membershipTier === 'admin' && allowedRoles.includes('admin');
 
-  if (isDevice) return ['device'];
-
-  const tags = [];
-  if (t.includes('cleanser') || t.includes('facial wash') || t.includes('face wash') ||
-      t.includes('cleansing foam') || t.includes('cleansing oil') || t.includes('cleansing balm') ||
-      t.includes('cleansing gel') || t.includes('micellar') || t.includes('makeup remover')) tags.push('cleanser');
-  if (t.includes('serum') || t.includes('essence') || t.includes('ampoule') || t.includes('booster')) tags.push('serum');
-  if (t.includes('moisturizer') || t.includes('moisturizing') || t.includes('moisturising') ||
-      t.includes('face cream') || t.includes('day cream') || t.includes('night cream') ||
-      t.includes('hydration cream') || t.includes('lotion')) tags.push('moisturizer');
-  if (t.includes('eye cream') || t.includes('eye serum') || t.includes('under eye') || t.includes('eye gel')) tags.push('eyecream');
-  if (t.includes('sunscreen') || t.includes('sunblock') || t.includes('spf') || t.includes('sun cream')) tags.push('sunscreen');
-  if (t.includes('lipstick') || t.includes('lip gloss') || t.includes('lip tint') || t.includes('lip balm') || t.includes('lip liner')) tags.push('lipstick');
-  if (t.includes('foundation') || t.includes('bb cream') ||
-      t.includes('cc cream') || t.includes('makeup base') || t.includes('face primer') || t.includes('setting powder')) tags.push('foundation');
-  if (t.includes('concealer') || t.includes('cover') || t.includes('correct') || t.includes('brightener') || t.includes('task concealer')) tags.push('concealer');
-  if (t.includes('mascara') || t.includes('eyelash') || t.includes('lash serum')) tags.push('mascara');
-  if (t.includes('eyeshadow') || t.includes('eye shadow') || t.includes('eyeliner') || t.includes('eyebrow')) tags.push('eyeshadow');
-  if (t.includes('blush') || t.includes('bronzer') || t.includes('contour') || t.includes('highlighter')) tags.push('blush');
-  if (t.includes('mask') || t.includes('sheet mask') || t.includes('clay mask') || t.includes('peel off')) tags.push('mask');
-
-  return tags.length > 0 ? tags : ['skincare'];
+    if (allowedRoles.includes(req.user.role) || isLegacyAdmin) {
+      next();
+    } else {
+      return res.status(403).json({ 
+        error: `Access restricted. This action requires one of the following roles: ${allowedRoles.join(', ')}.` 
+      });
+    }
+  };
 };
+
+// Pre-configured Role Checks for Routes
+const requireAdmin = requireRole(['admin']);
+const requireStaffOrAdmin = requireRole(['admin', 'staff']);
+const requireClient = requireRole(['client', 'admin']); // Admins can test client routes
+
 
 // ---------------- CJ DROPSHIPPING API INTEGRATION ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
@@ -314,6 +350,34 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { to, subject, body } = req.body;
+    
+    if (!to || !subject || !body) {
+      return res.status(400).json({ error: 'Missing required email fields (to, subject, body).' });
+    }
+
+    // Wrap the body in a branded HTML template
+    const htmlContent = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
+        <div style="font-size: 1.1rem; line-height: 1.6; white-space: pre-wrap;">
+          ${body}
+        </div>
+        <p style="font-size: 0.9rem; color: #8A797A; margin-top: 40px; text-align: center;">Warmly,<br>Susan</p>
+      </div>
+    `;
+
+    await sendEmail(to, subject, htmlContent);
+    res.status(200).json({ message: 'Email dispatched successfully.' });
+    
+  } catch (error) {
+    console.error('Email Dispatch Error:', error);
+    res.status(500).json({ error: 'Failed to send email.' });
+  }
+});
+
 app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { productId } = req.body;
@@ -392,7 +456,17 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
 
     const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET || 'fallback_secret_key', { expiresIn: '24h' });
 
-    res.json({ user: { id: user._id, name: user.name, email: user.email, membershipTier: user.membershipTier }, token });
+    // Replace the existing res.json(...) at the end of the login route with this:
+res.json({ 
+  user: { 
+    id: user._id, 
+    name: user.name, 
+    email: user.email, 
+    membershipTier: user.membershipTier, 
+    role: user.role // <--- Make sure this is added
+  }, 
+  token 
+});
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

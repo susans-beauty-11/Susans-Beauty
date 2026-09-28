@@ -307,20 +307,63 @@ const ProductCard = ({ product, onAddToCart, onCardClick }) => {
   );
 };
 
-const AdminCurationModal = ({ blueprint, products, onClose, API_BASE_URL }) => {
+
+const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
+  <input
+    type={type} name={name} placeholder={placeholder} value={value} onChange={onChange}
+    style={{ width: '100%', maxWidth: '380px', padding: '16px 25px', margin: '10px auto', display: 'block', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '30px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', outline: 'none', boxSizing: 'border-box', transition: 'all 0.3s ease' }}
+    onFocus={(e) => { e.target.style.backgroundColor = '#FFFFFF'; e.target.style.boxShadow = '0 0 10px rgba(232, 197, 200, 0.4)'; }}
+    onBlur={(e) => { e.target.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'; e.target.style.boxShadow = 'none'; }}
+  />
+);
+
+const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
+  const [activeTab, setActiveTab] = useState('Inbox');
+  const tabs = ['Inbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
+
+  const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  
+  // New State for Curation Tab
+  const [selectedBlueprint, setSelectedBlueprint] = useState(null);
   const [pushingId, setPushingId] = useState(null);
 
-  if (!blueprint) return null;
+  const handleSendEmail = async (e) => {
+    e.preventDefault();
+    setIsSendingEmail(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/send-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(emailForm)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Email successfully dispatched! ✧');
+        setEmailForm({ to: '', subject: '', body: '' }); 
+      } else {
+        alert(data.error || 'Failed to send email.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error while sending email.');
+    }
+    setIsSendingEmail(false);
+  };
 
-  const handlePush = async (productId) => {
-    const token = localStorage.getItem('token');
-    const userId = blueprint.userId?._id;
+  // New Push Recommendation Function
+  const handlePushRecommendation = async (productId, userId) => {
     if (!userId) {
       alert('Cannot push recommendation: User account not found for this blueprint.');
       return;
     }
     setPushingId(productId);
     try {
+      const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/recommend`, {
         method: 'POST',
         headers: {
@@ -343,116 +386,228 @@ const AdminCurationModal = ({ blueprint, products, onClose, API_BASE_URL }) => {
   };
 
   return (
-    <div style={{
-      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-      backgroundColor: 'rgba(92, 84, 84, 0.6)', zIndex: 1200,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      animation: 'fadeIn 0.3s ease', padding: '20px', boxSizing: 'border-box'
-    }} onClick={onClose}>
-      <div style={{
-        backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8',
-        borderRadius: '20px', padding: '30px', maxWidth: '850px', width: '100%',
-        boxShadow: '0 10px 30px rgba(232, 197, 200, 0.4)', position: 'relative',
-        maxHeight: '90vh', overflowY: 'auto', textAlign: 'left'
-      }} onClick={(e) => e.stopPropagation()}>
+    <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'absolute', top: 0, left: 0, zIndex: 500 }}>
+      
+      {/* Sidebar Navigation */}
+      <div style={{ width: '260px', backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)' }}>
+        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+          <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '3rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '5px 0 0 0', fontStyle: 'italic' }}>Susan's Beauty Consulting</p>
+        </div>
         
-        <button onClick={onClose} style={{ position: 'absolute', top: '15px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A' }}>✕</button>
-
-        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 5px 0' }}>
-          Bespoke Curation & Quiz Answers
-        </h2>
-        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', marginBottom: '20px' }}>
-          Member: <strong>{blueprint.userId?.name || 'Anonymous'}</strong> ({blueprint.userId?.email || 'No email'})
-        </p>
-
-        <div style={{ marginBottom: '25px' }}>
-          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454', borderBottom: '1px solid #E8C5C8', paddingBottom: '8px', marginBottom: '15px' }}>
-            All Quiz Responses
-          </h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Skin Temperament</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.skinType || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Primary Vision</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.primaryGoal || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Climate Context</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.climate || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Skin Sensitivity</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.skinSensitivity || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Complexion Canvas</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.complexion || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Undertone</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.undertone || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Eye Color</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.eyeColor || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Facial Silhouette</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.faceShape || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Signature Aesthetic</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.makeupVibe || 'N/A'}</strong>
-            </div>
-            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', padding: '10px 15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', fontStyle: 'italic' }}>Regimen Focus</span>
-              <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{blueprint.routineFocus || 'N/A'}</strong>
-            </div>
-          </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+          {tabs.map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                backgroundColor: activeTab === tab ? '#F2D4D7' : 'transparent',
+                color: activeTab === tab ? '#5C5454' : '#8A797A',
+                fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
+                transition: 'all 0.3s ease', fontWeight: activeTab === tab ? 'bold' : 'normal',
+                boxShadow: activeTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none'
+              }}
+            >
+              {tab === 'Inbox' && '✉️ '}
+              {tab === 'Curation' && '✨ '}
+              {tab === 'Calendar' && '📅 '}
+              {tab === 'Inventory' && '🛍️ '}
+              {tab === 'Video' && '🎥 '}
+              {tab === 'AI' && '🤖 '}
+              {tab}
+            </button>
+          ))}
         </div>
 
-        <div>
-          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454', borderBottom: '1px solid #E8C5C8', paddingBottom: '8px', marginBottom: '15px' }}>
-            Select Boutique Products to Push
-          </h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', maxHeight: '320px', overflowY: 'auto', paddingRight: '5px' }}>
-            {products.map(product => {
-              const title = product.title || 'Untitled Product';
-              const price = product.variants?.[0]?.retailPrice || product.variants?.[0]?.price || product.retailPrice || product.price || 0;
-              return (
-                <div key={product._id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div>
-                    <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', color: '#5C5454', margin: '0 0 5px 0' }}>{title}</h4>
-                    <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 10px 0' }}>${parseFloat(price).toFixed(2)}</p>
-                  </div>
-                  <button
-                    onClick={() => handlePush(product._id)}
-                    disabled={pushingId === product._id}
-                    style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.95rem', cursor: 'pointer', width: '100%' }}
-                  >
-                    {pushingId === product._id ? 'Pushing...' : 'Push to User Dashboard ✧'}
-                  </button>
+        <div style={{ padding: '0 20px' }}>
+          <button onClick={onLogout} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
+            Sign Out
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div style={{ flex: 1, padding: '50px', overflowY: 'auto' }}>
+        <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', marginTop: 0, borderBottom: '1px solid rgba(232, 197, 200, 0.5)', paddingBottom: '15px', marginBottom: '30px' }}>
+          {activeTab}
+        </h1>
+        
+        {activeTab === 'Inbox' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
+            
+            {/* Left Column: Email Composer */}
+            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Compose Message</h2>
+              <form onSubmit={handleSendEmail} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <input 
+                  type="email" 
+                  placeholder="Recipient Email" 
+                  required
+                  value={emailForm.to}
+                  onChange={(e) => setEmailForm({...emailForm, to: e.target.value})}
+                  style={{ padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '1rem', outline: 'none', backgroundColor: '#FFF9F9' }}
+                />
+                <input 
+                  type="text" 
+                  placeholder="Subject Line" 
+                  required
+                  value={emailForm.subject}
+                  onChange={(e) => setEmailForm({...emailForm, subject: e.target.value})}
+                  style={{ padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '1rem', outline: 'none', backgroundColor: '#FFF9F9' }}
+                />
+                <textarea 
+                  placeholder="Draft your message here..." 
+                  required
+                  rows="10"
+                  value={emailForm.body}
+                  onChange={(e) => setEmailForm({...emailForm, body: e.target.value})}
+                  style={{ padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '1rem', outline: 'none', resize: 'vertical', backgroundColor: '#FFF9F9' }}
+                />
+                <button 
+                  type="submit" 
+                  disabled={isSendingEmail}
+                  style={{ backgroundColor: '#F2D4D7', color: '#5C5454', padding: '15px', borderRadius: '30px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: isSendingEmail ? 'not-allowed' : 'pointer', transition: 'all 0.3s ease', marginTop: '10px' }}
+                >
+                  {isSendingEmail ? 'Dispatching...' : 'Send Message ✧'}
+                </button>
+              </form>
+            </div>
+
+            {/* Right Column: Global Order Feed */}
+            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', maxHeight: '700px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '2.2rem' }}>Global Orders</h2>
+                <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
+                  Total: {adminData.orders?.length || 0}
+                </span>
+              </div>
+
+              {(!adminData.orders || adminData.orders.length === 0) ? (
+                <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}>No orders have been placed yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                  {adminData.orders.map(order => (
+                    <div key={order._id} style={{ padding: '20px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '15px', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{order.customerEmail || 'Anonymous Checkout'}</strong>
+                        <span style={{ color: '#B38B8F', fontWeight: 'bold', fontSize: '1.2rem' }}>${(order.totalAmount || 0).toFixed(2)}</span>
+                      </div>
+                      
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                         <p style={{ margin: 0, fontSize: '0.9rem', color: '#736A6A' }}>Status: <span style={{ fontWeight: 'bold', color: order.status === 'SHIPPED' ? '#B38B8F' : '#8A797A' }}>{order.status}</span></p>
+                         <p style={{ margin: 0, fontSize: '0.8rem', color: '#A89999' }}>{new Date(order.createdAt).toLocaleDateString()}</p>
+                      </div>
+
+                      <button 
+                        onClick={() => setEmailForm({ ...emailForm, to: order.customerEmail || '', subject: `Update regarding order ${order._id.slice(-6)}` })}
+                        style={{ background: 'transparent', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 15px', fontSize: '0.95rem', color: '#5C5454', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", transition: 'all 0.3s ease', width: '100%' }}
+                        onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} 
+                        onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}
+                      >
+                        ✉️ Email Customer
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              );
-            })}
+              )}
+            </div>
+            
           </div>
-        </div>
+        )}
 
+        {/* --- NEW CURATION VIEW --- */}
+        {activeTab === 'Curation' && (
+          <div style={{ display: 'flex', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
+            
+            {/* Left Column: Blueprint List */}
+            <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
+              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '1.8rem' }}>Client Blueprints</h2>
+              {(!adminData.blueprints || adminData.blueprints.length === 0) ? (
+                <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif" }}>No blueprints submitted yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                  {adminData.blueprints.map(bp => (
+                    <div 
+                      key={bp._id} 
+                      onClick={() => setSelectedBlueprint(bp)}
+                      style={{ padding: '15px', borderRadius: '12px', border: selectedBlueprint?._id === bp._id ? '2px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: selectedBlueprint?._id === bp._id ? '#FFF0F2' : '#FFF9F9', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                    >
+                      <strong style={{ display: 'block', color: '#5C5454', fontSize: '1.1rem' }}>{bp.userId?.name || 'Anonymous'}</strong>
+                      <span style={{ color: '#8A797A', fontSize: '0.9rem' }}>{bp.userId?.email || 'No email'}</span>
+                      <span style={{ display: 'block', color: '#A89999', fontSize: '0.8rem', marginTop: '5px' }}>{new Date(bp.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Right Column: Blueprint Details & Curation */}
+            <div style={{ flex: 1, backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
+              {!selectedBlueprint ? (
+                <div style={{ height: '100%', minHeight: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem' }}>Select a client blueprint to begin curation ✧</p>
+                </div>
+              ) : (
+                <div style={{ animation: 'fadeIn 0.3s ease' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E8C5C8', paddingBottom: '15px', marginBottom: '20px' }}>
+                    <div>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: '0 0 5px 0', fontSize: '2.2rem' }}>{selectedBlueprint.userId?.name || 'Anonymous'}</h2>
+                      <p style={{ color: '#8A797A', margin: 0 }}>{selectedBlueprint.userId?.email || 'No email'}</p>
+                    </div>
+                    <button onClick={() => setSelectedBlueprint(null)} style={{ background: 'none', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '8px 15px', color: '#8A797A', cursor: 'pointer' }}>Close View</button>
+                  </div>
+
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#B38B8F', marginBottom: '15px' }}>Quiz Analysis</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '30px' }}>
+                    <BlueprintCard label="Skin Temperament" value={selectedBlueprint.skinType}/>
+                    <BlueprintCard label="Primary Vision" value={selectedBlueprint.primaryGoal}/>
+                    <BlueprintCard label="Climate Context" value={selectedBlueprint.climate}/>
+                    <BlueprintCard label="Skin Sensitivity" value={selectedBlueprint.skinSensitivity}/>
+                    <BlueprintCard label="Complexion Canvas" value={selectedBlueprint.complexion}/>
+                    <BlueprintCard label="Undertone" value={selectedBlueprint.undertone}/>
+                    <BlueprintCard label="Eye Color" value={selectedBlueprint.eyeColor}/>
+                    <BlueprintCard label="Facial Silhouette" value={selectedBlueprint.faceShape}/>
+                    <BlueprintCard label="Signature Aesthetic" value={selectedBlueprint.makeupVibe}/>
+                    <BlueprintCard label="Regimen Focus" value={selectedBlueprint.routineFocus}/>
+                  </div>
+
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#B38B8F', marginBottom: '15px', borderTop: '1px solid #E8C5C8', paddingTop: '20px' }}>Curate Products</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                    {backendProducts.map(product => {
+                      const title = product.title || 'Untitled Product';
+                      const price = product.variants?.[0]?.retailPrice || product.variants?.[0]?.price || product.retailPrice || product.price || 0;
+                      return (
+                        <div key={product._id} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
+                          <div style={{ marginBottom: '15px' }}>
+                            <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0' }}>{title}</h4>
+                            <p style={{ fontFamily: 'sans-serif', fontSize: '1rem', color: '#B38B8F', fontWeight: 'bold', margin: 0 }}>${parseFloat(price).toFixed(2)}</p>
+                          </div>
+                          <button
+                            onClick={() => handlePushRecommendation(product._id, selectedBlueprint.userId?._id)}
+                            disabled={pushingId === product._id}
+                            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: pushingId === product._id ? 'not-allowed' : 'pointer', width: '100%', transition: 'all 0.3s ease' }}
+                          >
+                            {pushingId === product._id ? 'Pushing...' : 'Push to Member ✧'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'Calendar' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Consultation Calendar coming in Phase 4...</p>}
+        {activeTab === 'Inventory' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Manual Inventory management coming in Phase 5...</p>}
+        {activeTab === 'Video' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Video Portal coming in Phase 6...</p>}
+        {activeTab === 'AI' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Gemini AI Assistant coming in Phase 7...</p>}
       </div>
     </div>
   );
 };
-
-const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
-  <input
-    type={type} name={name} placeholder={placeholder} value={value} onChange={onChange}
-    style={{ width: '100%', maxWidth: '380px', padding: '16px 25px', margin: '10px auto', display: 'block', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '30px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', outline: 'none', boxSizing: 'border-box', transition: 'all 0.3s ease' }}
-    onFocus={(e) => { e.target.style.backgroundColor = '#FFFFFF'; e.target.style.boxShadow = '0 0 10px rgba(232, 197, 200, 0.4)'; }}
-    onBlur={(e) => { e.target.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'; e.target.style.boxShadow = 'none'; }}
-  />
-);
 
 // ---------------- MAIN APP ---------------- //
 
@@ -476,7 +631,7 @@ function App() {
   const [userOrders, setUserOrders] = useState([]);
 
   const [quizAnswers, setQuizAnswers] = useState({ skinType: '', primaryGoal: '', climate: '', skinSensitivity: '', complexion: '', undertone: '', eyeColor: '', faceShape: '', makeupVibe: '', routineFocus: '' });
-  const [userDetails, setUserDetails] = useState({ name: '', email: '', password: '', membershipTier: '' });
+  const [userDetails, setUserDetails] = useState({ name: '', email: '', password: '', membershipTier: '', role: 'client' });
   const [loginCredentials, setLoginCredentials] = useState({ email: '', password: '' });
 
   useEffect(() => {
@@ -702,16 +857,25 @@ function App() {
       
       if (res.ok) {
         localStorage.setItem('token', data.token);
-        setUserDetails(prev => ({ ...prev, name: data.user.name, membershipTier: data.user.membershipTier }));
+        // Save the role to state
+        setUserDetails(prev => ({ 
+          ...prev, 
+          name: data.user.name, 
+          membershipTier: data.user.membershipTier,
+          role: data.user.role || 'client'
+        }));
         setSelectedTier(data.user.membershipTier);
         setIsSubscribing(data.user.membershipTier !== 'basic' && data.user.membershipTier !== 'admin');
         
-        const isUserAdmin = data.user.membershipTier.trim().toLowerCase() === 'admin';
-        if (isUserAdmin) {
-          setStep(6);
+        // Strict Role Routing
+        const userRole = data.user.role;
+        const isLegacyAdmin = data.user.membershipTier === 'admin';
+        
+        if (userRole === 'admin' || isLegacyAdmin) {
+          setStep(6); // Step 6 is now the exclusive Admin Portal
           fetchAdminData(data.token);
         } else {
-          setStep(5);
+          setStep(5); // Step 5 is the Client Dashboard
         }
       } else {
         alert(data.error || 'Login failed');
@@ -724,7 +888,7 @@ function App() {
 
   const handleLogOut = () => {
     localStorage.removeItem('token');
-    setUserDetails({ name: '', email: '', password: '', membershipTier: '' });
+    setUserDetails({ name: '', email: '', password: '', membershipTier: '', role: 'client' });
     setLoginCredentials({ email: '', password: '' });
     setSelectedTier('luminary');
     setHasCompletedQuiz(false);
@@ -743,12 +907,7 @@ function App() {
 
       <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} />
       
-      <AdminCurationModal 
-        blueprint={selectedAdminBlueprint} 
-        products={backendProducts} 
-        onClose={() => setSelectedAdminBlueprint(null)} 
-        API_BASE_URL={API_BASE_URL} 
-      />
+    
 
       {(step === 1 || step === 5 || step === 6) && (
         <div style={{ position: 'fixed', top: '30px', right: '30px', zIndex: 1000 }}>
@@ -1046,6 +1205,12 @@ function App() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {step === 6 && (
+          <div style={{ animation: 'fadeIn 1s ease' }}>
+             <AdminDashboard adminData={adminData} onLogout={handleLogOut} />
           </div>
         )}
 
