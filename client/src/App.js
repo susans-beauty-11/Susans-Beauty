@@ -317,6 +317,151 @@ const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
   />
 );
 
+const AdminCalendar = ({ users }) => {
+  const [appointments, setAppointments] = useState([]);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isScheduling, setIsScheduling] = useState(false);
+  
+  // Form State
+  const [newAppt, setNewAppt] = useState({
+    clientId: '',
+    startTime: '',
+    durationInMinutes: 60,
+    notes: ''
+  });
+
+  const fetchAppointments = async () => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/appointments`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) setAppointments(await res.json());
+    } catch (err) {
+      console.error('Error fetching calendar:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchAppointments();
+  }, []);
+
+  const handleSchedule = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/appointments`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify(newAppt)
+      });
+      if (res.ok) {
+        fetchAppointments();
+        setIsScheduling(false);
+        setNewAppt({ clientId: '', startTime: '', durationInMinutes: 60, notes: '' });
+      }
+    } catch (err) {
+      console.error('Error scheduling:', err);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Cancel this consultation?')) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/appointments/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) fetchAppointments();
+    } catch (err) {
+      console.error('Error canceling:', err);
+    }
+  };
+
+  // Calendar Grid Logic
+  const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  const changeMonth = (offset) => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
+  };
+
+  return (
+    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
+      
+      {/* Calendar Header Controls */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
+          {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
+        </h2>
+        <button onClick={() => changeMonth(1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>▶</button>
+      </div>
+
+      <button onClick={() => setIsScheduling(!isScheduling)} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', marginBottom: '20px' }}>
+        {isScheduling ? 'Close Scheduler' : '+ Schedule Consultation ✧'}
+      </button>
+
+      {/* Scheduling Form */}
+      {isScheduling && (
+        <form onSubmit={handleSchedule} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '10px', border: '1px solid #E8C5C8', marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
+          <select required value={newAppt.clientId} onChange={e => setNewAppt({...newAppt, clientId: e.target.value})} style={{ flex: 1, minWidth: '200px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }}>
+            <option value="">Select Member...</option>
+            {users.map(u => <option key={u._id} value={u._id}>{u.name} ({u.email})</option>)}
+          </select>
+          <input required type="datetime-local" value={newAppt.startTime} onChange={e => setNewAppt({...newAppt, startTime: e.target.value})} style={{ flex: 1, minWidth: '200px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }} />
+          <input type="text" placeholder="Notes (e.g. Quarterly check-in)" value={newAppt.notes} onChange={e => setNewAppt({...newAppt, notes: e.target.value})} style={{ flex: 2, minWidth: '300px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }} />
+          <button type="submit" style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif" }}>Save</button>
+        </form>
+      )}
+
+      {/* Calendar Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', textAlign: 'center' }}>
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+          <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
+        ))}
+        
+        {/* Empty slots for days before the 1st */}
+        {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} />)}
+        
+        {/* Days of the month */}
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const dayNumber = i + 1;
+          const dayAppointments = appointments.filter(appt => {
+            const apptDate = new Date(appt.startTime);
+            return apptDate.getDate() === dayNumber && 
+                   apptDate.getMonth() === currentDate.getMonth() && 
+                   apptDate.getFullYear() === currentDate.getFullYear();
+          });
+
+          return (
+            <div key={dayNumber} style={{ border: '1px solid #E8C5C8', borderRadius: '8px', padding: '10px', minHeight: '100px', backgroundColor: '#FFFFFF', textAlign: 'left', position: 'relative' }}>
+              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', color: '#5C5454' }}>{dayNumber}</span>
+              
+              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {dayAppointments.map(appt => (
+                  <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '5px', borderRadius: '5px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
+                    <strong style={{ color: '#5C5454' }}>{new Date(appt.startTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</strong>
+                    <p style={{ margin: '2px 0 0 0', color: '#8A797A', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                      {appt.clientId?.name || 'Unknown'}
+                    </p>
+                    <button onClick={() => handleDelete(appt._id)} style={{ position: 'absolute', top: '2px', right: '2px', background: 'none', border: 'none', color: '#E8C5C8', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const [activeTab, setActiveTab] = useState('Inbox');
   const tabs = ['Inbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
@@ -600,7 +745,12 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           </div>
         )}
 
-        {activeTab === 'Calendar' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Consultation Calendar coming in Phase 4...</p>}
+        {activeTab === 'Calendar' && (
+          <div>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454' }}>Consultation Schedule</h2>
+            <AdminCalendar users={adminData.users} />
+          </div>
+        )}
         {activeTab === 'Inventory' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Manual Inventory management coming in Phase 5...</p>}
         {activeTab === 'Video' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Video Portal coming in Phase 6...</p>}
         {activeTab === 'AI' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Gemini AI Assistant coming in Phase 7...</p>}

@@ -394,6 +394,64 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
   }
 });
 
+// ---------------- APPOINTMENT & CALENDAR ROUTES ---------------- //
+
+// GET: Fetch all appointments for the calendar
+app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const appointments = await Appointment.find()
+      .populate('clientId', 'name email')
+      .populate('serviceId', 'name')
+      .sort({ startTime: 1 });
+    res.status(200).json(appointments);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch appointments' });
+  }
+});
+
+// POST: Schedule a new consultation
+app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { clientId, serviceId, startTime, durationInMinutes, notes } = req.body;
+    
+    // Calculate end time based on duration
+    const start = new Date(startTime);
+    const end = new Date(start.getTime() + (durationInMinutes || 60) * 60000);
+
+    const newAppointment = new Appointment({
+      clientId,
+      staffId: req.user._id, // Assigns Susan (the admin) as the staff member
+      serviceId, // Optional: Can reference a specific "Consultation" service ID
+      startTime: start,
+      endTime: end,
+      status: 'confirmed',
+      notes
+    });
+
+    await newAppointment.save();
+    
+    // Populate client details before sending response to instantly update the UI
+    const populatedAppointment = await Appointment.findById(newAppointment._id)
+      .populate('clientId', 'name email');
+      
+    res.status(201).json(populatedAppointment);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE: Cancel/Remove an appointment
+app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await Appointment.findByIdAndDelete(req.params.id);
+    res.status(200).json({ message: 'Consultation removed successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete appointment' });
+  }
+});
+
+// ---------------- END APPOINTMENT ROUTES ---------------- //
+
 app.get('/api/products', async (req, res) => {
   try {
     const { category } = req.query;
@@ -456,17 +514,16 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
 
     const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET || 'fallback_secret_key', { expiresIn: '24h' });
 
-    // Replace the existing res.json(...) at the end of the login route with this:
-res.json({ 
-  user: { 
-    id: user._id, 
-    name: user.name, 
-    email: user.email, 
-    membershipTier: user.membershipTier, 
-    role: user.role // <--- Make sure this is added
-  }, 
-  token 
-});
+    res.json({ 
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        membershipTier: user.membershipTier, 
+        role: user.role
+      }, 
+      token 
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
