@@ -452,6 +452,79 @@ app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async
 
 // ---------------- END APPOINTMENT ROUTES ---------------- //
 
+// ---------------- MANUAL INVENTORY ROUTES ---------------- //
+
+// POST: Add a custom product to the boutique
+app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { title, description, imageUrl, price, tags } = req.body;
+    
+    const newProduct = new Product({
+      title,
+      description,
+      imageUrl,
+      tags: tags ? tags.split(',').map(t => t.trim()) : [],
+      variants: [{
+        sku: `CUSTOM-${Date.now()}`,
+        variantName: 'Standard',
+        price: parseFloat(price) || 0,
+        imageUrl
+      }]
+    });
+
+    await newProduct.save();
+    res.status(201).json(newProduct);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT: Edit an existing product
+app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { title, description, imageUrl, price, tags } = req.body;
+    const product = await Product.findById(req.params.id);
+    
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    product.title = title;
+    product.description = description;
+    product.imageUrl = imageUrl;
+    
+    if (tags) {
+      product.tags = Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim());
+    }
+
+    // Update the base price on the first variant
+    if (product.variants && product.variants.length > 0) {
+      product.variants[0].price = parseFloat(price) || product.variants[0].price;
+      if (imageUrl) product.variants[0].imageUrl = imageUrl;
+    } else {
+      product.variants = [{ 
+        sku: `CUSTOM-${Date.now()}`, 
+        variantName: 'Standard', 
+        price: parseFloat(price) || 0, 
+        imageUrl 
+      }];
+    }
+
+    await product.save();
+    res.status(200).json(product);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE: Remove a product from the boutique
+app.delete('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await Product.findByIdAndDelete(req.params.id);
+    res.status(200).json({ message: 'Product successfully removed.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete product' });
+  }
+});
+
 app.get('/api/products', async (req, res) => {
   try {
     const { category } = req.query;

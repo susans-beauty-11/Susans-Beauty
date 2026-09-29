@@ -462,6 +462,147 @@ const AdminCalendar = ({ users }) => {
   );
 };
 
+const AdminInventory = () => {
+  const [inventory, setInventory] = useState([]);
+  const [isEditing, setIsEditing] = useState(false);
+  const [formData, setFormData] = useState({ id: '', title: '', price: '', imageUrl: '', description: '', tags: '' });
+
+  const fetchInventory = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/products`);
+      if (res.ok) setInventory(await res.json());
+    } catch (err) {
+      console.error('Failed to fetch inventory:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchInventory();
+  }, []);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    const url = formData.id ? `${API_BASE_URL}/api/admin/products/${formData.id}` : `${API_BASE_URL}/api/admin/products`;
+    const method = formData.id ? 'PUT' : 'POST';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify(formData)
+      });
+      if (res.ok) {
+        fetchInventory();
+        resetForm();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to save product.');
+      }
+    } catch (err) {
+      console.error('Save error:', err);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Are you sure you want to delete this product? It will be removed from the boutique immediately.')) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) fetchInventory();
+    } catch (err) {
+      console.error('Delete error:', err);
+    }
+  };
+
+  const handleEditClick = (prod) => {
+    setIsEditing(true);
+    const price = prod.variants?.[0]?.price || prod.price || 0;
+    setFormData({
+      id: prod._id,
+      title: prod.title || '',
+      price: price,
+      imageUrl: prod.imageUrl || '',
+      description: typeof prod.description === 'string' ? prod.description.replace(/<[^>]*>?/gm, '') : '',
+      tags: prod.tags ? prod.tags.join(', ') : ''
+    });
+  };
+
+  const resetForm = () => {
+    setIsEditing(false);
+    setFormData({ id: '', title: '', price: '', imageUrl: '', description: '', tags: '' });
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', animation: 'fadeIn 0.5s ease' }}>
+      
+      {/* Product Form Side-Panel */}
+      <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', position: 'sticky', top: '0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
+            {isEditing ? 'Edit Product' : 'Add Custom Product'}
+          </h2>
+          {isEditing && <button onClick={resetForm} style={{ background: 'none', border: 'none', color: '#8A797A', cursor: 'pointer', textDecoration: 'underline' }}>Cancel</button>}
+        </div>
+
+        <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <input required type="text" placeholder="Product Title" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input required type="number" step="0.01" placeholder="Retail Price ($)" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input type="url" placeholder="Image URL (HTTPS)" value={formData.imageUrl} onChange={e => setFormData({...formData, imageUrl: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input type="text" placeholder="Tags (comma separated)" value={formData.tags} onChange={e => setFormData({...formData, tags: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <textarea placeholder="Description..." rows="4" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', resize: 'vertical' }} />
+          
+          <button type="submit" style={{ backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer', transition: 'all 0.3s ease', marginTop: '10px' }}>
+            {isEditing ? 'Update Product ✧' : 'Save to Boutique ✧'}
+          </button>
+        </form>
+      </div>
+
+      {/* Inventory Grid */}
+      <div style={{ flex: 1 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
+          <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
+            {inventory.length} Items Active
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '20px' }}>
+          {inventory.map(prod => {
+            const price = prod.variants?.[0]?.price || prod.price || 0;
+            const displayImage = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
+
+            return (
+              <div key={prod._id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '15px', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
+                <div style={{ width: '100%', height: '140px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '15px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {displayImage ? (
+                    <img src={displayImage} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <span style={{ color: '#B38B8F', fontStyle: 'italic', fontSize: '0.9rem' }}>No Image</span>
+                  )}
+                </div>
+                <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0', minHeight: '40px' }}>{prod.title}</h4>
+                <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 15px 0' }}>${parseFloat(price).toFixed(2)}</p>
+                
+                <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
+                  <button onClick={() => handleEditClick(prod)} style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>Edit</button>
+                  <button onClick={() => handleDelete(prod._id)} style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const [activeTab, setActiveTab] = useState('Inbox');
   const tabs = ['Inbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
@@ -751,7 +892,9 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
             <AdminCalendar users={adminData.users} />
           </div>
         )}
-        {activeTab === 'Inventory' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Manual Inventory management coming in Phase 5...</p>}
+        {activeTab === 'Inventory' && (
+          <AdminInventory />
+        )}
         {activeTab === 'Video' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Video Portal coming in Phase 6...</p>}
         {activeTab === 'AI' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Gemini AI Assistant coming in Phase 7...</p>}
       </div>
