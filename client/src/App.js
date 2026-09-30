@@ -603,6 +603,188 @@ const AdminInventory = () => {
   );
 };
 
+const AdminVideoPortal = () => {
+  const [roomName, setRoomName] = useState('');
+  const [isActive, setIsActive] = useState(false);
+  const [copySuccess, setCopySuccess] = useState('');
+
+  const generateRoom = () => {
+    const randomId = Math.random().toString(36).substring(2, 10);
+    setRoomName(`SusansBoutique_Consultation_${randomId}`);
+    setIsActive(false);
+    setCopySuccess('');
+  };
+
+  const copyToClipboard = () => {
+    if (!roomName) return;
+    const url = `https://meet.jit.si/${roomName}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopySuccess('Copied!');
+      setTimeout(() => setCopySuccess(''), 2000);
+    });
+  };
+
+  return (
+    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px', animation: 'fadeIn 0.5s ease' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>Consultation Studio</h2>
+        <button onClick={generateRoom} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', fontSize: '1.1rem' }}>
+          + Generate New Room ✧
+        </button>
+      </div>
+
+      {!roomName ? (
+        <div style={{ padding: '50px', textAlign: 'center', border: '2px dashed #E8C5C8', borderRadius: '15px', backgroundColor: '#FFFFFF' }}>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#8A797A', fontStyle: 'italic' }}>Generate a secure room to begin your 1-on-1 consultation.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ display: 'flex', gap: '15px', alignItems: 'center', backgroundColor: '#FFFFFF', padding: '15px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+            <div style={{ flex: 1 }}>
+              <span style={{ fontSize: '0.9rem', color: '#A89999', display: 'block', marginBottom: '5px' }}>Client Share Link:</span>
+              <strong style={{ color: '#B38B8F', fontSize: '1.1rem' }}>https://meet.jit.si/{roomName}</strong>
+            </div>
+            <button onClick={copyToClipboard} style={{ backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', padding: '8px 15px', borderRadius: '8px', color: '#5C5454', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
+              {copySuccess || '📋 Copy Link'}
+            </button>
+            {!isActive && (
+              <button onClick={() => setIsActive(true)} style={{ backgroundColor: '#B38B8F', border: 'none', padding: '10px 20px', borderRadius: '8px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+                Join as Host
+              </button>
+            )}
+            {isActive && (
+              <button onClick={() => { setIsActive(false); setRoomName(''); }} style={{ backgroundColor: '#5C5454', border: 'none', padding: '10px 20px', borderRadius: '8px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+                End Session
+              </button>
+            )}
+          </div>
+
+          {isActive && (
+            <div style={{ width: '100%', height: '600px', borderRadius: '15px', overflow: 'hidden', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.2)' }}>
+              <iframe
+                allow="camera; microphone; fullscreen; display-capture; autoplay"
+                src={`https://meet.jit.si/${roomName}`}
+                style={{ width: '100%', height: '100%', border: '0' }}
+                title="Consultation Room"
+              ></iframe>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdminAiAssistant = () => {
+  const [messages, setMessages] = useState([{ role: 'model', text: 'Hello Susan ✧ How may I assist you with your boutique today?' }]);
+  const [input, setInput] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = React.useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+
+    const userMessage = { role: 'user', text: input };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+    setInput('');
+    setIsTyping(true);
+
+    // Filter out the initial greeting from the history sent to the backend
+    const history = newMessages.slice(1, -1);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/ai-chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ message: input, history })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setMessages(prev => [...prev, { role: 'model', text: data.response }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'model', text: '⚠️ AI Connection failed: ' + (data.error || 'Unknown error') }]);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessages(prev => [...prev, { role: 'model', text: '⚠️ Network error communicating with Gemini.' }]);
+    }
+    setIsTyping(false);
+  };
+
+  return (
+    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '600px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+      {/* Header */}
+      <div style={{ padding: '20px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', alignItems: 'center', gap: '15px' }}>
+        <div style={{ fontSize: '2rem' }}>✨</div>
+        <div>
+          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: 0 }}>Gemini Boutique Assistant</h2>
+          <p style={{ margin: 0, color: '#8A797A', fontSize: '0.9rem', fontFamily: 'sans-serif' }}>Powered by Google Gen AI</p>
+        </div>
+      </div>
+
+      {/* Chat Area */}
+      <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        {messages.map((msg, idx) => (
+          <div key={idx} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+            <div style={{ 
+              maxWidth: '75%', 
+              padding: '15px', 
+              borderRadius: msg.role === 'user' ? '20px 20px 0 20px' : '20px 20px 20px 0', 
+              backgroundColor: msg.role === 'user' ? '#B38B8F' : '#FFFFFF', 
+              color: msg.role === 'user' ? '#FFFFFF' : '#5C5454', 
+              border: msg.role === 'user' ? 'none' : '1px solid #E8C5C8',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
+              fontFamily: 'sans-serif',
+              lineHeight: '1.5',
+              whiteSpace: 'pre-wrap'
+            }}>
+              {msg.text}
+            </div>
+          </div>
+        ))}
+        {isTyping && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+            <div style={{ padding: '15px', borderRadius: '20px 20px 20px 0', backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', color: '#8A797A', fontStyle: 'italic' }}>
+              Gemini is composing...
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input Area */}
+      <form onSubmit={handleSend} style={{ padding: '20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E8C5C8', borderRadius: '0 0 15px 15px', display: 'flex', gap: '10px' }}>
+        <input 
+          type="text" 
+          placeholder="Ask Gemini to draft an email, analyze a skin profile, or suggest products..." 
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={isTyping}
+          style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '1px solid #E8C5C8', outline: 'none', fontFamily: 'sans-serif', fontSize: '1rem', backgroundColor: '#FFF9F9' }}
+        />
+        <button type="submit" disabled={isTyping || !input.trim()} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '30px', padding: '0 25px', color: '#5C5454', cursor: (isTyping || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', transition: 'all 0.3s ease' }}>
+          Send ✧
+        </button>
+      </form>
+    </div>
+  );
+};
+
 const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const [activeTab, setActiveTab] = useState('Inbox');
   const tabs = ['Inbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
@@ -791,7 +973,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
                         onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} 
                         onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}
                       >
-                        ✉️ Email Customer
+                        ✉️️ Email Customer
                       </button>
                     </div>
                   ))}
@@ -895,8 +1077,12 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
         {activeTab === 'Inventory' && (
           <AdminInventory />
         )}
-        {activeTab === 'Video' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Video Portal coming in Phase 6...</p>}
-        {activeTab === 'AI' && <p style={{fontFamily: 'sans-serif', color: '#8A797A'}}>Gemini AI Assistant coming in Phase 7...</p>}
+        {activeTab === 'Video' && (
+          <AdminVideoPortal />
+        )}
+        {activeTab === 'AI' && (
+          <AdminAiAssistant />
+        )}
       </div>
     </div>
   );

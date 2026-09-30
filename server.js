@@ -394,6 +394,53 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
   }
 });
 
+// ---------------- AI ASSISTANT ROUTE ---------------- //
+app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { message, history } = req.body;
+    const { GoogleGenAI } = require('@google/genai');
+    
+    // Automatically uses process.env.GEMINI_API_KEY
+    const ai = new GoogleGenAI({});
+
+    // Fetch database context to ground the AI
+    const catalog = await Product.find({}).select('title price tags').lean();
+    const blueprints = await Consultation.find({}).populate('userId', 'name').lean();
+
+    const systemInstruction = `You are Susan's elite AI Assistant for her boutique, Susan's Beauty Consulting.
+Your job is to help Susan draft elegant emails to clients, evaluate skin profiles, and analyze the boutique inventory.
+Here is the current boutique inventory: ${JSON.stringify(catalog)}.
+Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
+Maintain a graceful, sophisticated, and helpful tone. Format your responses cleanly.`;
+
+    // Map conversational history into the @google/genai format
+    let formattedContents = [];
+    if (history && Array.isArray(history)) {
+      formattedContents = history.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.text }]
+      }));
+    }
+    
+    // Append the new message
+    formattedContents.push({ role: 'user', parts: [{ text: message }] });
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: formattedContents,
+      config: {
+        systemInstruction: systemInstruction
+      }
+    });
+
+    res.status(200).json({ response: response.text });
+
+  } catch (error) {
+    console.error("AI Chat Error:", error);
+    res.status(500).json({ error: 'Failed to communicate with AI Assistant.' });
+  }
+});
+
 // ---------------- APPOINTMENT & CALENDAR ROUTES ---------------- //
 
 // GET: Fetch all appointments for the calendar
