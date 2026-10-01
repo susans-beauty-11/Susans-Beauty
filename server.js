@@ -400,8 +400,8 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
     const { message, history } = req.body;
     const { GoogleGenAI } = require('@google/genai');
     
-    // Automatically uses process.env.GEMINI_API_KEY
-    const ai = new GoogleGenAI({});
+    // FIX: Explicitly map the API key to prevent the empty object from overriding the env variable
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
     // Fetch database context to ground the AI
     const catalog = await Product.find({}).select('title price tags').lean();
@@ -413,8 +413,9 @@ Here is the current boutique inventory: ${JSON.stringify(catalog)}.
 Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
 Maintain a graceful, sophisticated, and helpful tone. Format your responses cleanly.`;
 
-    // Map conversational history into a structured text format for the new Interactions API 'input' field
-    let promptInput = "";
+    // FIX: Prepend the system instructions directly into the prompt for perfect compatibility
+    let promptInput = `[SYSTEM INSTRUCTIONS]\n${systemInstruction}\n\n`;
+    
     if (history && Array.isArray(history) && history.length > 0) {
       promptInput += "--- Conversation History ---\n";
       history.forEach(msg => {
@@ -427,10 +428,7 @@ Maintain a graceful, sophisticated, and helpful tone. Format your responses clea
 
     const interaction = await ai.interactions.create({
       model: 'gemini-3.8-flash',
-      input: promptInput,
-      config: {
-        systemInstruction: systemInstruction
-      }
+      input: promptInput
     });
 
     res.status(200).json({ response: interaction.output_text });
@@ -682,7 +680,9 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
     // ---------------- GOOGLE GEN AI CURATION ---------------- //
     try {
       const { GoogleGenAI } = require('@google/genai');
-      const ai = new GoogleGenAI({});
+      
+      // FIX: Explicitly map the API key
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const catalog = await Product.find({}).select('_id title tags description').lean();
       
