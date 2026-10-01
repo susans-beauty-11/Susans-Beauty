@@ -218,7 +218,7 @@ const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 const getCjHeaders = () => {
   const token = process.env.CJ_ACCESS_TOKEN;
   if (!token) {
-    console.warn("⚠️ CJ_ACCESS_TOKEN is missing in environment.");
+    console.warn("⚠️️ CJ_ACCESS_TOKEN is missing in environment.");
     return null;
   }
   return {
@@ -413,27 +413,27 @@ Here is the current boutique inventory: ${JSON.stringify(catalog)}.
 Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
 Maintain a graceful, sophisticated, and helpful tone. Format your responses cleanly.`;
 
-    // Map conversational history into the @google/genai format
-    let formattedContents = [];
-    if (history && Array.isArray(history)) {
-      formattedContents = history.map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.text }]
-      }));
+    // Map conversational history into a structured text format for the new Interactions API 'input' field
+    let promptInput = "";
+    if (history && Array.isArray(history) && history.length > 0) {
+      promptInput += "--- Conversation History ---\n";
+      history.forEach(msg => {
+        const role = msg.role === 'user' ? 'User' : 'Assistant';
+        promptInput += `${role}: ${msg.text}\n\n`;
+      });
+      promptInput += "--- Current Request ---\n";
     }
-    
-    // Append the new message
-    formattedContents.push({ role: 'user', parts: [{ text: message }] });
+    promptInput += `User: ${message}\nAssistant:`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: formattedContents,
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.8-flash',
+      input: promptInput,
       config: {
         systemInstruction: systemInstruction
       }
     });
 
-    res.status(200).json({ response: response.text });
+    res.status(200).json({ response: interaction.output_text });
 
   } catch (error) {
     console.error("AI Chat Error:", error);
@@ -706,15 +706,16 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
         Example: ["65a123...", "65b456..."]
       `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
+      const interaction = await ai.interactions.create({
+        model: 'gemini-3.8-flash',
+        input: prompt,
         config: {
           responseMimeType: "application/json"
         }
       });
 
-      const recommendedIds = JSON.parse(response.text);
+      const recommendedIds = JSON.parse(interaction.output_text);
+      
       await User.findByIdAndUpdate(req.user._id, {
         $set: { recommendedProducts: recommendedIds }
       });
