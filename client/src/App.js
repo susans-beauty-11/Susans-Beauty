@@ -307,7 +307,6 @@ const ProductCard = ({ product, onAddToCart, onCardClick }) => {
   );
 };
 
-
 const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
   <input
     type={type} name={name} placeholder={placeholder} value={value} onChange={onChange}
@@ -322,7 +321,6 @@ const AdminCalendar = ({ users }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isScheduling, setIsScheduling] = useState(false);
   
-  // Form State
   const [newAppt, setNewAppt] = useState({
     clientId: '',
     startTime: '',
@@ -382,7 +380,6 @@ const AdminCalendar = ({ users }) => {
     }
   };
 
-  // Calendar Grid Logic
   const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
   const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -393,8 +390,6 @@ const AdminCalendar = ({ users }) => {
 
   return (
     <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
-      
-      {/* Calendar Header Controls */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
@@ -407,7 +402,6 @@ const AdminCalendar = ({ users }) => {
         {isScheduling ? 'Close Scheduler' : '+ Schedule Consultation ✧'}
       </button>
 
-      {/* Scheduling Form */}
       {isScheduling && (
         <form onSubmit={handleSchedule} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '10px', border: '1px solid #E8C5C8', marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
           <select required value={newAppt.clientId} onChange={e => setNewAppt({...newAppt, clientId: e.target.value})} style={{ flex: 1, minWidth: '200px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }}>
@@ -420,16 +414,13 @@ const AdminCalendar = ({ users }) => {
         </form>
       )}
 
-      {/* Calendar Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', textAlign: 'center' }}>
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
           <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
         ))}
         
-        {/* Empty slots for days before the 1st */}
         {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} />)}
         
-        {/* Days of the month */}
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const dayNumber = i + 1;
           const dayAppointments = appointments.filter(appt => {
@@ -541,8 +532,6 @@ const AdminInventory = () => {
 
   return (
     <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', animation: 'fadeIn 0.5s ease' }}>
-      
-      {/* Product Form Side-Panel */}
       <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', position: 'sticky', top: '0' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
@@ -564,7 +553,6 @@ const AdminInventory = () => {
         </form>
       </div>
 
-      {/* Inventory Grid */}
       <div style={{ flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
@@ -699,7 +687,6 @@ const AdminAiAssistant = () => {
     setInput('');
     setIsTyping(true);
 
-    // Filter out the initial greeting from the history sent to the backend
     const history = newMessages.slice(1, -1);
 
     try {
@@ -728,7 +715,6 @@ const AdminAiAssistant = () => {
 
   return (
     <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '600px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-      {/* Header */}
       <div style={{ padding: '20px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', alignItems: 'center', gap: '15px' }}>
         <div style={{ fontSize: '2rem' }}>✨</div>
         <div>
@@ -737,7 +723,6 @@ const AdminAiAssistant = () => {
         </div>
       </div>
 
-      {/* Chat Area */}
       <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '15px' }}>
         {messages.map((msg, idx) => (
           <div key={idx} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
@@ -767,7 +752,6 @@ const AdminAiAssistant = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <form onSubmit={handleSend} style={{ padding: '20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E8C5C8', borderRadius: '0 0 15px 15px', display: 'flex', gap: '10px' }}>
         <input 
           type="text" 
@@ -787,18 +771,44 @@ const AdminAiAssistant = () => {
 
 const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const [activeTab, setActiveTab] = useState('Inbox');
-  const tabs = ['Inbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
+  // ADD Outbox to the array
+  const tabs = ['Inbox', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
 
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   
-  // New State for Curation Tab
+  const emailFormRef = React.useRef(null);
+  const [emailStatus, setEmailStatus] = useState({ type: '', message: '' });
+
+  // NEW: State and fetch logic for Email Logs
+  const [emailLogs, setEmailLogs] = useState([]);
+  
+  useEffect(() => {
+    if (activeTab === 'Outbox') {
+      const fetchLogs = async () => {
+        try {
+          const token = localStorage.getItem('token');
+          const res = await fetch(`${API_BASE_URL}/api/admin/email-logs`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) setEmailLogs(await res.json());
+        } catch (err) {
+          console.error('Failed to fetch logs:', err);
+        }
+      };
+      fetchLogs();
+    }
+  }, [activeTab]);
+
+  // State for Curation Tab
   const [selectedBlueprint, setSelectedBlueprint] = useState(null);
   const [pushingId, setPushingId] = useState(null);
 
   const handleSendEmail = async (e) => {
     e.preventDefault();
     setIsSendingEmail(true);
+    setEmailStatus({ type: '', message: '' });
+
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/api/admin/send-email`, {
@@ -810,20 +820,22 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
         body: JSON.stringify(emailForm)
       });
       const data = await res.json();
+      
       if (res.ok) {
-        alert('Email successfully dispatched! ✧');
+        setEmailStatus({ type: 'success', message: 'Email successfully dispatched! ✧' });
         setEmailForm({ to: '', subject: '', body: '' }); 
+        
+        setTimeout(() => setEmailStatus({ type: '', message: '' }), 4000);
       } else {
-        alert(data.error || 'Failed to send email.');
+        setEmailStatus({ type: 'error', message: data.error || 'Failed to send email.' });
       }
     } catch (err) {
       console.error(err);
-      alert('Network error while sending email.');
+      setEmailStatus({ type: 'error', message: 'Network error while sending email.' });
     }
     setIsSendingEmail(false);
   };
 
-  // New Push Recommendation Function
   const handlePushRecommendation = async (productId, userId) => {
     if (!userId) {
       alert('Cannot push recommendation: User account not found for this blueprint.');
@@ -878,6 +890,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
               }}
             >
               {tab === 'Inbox' && '✉️ '}
+              {tab === 'Outbox' && '📤 '}
               {tab === 'Curation' && '✨ '}
               {tab === 'Calendar' && '📅 '}
               {tab === 'Inventory' && '🛍️ '}
@@ -905,7 +918,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
             
             {/* Left Column: Email Composer */}
-            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+            <div ref={emailFormRef} style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Compose Message</h2>
               <form onSubmit={handleSendEmail} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <input 
@@ -939,6 +952,24 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
                 >
                   {isSendingEmail ? 'Dispatching...' : 'Send Message ✧'}
                 </button>
+
+                {/* NEW: Inline Status Message */}
+                {emailStatus.message && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    textAlign: 'center',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.95rem',
+                    backgroundColor: emailStatus.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+                    color: emailStatus.type === 'success' ? '#2E7D32' : '#C62828',
+                    border: `1px solid ${emailStatus.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`,
+                    animation: 'fadeIn 0.3s ease'
+                  }}>
+                    {emailStatus.message}
+                  </div>
+                )}
               </form>
             </div>
 
@@ -968,12 +999,15 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
                       </div>
 
                       <button 
-                        onClick={() => setEmailForm({ ...emailForm, to: order.customerEmail || '', subject: `Update regarding order ${order._id.slice(-6)}` })}
+                        onClick={() => {
+                          setEmailForm({ ...emailForm, to: order.customerEmail || '', subject: `Update regarding order ${order._id.slice(-6)}` });
+                          emailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }}
                         style={{ background: 'transparent', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 15px', fontSize: '0.95rem', color: '#5C5454', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", transition: 'all 0.3s ease', width: '100%' }}
                         onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} 
                         onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}
                       >
-                        ✉️️ Email Customer
+                        ✉ Email Customer
                       </button>
                     </div>
                   ))}
@@ -984,11 +1018,40 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           </div>
         )}
 
-        {/* --- NEW CURATION VIEW --- */}
+        {/* --- NEW OUTBOX VIEW --- */}
+        {activeTab === 'Outbox' && (
+          <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', animation: 'fadeIn 0.5s ease', maxWidth: '900px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '2.2rem' }}>Sent Messages</h2>
+              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
+                {emailLogs.length} Records
+              </span>
+            </div>
+
+            {emailLogs.length === 0 ? (
+              <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}>No messages have been sent yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                {emailLogs.map(log => (
+                  <div key={log._id} style={{ padding: '20px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '15px', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid rgba(232, 197, 200, 0.3)', paddingBottom: '10px' }}>
+                      <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>To: <span style={{ color: '#B38B8F' }}>{log.to}</span></strong>
+                      <span style={{ color: '#A89999', fontSize: '0.9rem' }}>{new Date(log.sentAt).toLocaleString()}</span>
+                    </div>
+                    <p style={{ margin: '0 0 10px 0', fontFamily: 'sans-serif', fontSize: '0.95rem', color: '#5C5454', fontWeight: 'bold' }}>Subject: {log.subject}</p>
+                    <div style={{ fontSize: '0.95rem', color: '#736A6A', whiteSpace: 'pre-wrap', backgroundColor: '#FFFFFF', padding: '15px', borderRadius: '10px', border: '1px solid rgba(232, 197, 200, 0.4)', lineHeight: '1.5' }}>
+                      {log.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* --- CURATION VIEW --- */}
         {activeTab === 'Curation' && (
           <div style={{ display: 'flex', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
-            
-            {/* Left Column: Blueprint List */}
             <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '1.8rem' }}>Client Blueprints</h2>
               {(!adminData.blueprints || adminData.blueprints.length === 0) ? (
@@ -1010,7 +1073,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
               )}
             </div>
 
-            {/* Right Column: Blueprint Details & Curation */}
             <div style={{ flex: 1, backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
               {!selectedBlueprint ? (
                 <div style={{ height: '100%', minHeight: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -1335,7 +1397,6 @@ function App() {
       
       if (res.ok) {
         localStorage.setItem('token', data.token);
-        // Save the role to state
         setUserDetails(prev => ({ 
           ...prev, 
           name: data.user.name, 
@@ -1345,15 +1406,14 @@ function App() {
         setSelectedTier(data.user.membershipTier);
         setIsSubscribing(data.user.membershipTier !== 'basic' && data.user.membershipTier !== 'admin');
         
-        // Strict Role Routing
         const userRole = data.user.role;
         const isLegacyAdmin = data.user.membershipTier === 'admin';
         
         if (userRole === 'admin' || isLegacyAdmin) {
-          setStep(6); // Step 6 is now the exclusive Admin Portal
+          setStep(6);
           fetchAdminData(data.token);
         } else {
-          setStep(5); // Step 5 is the Client Dashboard
+          setStep(5);
         }
       } else {
         alert(data.error || 'Login failed');

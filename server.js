@@ -43,17 +43,19 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-const sendEmail = async (to, subject, htmlContent) => {
+const sendEmail = async (to, subject, htmlContent, textContent) => {
   try {
     await transporter.sendMail({
       from: process.env.SMTP_FROM || '"Susan\'s Beauty Consulting" <susan.coke@susansbeautyconsulting.com>',
       to,
       subject,
+      text: textContent, // Plain-text fallback for deliverability/spam prevention
       html: htmlContent,
     });
     console.log(`✉️ Email dispatched to ${to}: "${subject}"`);
   } catch (err) {
     console.error(`⚠️ Failed to send email to ${to}:`, err.message);
+    throw err; // Re-throw the error so the route catches it and returns a 500
   }
 };
 
@@ -153,6 +155,14 @@ const orderSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const Order = mongoose.model('Order', orderSchema);
+
+const emailLogSchema = new mongoose.Schema({
+  to: { type: String, required: true, index: true },
+  subject: { type: String, required: true },
+  body: { type: String, required: true },
+  sentAt: { type: Date, default: Date.now }
+});
+const EmailLog = mongoose.model('EmailLog', emailLogSchema);
 
 // ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
 
@@ -369,12 +379,15 @@ app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, r
       </div>
     `;
 
-    await sendEmail(to, subject, htmlContent);
+    // The raw body serves as the plain-text fallback
+    const textContent = `${body}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+
+    await sendEmail(to, subject, htmlContent, textContent);
     res.status(200).json({ message: 'Email dispatched successfully.' });
     
   } catch (error) {
     console.error('Email Dispatch Error:', error);
-    res.status(500).json({ error: 'Failed to send email.' });
+    res.status(500).json({ error: 'Failed to send email. Please check SMTP configuration.' });
   }
 });
 
@@ -937,8 +950,17 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/beauty_app';
 
 mongoose.connect(MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log('✧ Connected securely to MongoDB');
+    
+    // Verify SMTP connection on boot
+    try {
+      await transporter.verify();
+      console.log('✧ SMTP Server verified and ready to dispatch emails');
+    } catch (smtpError) {
+      console.error('⚠️ SMTP Verification failed on startup. Emails will not send:', smtpError.message);
+    }
+
     app.listen(PORT, () => {
       console.log(`✧ Backend API running gracefully on port ${PORT}`);
       
