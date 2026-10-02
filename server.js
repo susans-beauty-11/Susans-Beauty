@@ -34,13 +34,20 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------- EMAIL TRANSPORTER ---------------- //
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT || 587,
-  secure: process.env.SMTP_PORT == 465, 
+  host: process.env.SMTP_HOST || 'smtp.ionos.com',
+  port: process.env.SMTP_PORT || 465,
+  secure: process.env.SMTP_PORT == 465, // True for implicit SSL/TLS on port 465
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  pool: true, // Reuses connections to prevent IONOS timeout drops
+  maxConnections: 5, // Limits concurrent connections to avoid spam-flagging
+  maxMessages: 100, // Number of messages to send before opening a new connection
+  tls: {
+    // Explicitly defines supported ciphers to prevent TLS handshake failures
+    ciphers: 'SSLv3'
+  }
 });
 
 const sendEmail = async (to, subject, htmlContent, textContent) => {
@@ -864,7 +871,11 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
                 <p style="font-size: 0.9rem; color: #8A797A; margin-top: 30px;">You will receive another update as soon as your package ships.</p>
               </div>
             `;
-            await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml);
+            
+            // Plain-text fallback
+            const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+
+            await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText);
           }
 
           // 3. Forward to CJ Dropshipping
@@ -922,7 +933,7 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-    // Dispatch Shipping Update
+   // Dispatch Shipping Update
     if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
       const shippingHtml = `
         <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
@@ -935,7 +946,11 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
           <p style="font-size: 0.9rem; color: #8A797A;">Please allow up to 24-48 hours for the tracking link to activate with the courier.</p>
         </div>
       `;
-      await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml);
+
+      // Plain-text fallback
+      const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+
+      await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText);
     }
 
     res.status(200).json({ received: true });
