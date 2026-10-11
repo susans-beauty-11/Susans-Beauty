@@ -770,8 +770,14 @@ const AdminAiAssistant = () => {
 };
 
 const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
-  const [activeTab, setActiveTab] = useState('Inbox');
-  // ADD Outbox to the array
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('adminActiveTab') || 'Inbox';
+  });
+  
+  useEffect(() => {
+    localStorage.setItem('adminActiveTab', activeTab);
+  }, [activeTab]);
+
   const tabs = ['Inbox', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
 
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
@@ -780,7 +786,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const emailFormRef = React.useRef(null);
   const [emailStatus, setEmailStatus] = useState({ type: '', message: '' });
 
-  // NEW: State and fetch logic for Email Logs
   const [emailLogs, setEmailLogs] = useState([]);
   
   useEffect(() => {
@@ -800,7 +805,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
     }
   }, [activeTab]);
 
-  // State for Curation Tab
   const [selectedBlueprint, setSelectedBlueprint] = useState(null);
   const [pushingId, setPushingId] = useState(null);
 
@@ -866,7 +870,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   };
 
   return (
-    <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'absolute', top: 0, left: 0, zIndex: 500 }}>
+    <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
       
       {/* Sidebar Navigation */}
       <div style={{ width: '260px', backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)' }}>
@@ -953,7 +957,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
                   {isSendingEmail ? 'Dispatching...' : 'Send Message ✧'}
                 </button>
 
-                {/* NEW: Inline Status Message */}
                 {emailStatus.message && (
                   <div style={{
                     marginTop: '10px',
@@ -1018,7 +1021,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           </div>
         )}
 
-        {/* --- NEW OUTBOX VIEW --- */}
         {activeTab === 'Outbox' && (
           <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', animation: 'fadeIn 0.5s ease', maxWidth: '900px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -1049,7 +1051,6 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           </div>
         )}
 
-        {/* --- CURATION VIEW --- */}
         {activeTab === 'Curation' && (
           <div style={{ display: 'flex', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
             <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
@@ -1153,27 +1154,75 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
 // ---------------- MAIN APP ---------------- //
 
 function App() {
-  const [step, setStep] = useState(0); 
+  const [step, setStep] = useState(() => {
+    try {
+      const savedStep = localStorage.getItem('currentStep');
+      return savedStep !== null ? parseInt(savedStep, 10) : 0;
+    } catch { return 0; }
+  }); 
+
+  const [cart, setCart] = useState(() => {
+    try {
+      const savedCart = localStorage.getItem('ritualCart');
+      return savedCart ? JSON.parse(savedCart) : [];
+    } catch { return []; }
+  });
+
+  const [userDetails, setUserDetails] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem('authUser');
+      return savedUser ? JSON.parse(savedUser) : { name: '', email: '', password: '', membershipTier: '', role: 'client' };
+    } catch {
+      return { name: '', email: '', password: '', membershipTier: '', role: 'client' };
+    }
+  });
+
+  const [activeMemberTab, setActiveMemberTab] = useState(() => {
+    return localStorage.getItem('activeMemberTab') || 'Blueprint';
+  });
+
+  const [hasCompletedQuiz, setHasCompletedQuiz] = useState(() => {
+    return localStorage.getItem('hasCompletedQuiz') === 'true';
+  });
+
+  const [quizAnswers, setQuizAnswers] = useState(() => {
+    try {
+      const savedAnswers = localStorage.getItem('quizAnswers');
+      return savedAnswers ? JSON.parse(savedAnswers) : { skinType: '', primaryGoal: '', climate: '', skinSensitivity: '', complexion: '', undertone: '', eyeColor: '', faceShape: '', makeupVibe: '', routineFocus: '' };
+    } catch {
+      return { skinType: '', primaryGoal: '', climate: '', skinSensitivity: '', complexion: '', undertone: '', eyeColor: '', faceShape: '', makeupVibe: '', routineFocus: '' };
+    }
+  });
+
   const [isLoading, setIsLoading] = useState(false);
   const [isSubscribing, setIsSubscribing] = useState(false); 
   const [backendProducts, setBackendProducts] = useState([]);
-  
   const [selectedTier, setSelectedTier] = useState('luminary');
-  const [hasCompletedQuiz, setHasCompletedQuiz] = useState(false);
-  
-  const [cart, setCart] = useState([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
-  
   const [adminData, setAdminData] = useState({ users: [], blueprints: [], orders: [] });
-  
   const [userRecommendations, setUserRecommendations] = useState([]);
   const [userOrders, setUserOrders] = useState([]);
+  const [inboxItems, setInboxItems] = useState([]);
 
-  const [quizAnswers, setQuizAnswers] = useState({ skinType: '', primaryGoal: '', climate: '', skinSensitivity: '', complexion: '', undertone: '', eyeColor: '', faceShape: '', makeupVibe: '', routineFocus: '' });
-  const [userDetails, setUserDetails] = useState({ name: '', email: '', password: '', membershipTier: '', role: 'client' });
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetToken, setResetToken] = useState(null);
   const [loginCredentials, setLoginCredentials] = useState({ email: '', password: '' });
 
+  // Sync state to Local Storage
+  useEffect(() => { localStorage.setItem('currentStep', step); }, [step]);
+  useEffect(() => { localStorage.setItem('ritualCart', JSON.stringify(cart)); }, [cart]);
+  useEffect(() => { localStorage.setItem('activeMemberTab', activeMemberTab); }, [activeMemberTab]);
+  useEffect(() => { localStorage.setItem('hasCompletedQuiz', hasCompletedQuiz); }, [hasCompletedQuiz]);
+  useEffect(() => { localStorage.setItem('quizAnswers', JSON.stringify(quizAnswers)); }, [quizAnswers]);
+  
+  useEffect(() => {
+    const safeUser = { ...userDetails, password: '' };
+    localStorage.setItem('authUser', JSON.stringify(safeUser));
+  }, [userDetails]);
+
+  // General Boot Sequence
   useEffect(() => {
     const fetchBackendData = async () => {
       try {
@@ -1189,14 +1238,17 @@ function App() {
     fetchBackendData();
   }, []);
 
+  // Restore Dashboard state if a user refreshes mid-session
   useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
     const fetchDashboardData = async () => {
-      const token = localStorage.getItem('token');
-      if (!token) return;
       try {
         const resRecs = await fetch(`${API_BASE_URL}/api/users/me/recommendations`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        if (resRecs.status === 401 || resRecs.status === 403) { handleLogOut(); return; }
         if (resRecs.ok) setUserRecommendations(await resRecs.json());
 
         const resOrders = await fetch(`${API_BASE_URL}/api/users/me/orders`, {
@@ -1204,15 +1256,31 @@ function App() {
         });
         if (resOrders.ok) setUserOrders(await resOrders.json());
 
+        const resInbox = await fetch(`${API_BASE_URL}/api/users/me/inbox`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resInbox.ok) setInboxItems(await resInbox.json());
+
       } catch (err) {
         console.error('Failed to fetch dashboard data', err);
       }
     };
+
     if (step === 5) {
       fetchDashboardData();
     }
   }, [step]);
 
+  // Restore Admin Data if a user refreshes mid-session
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (step === 6 && token) {
+      fetchAdminData(token);
+    }
+    // eslint-disable-next-line
+  }, [step]);
+
+  // URL Parameter Catchers
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     
@@ -1235,6 +1303,12 @@ function App() {
        setCart([]);
        alert("Thank you! Your ritual essentials are being prepared for you.");
     }
+
+    if (query.get('reset_token')) {
+       setResetToken(query.get('reset_token'));
+       window.history.replaceState(null, '', window.location.pathname);
+       setStep(9); 
+    }
   }, []);
 
   const fetchAdminData = async (token) => {
@@ -1242,6 +1316,7 @@ function App() {
       const res = await fetch(`${API_BASE_URL}/api/admin/dashboard`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+      if (res.status === 401 || res.status === 403) { handleLogOut(); return; }
       if (res.ok) {
         const data = await res.json();
         setAdminData(data);
@@ -1342,6 +1417,13 @@ function App() {
       }
 
       localStorage.setItem('token', regData.token);
+      
+      setUserDetails(prev => ({ 
+        ...prev, 
+        name: regData.user.name, 
+        email: regData.user.email,
+        membershipTier: regData.user.membershipTier
+      }));
 
       if (isSubscribing) {
         const stripeRes = await fetch(`${API_BASE_URL}/api/create-checkout-session`, {
@@ -1400,6 +1482,7 @@ function App() {
         setUserDetails(prev => ({ 
           ...prev, 
           name: data.user.name, 
+          email: data.user.email,
           membershipTier: data.user.membershipTier,
           role: data.user.role || 'client'
         }));
@@ -1425,7 +1508,17 @@ function App() {
   };
 
   const handleLogOut = () => {
+    // Clear out the browser memory
     localStorage.removeItem('token');
+    localStorage.removeItem('authUser');
+    localStorage.removeItem('currentStep');
+    localStorage.removeItem('ritualCart');
+    localStorage.removeItem('activeMemberTab');
+    localStorage.removeItem('hasCompletedQuiz');
+    localStorage.removeItem('quizAnswers');
+    localStorage.removeItem('adminActiveTab');
+
+    // Reset all states back to default
     setUserDetails({ name: '', email: '', password: '', membershipTier: '', role: 'client' });
     setLoginCredentials({ email: '', password: '' });
     setSelectedTier('luminary');
@@ -1434,7 +1527,52 @@ function App() {
     setAdminData({ users: [], blueprints: [], orders: [] });
     setUserRecommendations([]);
     setUserOrders([]);
+    setInboxItems([]);
+    
+    // Send them back to the front porch
     setStep(0);
+  };
+
+  const handleForgotPassword = async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message + ' ✧');
+        setStep(0);
+      } else {
+        alert(data.error || 'Failed to send reset email.');
+      }
+    } catch (error) {
+      alert('Network error while requesting password reset.');
+    }
+    setIsLoading(false);
+  };
+
+  const handleResetPassword = async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/reset-password/${resetToken}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: resetPassword })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Password reset successfully. Please log in with your new password. ✧');
+        setStep(4);
+      } else {
+        alert(data.error || 'Failed to reset password.');
+      }
+    } catch (error) {
+      alert('Network error while resetting password.');
+    }
+    setIsLoading(false);
   };
 
   return (
@@ -1664,82 +1802,261 @@ function App() {
                   <EmpowermentButton text="Sign In" onClick={handleLoginSubmit}/>
                 </div>
 
-                <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', marginTop: '20px', transition: 'color 0.3s ease' }} onClick={() => setStep(0)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>← Back to Home</p>
+                <p style={{ cursor: 'pointer', color: '#A89999', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', marginTop: '20px', transition: 'color 0.3s ease' }} onClick={() => setStep(8)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>Forgot your password?</p>
+
+                <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', marginTop: '10px', transition: 'color 0.3s ease' }} onClick={() => setStep(0)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>← Back to Home</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 8 && (
+          <div style={{ animation: 'fadeIn 1s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '15px' }}>
+              <img src={logo} alt="Logo" style={{ width: '100px', height: '100px', objectFit: 'contain' }} />
+            </div>
+            <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>Reset Password</h1>
+            <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '15px auto 35px', maxWidth: '600px' }}>Enter your email address and we'll send you a link to securely reset your password.</p>
+
+            {isLoading ? (
+              <EmpowermentLoader text="Dispatching reset link..."/>
+            ) : (
+              <div style={{ maxWidth: '400px', margin: '0 auto' }}>
+                <ElegantInput name="forgotEmail" onChange={(e) => setForgotEmail(e.target.value)} placeholder="Email Address" type="email" value={forgotEmail}/>
+                
+                <div style={{ marginTop: '35px' }}>
+                  <EmpowermentButton text="Send Reset Link" onClick={handleForgotPassword}/>
+                </div>
+
+                <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', marginTop: '20px', transition: 'color 0.3s ease' }} onClick={() => setStep(4)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>← Back to Sign In</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 9 && (
+          <div style={{ animation: 'fadeIn 1s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '15px' }}>
+              <img src={logo} alt="Logo" style={{ width: '100px', height: '100px', objectFit: 'contain' }} />
+            </div>
+            <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>Create New Password</h1>
+            <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '15px auto 35px', maxWidth: '600px' }}>Enter your new security credentials below.</p>
+
+            {isLoading ? (
+              <EmpowermentLoader text="Updating secure credentials..."/>
+            ) : (
+              <div style={{ maxWidth: '400px', margin: '0 auto' }}>
+                <ElegantInput name="resetPassword" onChange={(e) => setResetPassword(e.target.value)} placeholder="New Password (min 6 chars)" type="password" value={resetPassword}/>
+                
+                <div style={{ marginTop: '35px' }}>
+                  <EmpowermentButton text="Update Password" onClick={handleResetPassword}/>
+                </div>
               </div>
             )}
           </div>
         )}
 
         {step === 5 && (
-          <div style={{ animation: 'fadeIn 1.5s ease' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '15px' }}>
-              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', color: '#A89999', fontSize: '1.2rem' }}>Welcome, {userDetails.name || 'Valued Member'}</span>
-              <button onClick={handleLogOut} style={{ background: 'none', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '5px 15px', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", cursor: 'pointer', fontSize: '1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>Sign Out</button>
+          <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box', animation: 'fadeIn 0.5s ease' }}>
+            
+            {/* Sidebar Navigation */}
+            <div style={{ width: '260px', backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)' }}>
+              <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+                <img src={logo} alt="Susan's Logo" style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '10px' }} />
+                <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
+              </div>
+
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+                {['Blueprint', 'Boutique', 'Inbox', 'Consultations'].map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveMemberTab(tab)}
+                    style={{
+                      padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                      backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
+                      color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
+                      fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
+                      transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
+                      boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none'
+                    }}
+                  >
+                    {tab === 'Blueprint' && '📝 '}
+                    {tab === 'Boutique' && '🛍️ '}
+                    {tab === 'Inbox' && '💌 '}
+                    {tab === 'Consultations' && '🎥 '}
+                    {tab}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ padding: '0 20px' }}>
+                <button onClick={handleLogOut} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
+                  Sign Out
+                </button>
+              </div>
             </div>
 
-            <h1 style={{ fontSize: '3.8rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400' }}>Your Member Dashboard</h1>
-            <p style={{ fontSize: '1.3rem', lineHeight: '1.6', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '0 auto 30px', maxWidth: '600px' }}>
-              {selectedTier === 'radiance' ? "🌟 Radiance Elite Member — Premium Access Verified." : selectedTier === 'luminary' ? "✨ Luminary Circle Member — Subscription Verified." : "✨ Access verified."}
-            </p>
-
-            {userRecommendations.length > 0 && (
-              <div style={{ textAlign: 'left', marginBottom: '40px', backgroundColor: 'rgba(255, 240, 242, 0.6)', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '25px' }}>
-                <h2 style={{ fontSize: '2.5rem', margin: '0 0 5px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400' }}>Susan's Direct Recommendations For You ✧</h2>
-                <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#8A797A', fontStyle: 'italic', marginBottom: '20px' }}>Hand-selected specifically for your custom beauty profile by Susan.</p>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-                  {userRecommendations.map((product) => (
-                    <ProductCard key={product._id || product.title} product={product} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
-                  ))}
+            {/* Main Content Area */}
+            <div style={{ flex: 1, padding: '50px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '15px' }}>
+                <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', margin: 0 }}>
+                  {activeMemberTab}
+                </h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                  <span style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', color: '#A89999', fontSize: '1.2rem' }}>Welcome, {userDetails.name || 'Valued Member'}</span>
+                  <button onClick={() => setIsCartOpen(!isCartOpen)} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '30px', padding: '10px 22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', cursor: 'pointer', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.4)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span>🛍️ Ritual Bag</span>
+                    <span style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', borderRadius: '50%', padding: '2px 8px', fontSize: '0.9rem', fontWeight: 'bold' }}>
+                      {cart.reduce((sum, item) => sum + item.quantity, 0)}
+                    </span>
+                  </button>
                 </div>
               </div>
-            )}
 
-            {!hasCompletedQuiz ? (
-              <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '40px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', margin: '40px 0' }}>
-                <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 15px 0' }}>Unlock Your Bespoke Routine</h3>
-                <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '30px' }}>As a member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products.</p>
-                <EmpowermentButton text="Start the Consultation" onClick={() => setStep(11)} />
-              </div>
-            ) : (
-              <>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left', marginBottom: '45px' }}>
-                  <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
-                  <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
-                  <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
-                  <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
-                  <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
-                  <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
-                  <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
-                  <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
-                  <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
-                  <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
-                </div>
-              </>
-            )}
+              {/* TABS CONTENT */}
+              
+              {/* 1. BLUEPRINT TAB */}
+              {activeMemberTab === 'Blueprint' && (
+                <div style={{ animation: 'fadeIn 0.5s ease' }}>
+                  <p style={{ fontSize: '1.3rem', lineHeight: '1.6', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '0 0 30px 0', maxWidth: '600px' }}>
+                    {selectedTier === 'radiance' ? "🌟 Radiance Elite Member — Premium Access Verified." : selectedTier === 'luminary' ? "✨ Luminary Circle Member — Subscription Verified." : "✨ Access verified."}
+                  </p>
 
-            {userOrders.length > 0 && (
-              <div style={{ marginTop: '40px', textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)' }}>
-                <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 20px 0' }}>Order History</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                  {userOrders.map((order, idx) => (
-                    <div key={order._id || idx} style={{ padding: '15px', border: '1px solid #E8C5C8', borderRadius: '10px', backgroundColor: '#FFF9F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                      <div>
-                        <p style={{ margin: '0 0 5px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', fontWeight: 'bold' }}>Order Date: {new Date(order.createdAt).toLocaleDateString()}</p>
-                        <p style={{ margin: '0 0 5px 0', fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Total: ${(order.totalAmount || 0).toFixed(2)}</p>
-                        <p style={{ margin: 0, fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Status: <span style={{ color: order.status === 'SHIPPED' ? '#B38B8F' : '#A89999', fontWeight: 'bold' }}>{order.status || 'Pending'}</span></p>
-                      </div>
-                      {order.tracking_code && (
-                        <div style={{ backgroundColor: '#FFF0F2', padding: '10px 15px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
-                          <p style={{ margin: '0 0 3px 0', fontSize: '0.85rem', color: '#A89999' }}>Tracking Number</p>
-                          <p style={{ margin: 0, fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold' }}>{order.tracking_code}</p>
-                        </div>
-                      )}
+                  {!hasCompletedQuiz ? (
+                    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '40px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
+                      <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 15px 0' }}>Unlock Your Bespoke Routine</h3>
+                      <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '30px' }}>As a member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products.</p>
+                      <EmpowermentButton text="Start the Consultation" onClick={() => setStep(11)} />
                     </div>
-                  ))}
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left', marginBottom: '45px' }}>
+                      <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
+                      <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
+                      <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
+                      <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
+                      <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
+                      <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
+                      <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
+                      <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
+                      <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
+                      <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
+                    </div>
+                  )}
+
+                  {userOrders.length > 0 && (
+                    <div style={{ textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)' }}>
+                      <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 20px 0' }}>Order History</h3>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                        {userOrders.map((order, idx) => (
+                          <div key={order._id || idx} style={{ padding: '15px', border: '1px solid #E8C5C8', borderRadius: '10px', backgroundColor: '#FFF9F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                            <div>
+                              <p style={{ margin: '0 0 5px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', fontWeight: 'bold' }}>Order Date: {new Date(order.createdAt).toLocaleDateString()}</p>
+                              <p style={{ margin: '0 0 5px 0', fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Total: ${(order.totalAmount || 0).toFixed(2)}</p>
+                              <p style={{ margin: 0, fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Status: <span style={{ color: order.status === 'SHIPPED' ? '#B38B8F' : '#A89999', fontWeight: 'bold' }}>{order.status || 'Pending'}</span></p>
+                            </div>
+                            {order.tracking_code && (
+                              <div style={{ backgroundColor: '#FFF0F2', padding: '10px 15px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+                                <p style={{ margin: '0 0 3px 0', fontSize: '0.85rem', color: '#A89999' }}>Tracking Number</p>
+                                <p style={{ margin: 0, fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold' }}>{order.tracking_code}</p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              )}
+
+              {/* 2. INBOX TAB */}
+              {activeMemberTab === 'Inbox' && (
+                <div style={{ animation: 'fadeIn 0.5s ease' }}>
+                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#8A797A', fontStyle: 'italic', marginBottom: '30px' }}>Your private messages and hand-selected curations from Susan.</p>
+                  
+                  {inboxItems.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                      {inboxItems.map((item) => (
+                        <div key={item._id} style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '15px', border: '1px solid #E8C5C8', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
+                          <div style={{ flex: '1 1 250px', maxWidth: '300px' }}>
+                            {item.productId ? (
+                              <ProductCard product={item.productId} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
+                            ) : (
+                              <p style={{ color: '#A89999', fontStyle: 'italic' }}>Product no longer available.</p>
+                            )}
+                          </div>
+                          <div style={{ flex: '2 1 300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', backgroundColor: '#FFF9F9', padding: '25px', borderRadius: '12px', border: '1px dashed #E8C5C8' }}>
+                            <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#B38B8F', fontStyle: 'italic', margin: '0 0 15px 0' }}>Received: {new Date(item.createdAt).toLocaleDateString()}</p>
+                            <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#5C5454', lineHeight: '1.6', margin: 0 }}>"{item.message}"</p>
+                            <p style={{ fontFamily: "'Alex Brush', cursive", fontSize: '1.8rem', color: '#B38B8F', margin: '20px 0 0 0' }}>Warmly, Susan</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '50px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px dashed #E8C5C8', borderRadius: '15px' }}>
+                      <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem' }}>Your inbox is currently empty. Complete your Blueprint to receive Susan's exclusive curations.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 3. BOUTIQUE TAB */}
+              {activeMemberTab === 'Boutique' && (
+                <div style={{ animation: 'fadeIn 0.5s ease' }}>
+                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#8A797A', fontStyle: 'italic', marginBottom: '30px' }}>Shop our full collection of curated beauty essentials.</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                    {backendProducts.length > 0 ? (
+                      backendProducts.map((product) => (
+                        <ProductCard key={product._id || product.title} product={product} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
+                      ))
+                    ) : (
+                      <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>Fetching live boutique inventory...</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 4. CONSULTATIONS TAB */}
+              {activeMemberTab === 'Consultations' && (
+                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '30px' }}>
+                  <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Book Your Session</h2>
+                    <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '30px' }}>
+                      Select a time on Susan's calendar below to reserve your 1-on-1 virtual consultation.
+                    </p>
+                    
+                    <div style={{ height: '650px', width: '100%', borderRadius: '15px', overflow: 'hidden', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9' }}>
+                      <iframe
+                        src="https://calendly.com/YOUR_CALENDLY_LINK?hide_event_type_details=1&hide_gdpr_banner=1&background_color=FFF9F9&text_color=5C5454&primary_color=B38B8F"
+                        width="100%"
+                        height="100%"
+                        frameBorder="0"
+                        title="Schedule Consultation"
+                        style={{ display: 'block' }}
+                      ></iframe>
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Join Active Room</h2>
+                    <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '20px' }}>
+                      If it's time for your scheduled appointment, paste your private room link here to join directly from your sanctuary.
+                    </p>
+                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                      <input 
+                        type="text" 
+                        placeholder="Paste meeting link (e.g., meet.jit.si/...)" 
+                        style={{ flex: 1, minWidth: '250px', padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', outline: 'none', fontFamily: 'sans-serif', fontSize: '1rem', backgroundColor: '#FFF9F9' }} 
+                      />
+                      <button style={{ backgroundColor: '#B38B8F', border: 'none', padding: '15px 30px', borderRadius: '12px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', transition: 'background-color 0.3s ease' }}>
+                        Enter Room ✧
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
           </div>
         )}
 

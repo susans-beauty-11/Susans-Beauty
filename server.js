@@ -9,11 +9,28 @@ const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const crypto = require('crypto');
 
 const app = express();
 
 // ---------------- MIDDLEWARE & RATE LIMITING ---------------- //
-app.use(cors());
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://susansbeautyconsulting.com',
+  'https://www.susansbeautyconsulting.com'
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️ Blocked unauthorized CORS request from origin: ${origin}`);
+      callback(new Error('Access denied by CORS policy'));
+    }
+  },
+  credentials: true
+}));
 
 // Surgically bypass express.json() for the Stripe webhook so it retains the raw buffer
 app.use((req, res, next) => {
@@ -36,16 +53,15 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.ionos.com',
   port: process.env.SMTP_PORT || 465,
-  secure: process.env.SMTP_PORT == 465, // True for implicit SSL/TLS on port 465
+  secure: process.env.SMTP_PORT == 465, 
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  pool: true, // Reuses connections to prevent IONOS timeout drops
-  maxConnections: 5, // Limits concurrent connections to avoid spam-flagging
-  maxMessages: 100, // Number of messages to send before opening a new connection
+  pool: true, 
+  maxConnections: 5, 
+  maxMessages: 100, 
   tls: {
-    // Explicitly defines supported ciphers to prevent TLS handshake failures
     ciphers: 'SSLv3'
   }
 });
@@ -56,13 +72,13 @@ const sendEmail = async (to, subject, htmlContent, textContent) => {
       from: process.env.SMTP_FROM || '"Susan\'s Beauty Consulting" <susan.coke@susansbeautyconsulting.com>',
       to,
       subject,
-      text: textContent, // Plain-text fallback for deliverability/spam prevention
+      text: textContent, 
       html: htmlContent,
     });
     console.log(`✉️ Email dispatched to ${to}: "${subject}"`);
   } catch (err) {
     console.error(`⚠️ Failed to send email to ${to}:`, err.message);
-    throw err; // Re-throw the error so the route catches it and returns a 500
+    throw err; 
   }
 };
 
@@ -79,6 +95,8 @@ const userSchema = new mongoose.Schema({
   },
   membershipTier: { type: String, default: 'luminary' },
   recommendedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  resetPasswordToken: String,
+  resetPasswordExpires: Date,
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
@@ -171,6 +189,15 @@ const emailLogSchema = new mongoose.Schema({
 });
 const EmailLog = mongoose.model('EmailLog', emailLogSchema);
 
+const inboxItemSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  message: { type: String, default: "Susan has hand-selected this specifically for your custom beauty profile ✧" },
+  isRead: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const InboxItem = mongoose.model('InboxItem', inboxItemSchema);
+
 // ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
 
 const authenticateToken = async (req, res, next) => {
@@ -184,7 +211,6 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
     
-    // Fetch user to guarantee they still exist and retrieve their current role
     const user = await User.findById(decoded._id).select('_id name email role membershipTier');
     
     if (!user) {
@@ -203,14 +229,12 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// RBAC Factory Function
 const requireRole = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.user || !req.user.role) {
       return res.status(403).json({ error: 'Access denied. Role information missing.' });
     }
 
-    // Support legacy admin accounts that might still rely on membershipTier
     const isLegacyAdmin = req.user.membershipTier === 'admin' && allowedRoles.includes('admin');
 
     if (allowedRoles.includes(req.user.role) || isLegacyAdmin) {
@@ -223,10 +247,9 @@ const requireRole = (allowedRoles) => {
   };
 };
 
-// Pre-configured Role Checks for Routes
 const requireAdmin = requireRole(['admin']);
 const requireStaffOrAdmin = requireRole(['admin', 'staff']);
-const requireClient = requireRole(['client', 'admin']); // Admins can test client routes
+const requireClient = requireRole(['client', 'admin']); 
 
 
 // ---------------- CJ DROPSHIPPING API INTEGRATION ---------------- //
@@ -235,7 +258,7 @@ const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 const getCjHeaders = () => {
   const token = process.env.CJ_ACCESS_TOKEN;
   if (!token) {
-    console.warn("⚠️️ CJ_ACCESS_TOKEN is missing in environment.");
+    console.warn("⚠ CJ_ACCESS_TOKEN is missing in environment.");
     return null;
   }
   return {
@@ -255,7 +278,6 @@ const syncCJCatalog = async () => {
   let hasMoreProducts = true;
   let totalProcessed = 0;
 
-  // 1. STRICT CATEGORY FILTER: Only allow beauty and skincare-related terms
   const beautyKeywords = ['beauty', 'skin', 'cosmetic', 'makeup', 'health', 'hair', 'face', 'care', 'lotion', 'serum', 'cream', 'cleanser'];
 
   try {
@@ -271,23 +293,20 @@ const syncCJCatalog = async () => {
       }
 
       for (const item of cjProducts) {
-        // 2. ENFORCE ENGLISH: Prioritize 'nameEn' over standard name
         const title = item.nameEn || item.productNameEn || item.productName;
         const baseSku = item.productSku || item.sku;
         const category = (item.categoryName || '').toLowerCase();
         
         if (!title || !baseSku) continue;
 
-        // Apply the strict beauty filter
         const isBeautyProduct = beautyKeywords.some(kw => category.includes(kw) || title.toLowerCase().includes(kw));
         if (!isBeautyProduct) {
-          continue; // Skip electronics, home goods, and non-beauty items
+          continue; 
         }
 
         const desc = item.description || item.productDescription || '';
         const img = item.productImage || item.image;
         
-        // 3. 350% RETAIL MARKUP
         const retailMarkup = 3.5;
 
         let rawBasePrice = parseFloat(item.sellPrice || item.price || 0);
@@ -308,7 +327,6 @@ const syncCJCatalog = async () => {
           const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice);
           return {
             sku: v.vid || v.variantSku || baseSku, 
-            // Force English variant names
             variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
             price: variantRawPrice * retailMarkup, 
             imageUrl: v.variantImage || img
@@ -326,7 +344,7 @@ const syncCJCatalog = async () => {
             title: title,
             description: desc,
             imageUrl: img,
-            tags: categorizeProduct(title, item.categoryName || ''),
+            tags: category.split(' '),
             variants: mappedVariants,
             rawCjData: item 
           },
@@ -375,7 +393,6 @@ app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, r
       return res.status(400).json({ error: 'Missing required email fields (to, subject, body).' });
     }
 
-    // Wrap the body in a branded HTML template
     const htmlContent = `
       <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
         <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
@@ -386,15 +403,27 @@ app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, r
       </div>
     `;
 
-    // The raw body serves as the plain-text fallback
     const textContent = `${body}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
     await sendEmail(to, subject, htmlContent, textContent);
+    
+    const newLog = new EmailLog({ to, subject, body });
+    await newLog.save();
+
     res.status(200).json({ message: 'Email dispatched successfully.' });
     
   } catch (error) {
     console.error('Email Dispatch Error:', error);
     res.status(500).json({ error: 'Failed to send email. Please check SMTP configuration.' });
+  }
+});
+
+app.get('/api/admin/email-logs', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const logs = await EmailLog.find({}).sort({ sentAt: -1 });
+    res.status(200).json(logs);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch email logs' });
   }
 });
 
@@ -404,11 +433,19 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     
+    const newInboxItem = new InboxItem({
+      userId: req.params.userId,
+      productId: productId,
+      message: "Susan has hand-selected this specifically for your custom beauty profile ✧"
+    });
+    await newInboxItem.save();
+
     if (!user.recommendedProducts.includes(productId)) {
       user.recommendedProducts.push(productId);
       await user.save();
     }
-    res.status(200).json({ message: 'Product successfully pushed to user dashboard.' });
+    
+    res.status(200).json({ message: 'Product successfully pushed to user inbox.' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to push recommendation' });
   }
@@ -418,22 +455,19 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
 app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { message, history } = req.body;
-    const { GoogleGenAI } = require('@google/genai');
+    const { GoogleGenAI, Type } = require('@google/genai');
     
-    // FIX: Explicitly map the API key to prevent the empty object from overriding the env variable
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    // Fetch database context to ground the AI
-    const catalog = await Product.find({}).select('title price tags').lean();
+    const catalog = await Product.find({}).select('_id title price tags').lean();
     const blueprints = await Consultation.find({}).populate('userId', 'name').lean();
 
-    const systemInstruction = `You are Susan's elite AI Assistant for her boutique, Susan's Beauty Consulting.
-Your job is to help Susan draft elegant emails to clients, evaluate skin profiles, and analyze the boutique inventory.
-Here is the current boutique inventory: ${JSON.stringify(catalog)}.
+    const systemInstruction = `You are Susan's elite AI Assistant for her boutique.
+Your job is to help Susan draft elegant emails to clients, evaluate skin profiles, and manage the boutique inventory.
+Here is the current boutique inventory (use the _id field if you need to delete a product): ${JSON.stringify(catalog)}.
 Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
-Maintain a graceful, sophisticated, and helpful tone. Format your responses cleanly.`;
+Maintain a graceful, sophisticated, and helpful tone.`;
 
-    // FIX: Prepend the system instructions directly into the prompt for perfect compatibility
     let promptInput = `[SYSTEM INSTRUCTIONS]\n${systemInstruction}\n\n`;
     
     if (history && Array.isArray(history) && history.length > 0) {
@@ -446,12 +480,46 @@ Maintain a graceful, sophisticated, and helpful tone. Format your responses clea
     }
     promptInput += `User: ${message}\nAssistant:`;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: promptInput
+    const deleteProductTool = {
+      functionDeclarations: [{
+        name: 'deleteProduct',
+        description: 'Deletes a product from the MongoDB database. Call this tool ONLY when Susan explicitly asks to remove or delete a specific product.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            productId: {
+              type: Type.STRING,
+              description: 'The exact MongoDB _id string of the product to delete. Find this in the inventory catalog provided.'
+            }
+          },
+          required: ['productId']
+        }
+      }]
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash', 
+      contents: promptInput,
+      config: {
+        tools: [deleteProductTool],
+        temperature: 0.1, 
+      }
     });
 
-    res.status(200).json({ response: interaction.output_text });
+    if (response.functionCalls && response.functionCalls.length > 0) {
+      const call = response.functionCalls[0];
+      
+      if (call.name === 'deleteProduct') {
+        const pid = call.args.productId;
+        await Product.findByIdAndDelete(pid);
+        console.log(`🤖 AI triggered deletion of product ID: ${pid}`);
+        return res.status(200).json({ 
+          response: `✧ Done. I have permanently removed that product from the boutique's database, Susan.` 
+        });
+      }
+    }
+
+    res.status(200).json({ response: response.text });
 
   } catch (error) {
     console.error("AI Chat Error:", error);
@@ -461,7 +529,6 @@ Maintain a graceful, sophisticated, and helpful tone. Format your responses clea
 
 // ---------------- APPOINTMENT & CALENDAR ROUTES ---------------- //
 
-// GET: Fetch all appointments for the calendar
 app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const appointments = await Appointment.find()
@@ -474,19 +541,16 @@ app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, 
   }
 });
 
-// POST: Schedule a new consultation
 app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { clientId, serviceId, startTime, durationInMinutes, notes } = req.body;
-    
-    // Calculate end time based on duration
     const start = new Date(startTime);
     const end = new Date(start.getTime() + (durationInMinutes || 60) * 60000);
 
     const newAppointment = new Appointment({
       clientId,
-      staffId: req.user._id, // Assigns Susan (the admin) as the staff member
-      serviceId, // Optional: Can reference a specific "Consultation" service ID
+      staffId: req.user._id, 
+      serviceId, 
       startTime: start,
       endTime: end,
       status: 'confirmed',
@@ -495,7 +559,6 @@ app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req,
 
     await newAppointment.save();
     
-    // Populate client details before sending response to instantly update the UI
     const populatedAppointment = await Appointment.findById(newAppointment._id)
       .populate('clientId', 'name email');
       
@@ -505,7 +568,6 @@ app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req,
   }
 });
 
-// DELETE: Cancel/Remove an appointment
 app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     await Appointment.findByIdAndDelete(req.params.id);
@@ -515,11 +577,8 @@ app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async
   }
 });
 
-// ---------------- END APPOINTMENT ROUTES ---------------- //
-
 // ---------------- MANUAL INVENTORY ROUTES ---------------- //
 
-// POST: Add a custom product to the boutique
 app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { title, description, imageUrl, price, tags } = req.body;
@@ -544,7 +603,6 @@ app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res
   }
 });
 
-// PUT: Edit an existing product
 app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { title, description, imageUrl, price, tags } = req.body;
@@ -560,7 +618,6 @@ app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, 
       product.tags = Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim());
     }
 
-    // Update the base price on the first variant
     if (product.variants && product.variants.length > 0) {
       product.variants[0].price = parseFloat(price) || product.variants[0].price;
       if (imageUrl) product.variants[0].imageUrl = imageUrl;
@@ -580,7 +637,6 @@ app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, 
   }
 });
 
-// DELETE: Remove a product from the boutique
 app.delete('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     await Product.findByIdAndDelete(req.params.id);
@@ -598,6 +654,69 @@ app.get('/api/products', async (req, res) => {
     res.status(200).json(products);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch products' });
+  }
+});
+
+// ---------------- PASSWORD RESET ROUTES ---------------- //
+
+app.post('/api/users/forgot-password', authLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    
+    if (!user) return res.status(200).json({ message: 'If that email exists, a reset link has been sent.' });
+
+    const token = crypto.randomBytes(20).toString('hex');
+    user.resetPasswordToken = token;
+    user.resetPasswordExpires = Date.now() + 3600000; 
+    await user.save();
+
+    const resetUrl = `${req.headers.origin || 'http://localhost:3000'}?reset_token=${token}`;
+    
+    const htmlContent = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px; text-align: center;">
+        <h2 style="color: #B38B8F; font-style: italic;">Password Reset Request ✧</h2>
+        <p style="font-size: 1.1rem; line-height: 1.6;">You are receiving this because a password reset was requested for your account.</p>
+        <p style="font-size: 1.1rem; line-height: 1.6;">Click the button below to securely set a new password:</p>
+        <a href="${resetUrl}" style="display: inline-block; margin: 30px 0; padding: 12px 30px; background-color: #F2D4D7; color: #5C5454; text-decoration: none; border-radius: 25px; font-family: 'Cormorant Garamond', serif; font-size: 1.2rem; border: 1px solid #B38B8F; transition: all 0.3s ease;">Reset Password</a>
+        <p style="font-size: 0.9rem; color: #8A797A; margin-top: 30px;">If you did not request this, please ignore this email and your password will remain unchanged.</p>
+      </div>
+    `;
+    
+    const textContent = `Password Reset Request ✧\n\nYou are receiving this because a password reset was requested for your account.\n\nPlease copy and paste the following link into your browser to complete the process:\n${resetUrl}\n\nIf you did not request this, please ignore this email.\n\nWarmly,\nSusan's Beauty Consulting`;
+
+    await sendEmail(user.email, "Susan's Beauty Consulting - Password Reset", htmlContent, textContent);
+    res.status(200).json({ message: 'If that email exists, a reset link has been sent.' });
+  } catch (error) {
+    console.error('Forgot Password Error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request.' });
+  }
+});
+
+app.post('/api/users/reset-password/:token', authLimiter, async (req, res) => {
+  try {
+    const user = await User.findOne({ 
+      resetPasswordToken: req.params.token, 
+      resetPasswordExpires: { $gt: Date.now() } 
+    });
+
+    if (!user) return res.status(400).json({ error: 'Password reset token is invalid or has expired.' });
+
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(password, salt);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    
+    await user.save();
+
+    res.status(200).json({ message: 'Password has been updated successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reset password.' });
   }
 });
 
@@ -676,7 +795,17 @@ app.get('/api/users/me/recommendations', authenticateToken, async (req, res) => 
   }
 });
 
-// NEW ENDPOINT: Fetch Order History for Authenticated User
+app.get('/api/users/me/inbox', authenticateToken, async (req, res) => {
+  try {
+    const items = await InboxItem.find({ userId: req.user._id })
+      .populate('productId')
+      .sort({ createdAt: -1 }); 
+    res.status(200).json(items);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch user inbox' });
+  }
+});
+
 app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -699,17 +828,14 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
 
     // ---------------- GOOGLE GEN AI CURATION ---------------- //
     try {
-      const { GoogleGenAI } = require('@google/genai');
-      
-      // FIX: Explicitly map the API key
+      const { GoogleGenAI, Type } = require('@google/genai');
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const catalog = await Product.find({}).select('_id title tags description').lean();
       
+      const systemInstruction = `You are Susan, a master beauty consultant. Curate a bespoke 3 to 5 piece skincare and makeup ritual for this client based on their profile. Select the most optimal products from the provided catalog.`;
+      
       const prompt = `
-        You are Susan, a master beauty consultant.
-        Curate a bespoke 3 to 5 piece skincare and makeup ritual for this client.
-        
         Client Profile:
         - Skin Temperament: ${savedConsultation.skinType}
         - Primary Vision: ${savedConsultation.primaryGoal}
@@ -720,21 +846,26 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
 
         Available Boutique Products:
         ${JSON.stringify(catalog)}
-
-        Based on the profile, select the 3 to 5 most optimal products from the catalog.
-        Return ONLY a valid JSON array of the _id strings. 
-        Example: ["65a123...", "65b456..."]
       `;
 
-      const interaction = await ai.interactions.create({
-        model: 'gemini-3.8-flash',
-        input: prompt,
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
         config: {
-          responseMimeType: "application/json"
+          systemInstruction: systemInstruction,
+          temperature: 0.1, 
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            description: "An array of exact MongoDB _id strings corresponding to the recommended products.",
+            items: {
+              type: Type.STRING
+            }
+          }
         }
       });
 
-      const recommendedIds = JSON.parse(interaction.output_text);
+      const recommendedIds = JSON.parse(response.text);
       
       await User.findByIdAndUpdate(req.user._id, {
         $set: { recommendedProducts: recommendedIds }
@@ -778,6 +909,16 @@ app.post('/api/create-checkout-session', authenticateToken, async (req, res) => 
         },
         quantity: 1,
       }],
+      metadata: {
+        userId: req.user._id.toString(),
+        tier: tier
+      },
+      subscription_data: {
+        metadata: {
+          userId: req.user._id.toString(),
+          tier: tier
+        }
+      },
       success_url: `${req.headers.origin || 'http://localhost:3000'}/?success=true&tier=${tier}`,
       cancel_url: `${req.headers.origin || 'http://localhost:3000'}/?canceled=true`,
     });
@@ -805,7 +946,6 @@ app.post('/api/cart-checkout', async (req, res) => {
     });
     await newOrder.save();
 
-    // ---------------- STRIPE CHECKOUT ROUTING ---------------- //
     const line_items = items.map(item => ({
       price_data: {
         currency: 'usd',
@@ -835,7 +975,6 @@ app.post('/api/cart-checkout', async (req, res) => {
   }
 });
 
-// ---------------- STRIPE WEBHOOK (PAYMENT CONFIRMED) ---------------- //
 app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -849,19 +988,20 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
+    
     const orderId = session.metadata?.orderId;
+    const tier = session.metadata?.tier;
+    const userId = session.metadata?.userId;
 
     if (orderId) {
       try {
         const order = await Order.findById(orderId);
         if (order && order.status === 'Pending') {
           
-          // 1. Mark as paid, extract Stripe email, and save
           order.status = 'PAID_PROCESSING';
           order.customerEmail = session.customer_details?.email || session.customer_email || 'Customer';
           await order.save();
 
-          // 2. Dispatch Customer Receipt
           if (order.customerEmail !== 'Customer') {
             const receiptHtml = `
               <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
@@ -872,13 +1012,11 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
               </div>
             `;
             
-            // Plain-text fallback
             const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
             await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText);
           }
 
-          // 3. Forward to CJ Dropshipping
           const headers = getCjHeaders();
           const address = order.shipping_address || {};
           
@@ -903,15 +1041,44 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
       } catch (err) {
         console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
       }
+    } 
+    else if (tier && userId) {
+      try {
+        const user = await User.findById(userId);
+        if (user) {
+          user.membershipTier = tier;
+          await user.save();
+          console.log(`✨ Successfully upgraded user ${user.email} to ${tier} tier.`);
+          
+          const welcomeHtml = `
+            <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+              <h1 style="color: #B38B8F; font-style: italic;">Welcome to ${tier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'} ✧</h1>
+              <p style="font-size: 1.2rem; line-height: 1.6;">Your membership payment is verified. You can now access your member dashboard and complete your personalized beauty blueprint.</p>
+            </div>
+          `;
+          const welcomeText = `Welcome to the ${tier} tier! Your membership is now active. \n\nWarmly,\nSusan's Beauty Consulting`;
+          
+          await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText);
+        }
+      } catch (err) {
+        console.error(`⚠️ Failed to upgrade user ${userId} to ${tier}:`, err.message);
+      }
     }
   }
 
   res.status(200).json({ received: true });
 });
 
-// ---------------- CJ DROPSHIPPING WEBHOOK ---------------- //
 app.post('/webhook/cj', express.json(), async (req, res) => {
   try {
+    const providedToken = req.query.token;
+    const expectedToken = process.env.CJ_WEBHOOK_SECRET;
+
+    if (!expectedToken || providedToken !== expectedToken) {
+      console.warn(`⚠️ Unauthorized CJ webhook attempt from IP: ${req.ip}`);
+      return res.status(403).json({ error: 'Forbidden: Invalid webhook authentication.' });
+    }
+
     const { orderNumber, trackingNumber, status } = req.body;
     console.log(`📦 CJ Webhook Received - Order: ${orderNumber}, Status: ${status}, Tracking: ${trackingNumber}`);
 
@@ -933,7 +1100,6 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-   // Dispatch Shipping Update
     if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
       const shippingHtml = `
         <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
@@ -947,7 +1113,6 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
         </div>
       `;
 
-      // Plain-text fallback
       const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
       await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText);
@@ -968,7 +1133,6 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     
-    // Verify SMTP connection on boot
     try {
       await transporter.verify();
       console.log('✧ SMTP Server verified and ready to dispatch emails');
@@ -979,12 +1143,10 @@ mongoose.connect(MONGO_URI)
     app.listen(PORT, () => {
       console.log(`✧ Backend API running gracefully on port ${PORT}`);
       
-      // Initial Sync on Boot
       syncCJCatalog().catch((error) => {
         console.error('❌ Unexpected CJ catalog sync failure:', error?.response?.data || error.message);
       });
 
-      // Scheduled Daily Sync at 3:00 AM
       cron.schedule('0 3 * * *', () => {
         console.log('⏰ Running scheduled CJ catalog sync at 3:00 AM...');
         syncCJCatalog().catch((error) => {
