@@ -1037,6 +1037,28 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
 
           const response = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers });
           console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
+
+          // --- NEW STEP 4: NOTIFY SUSAN ---
+          const susanHtml = `
+            <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+              <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Automated Order Processed ✧</h2>
+              <p style="font-size: 1.1rem; line-height: 1.6;">Susan,</p>
+              <p style="font-size: 1.1rem; line-height: 1.6;">A new order has been placed and automatically routed to CJ Dropshipping for fulfillment.</p>
+              <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                <p style="margin: 5px 0;"><strong>Customer:</strong> ${cjPayload.shippingCustomerName}</p>
+                <p style="margin: 5px 0;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
+                <p style="margin: 5px 0;"><strong>Order ID:</strong> ${order._id.toString()}</p>
+              </div>
+              <p style="font-size: 1.1rem; line-height: 1.6;">No action is required on your part. The funds are processing via Stripe.</p>
+            </div>
+          `;
+          
+          const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} for $${(order.totalAmount || 0).toFixed(2)} and forwarded to CJ Dropshipping.\n\nOrder ID: ${order._id.toString()}`;
+
+          await sendEmail('susan.coke@susansbeautyconsulting.com', '✧ New Order Auto-Processed', susanHtml, susanText);
+          console.log(`✉️ Admin notification dispatched to Susan for Order ${orderId}`);
+          // --------------------------------
+
         }
       } catch (err) {
         console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
