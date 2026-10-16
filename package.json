@@ -36,11 +36,12 @@
     "stripe": "^22.5.0"
   },
   "devDependencies": {
-    "gh-pages": "^6.3.0",
-    "nodemon": "^3.0.0"
+    "gh-pages": "^6.1.1",
+    "nodemon": "^1.14.10"
   },
   "allowScripts": {
     "protobufjs@7.6.6": true,
-    "@google/genai@2.24.0": true
+    "@google/genai@2.24.0": true,
+    "nodemon@1.19.4": true
   }
 }
