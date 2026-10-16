@@ -114,7 +114,7 @@ const Service = mongoose.model('Service', serviceSchema);
 const appointmentSchema = new mongoose.Schema({
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true, index: true },
+  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: false, index: true },
   startTime: { type: Date, required: true, index: true },
   endTime: { type: Date, required: true },
   status: { 
@@ -307,7 +307,7 @@ const syncCJCatalog = async () => {
         const desc = item.description || item.productDescription || '';
         const img = item.productImage || item.image;
         
-        const retailMarkup = 3.5;
+        const retailMarkup = 6.5;
 
         let rawBasePrice = parseFloat(item.sellPrice || item.price || 0);
         
@@ -355,7 +355,7 @@ const syncCJCatalog = async () => {
       }
       
       pageNum++;
-      await delay(500); 
+      await delay(1500); 
     }
     
     console.log(`🚀 CJ catalog sync complete! Processed ${totalProcessed} Beauty/Skincare items.`);
@@ -544,13 +544,17 @@ app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, 
 app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { clientId, serviceId, startTime, durationInMinutes, notes } = req.body;
+    if (!clientId || !startTime) {
+      return res.status(400).json({ error: 'Client and start time are required.' });
+    }
+
     const start = new Date(startTime);
-    const end = new Date(start.getTime() + (durationInMinutes || 60) * 60000);
+    const end = new Date(start.getTime() + (Number(durationInMinutes) || 60) * 60000);
 
     const newAppointment = new Appointment({
       clientId,
       staffId: req.user._id, 
-      serviceId, 
+      ...(serviceId ? { serviceId } : {}),
       startTime: start,
       endTime: end,
       status: 'confirmed',
@@ -560,7 +564,8 @@ app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req,
     await newAppointment.save();
     
     const populatedAppointment = await Appointment.findById(newAppointment._id)
-      .populate('clientId', 'name email');
+      .populate('clientId', 'name email')
+      .populate('serviceId', 'name');
       
     res.status(201).json(populatedAppointment);
   } catch (error) {

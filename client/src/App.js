@@ -531,8 +531,8 @@ const AdminInventory = () => {
   };
 
   return (
-    <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', animation: 'fadeIn 0.5s ease' }}>
-      <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', position: 'sticky', top: '0' }}>
+    <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap', animation: 'fadeIn 0.5s ease' }}>
+      <div style={{ width: '350px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
             {isEditing ? 'Edit Product' : 'Add Custom Product'}
@@ -773,9 +773,13 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('adminActiveTab') || 'Inbox';
   });
+  const mainContentRef = React.useRef(null);
   
   useEffect(() => {
     localStorage.setItem('adminActiveTab', activeTab);
+    if (mainContentRef.current) {
+      mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }, [activeTab]);
 
   const tabs = ['Inbox', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
@@ -870,10 +874,10 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
   };
 
   return (
-    <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
       
       {/* Sidebar Navigation */}
-      <div style={{ width: '260px', backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)' }}>
+      <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
         <div style={{ textAlign: 'center', marginBottom: '40px' }}>
           <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '3rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
           <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '5px 0 0 0', fontStyle: 'italic' }}>Susan's Beauty Consulting</p>
@@ -905,7 +909,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           ))}
         </div>
 
-        <div style={{ padding: '0 20px' }}>
+        <div style={{ padding: '20px 20px 0 20px' }}>
           <button onClick={onLogout} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
             Sign Out
           </button>
@@ -913,13 +917,13 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
       </div>
 
       {/* Main Content Area */}
-      <div style={{ flex: 1, padding: '50px', overflowY: 'auto' }}>
+      <div ref={mainContentRef} style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
         <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', marginTop: 0, borderBottom: '1px solid rgba(232, 197, 200, 0.5)', paddingBottom: '15px', marginBottom: '30px' }}>
           {activeTab}
         </h1>
         
         {activeTab === 'Inbox' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', alignItems: 'start', animation: 'fadeIn 0.5s ease' }}>
             
             {/* Left Column: Email Composer */}
             <div ref={emailFormRef} style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
@@ -977,7 +981,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
             </div>
 
             {/* Right Column: Global Order Feed */}
-            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', maxHeight: '700px', overflowY: 'auto' }}>
+            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '2.2rem' }}>Global Orders</h2>
                 <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
@@ -1052,8 +1056,8 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
         )}
 
         {activeTab === 'Curation' && (
-          <div style={{ display: 'flex', gap: '30px', animation: 'fadeIn 0.5s ease' }}>
-            <div style={{ width: '350px', backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
+          <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap', animation: 'fadeIn 0.5s ease' }}>
+            <div style={{ width: '350px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '1.8rem' }}>Client Blueprints</h2>
               {(!adminData.blueprints || adminData.blueprints.length === 0) ? (
                 <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif" }}>No blueprints submitted yet.</p>
@@ -1074,7 +1078,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
               )}
             </div>
 
-            <div style={{ flex: 1, backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', overflowY: 'auto', maxHeight: '75vh' }}>
+            <div style={{ flex: 1, minWidth: '320px', backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
               {!selectedBlueprint ? (
                 <div style={{ height: '100%', minHeight: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem' }}>Select a client blueprint to begin curation ✧</p>
@@ -1213,7 +1217,13 @@ function App() {
   // Sync state to Local Storage
   useEffect(() => { localStorage.setItem('currentStep', step); }, [step]);
   useEffect(() => { localStorage.setItem('ritualCart', JSON.stringify(cart)); }, [cart]);
-  useEffect(() => { localStorage.setItem('activeMemberTab', activeMemberTab); }, [activeMemberTab]);
+  const memberContentRef = React.useRef(null);
+  useEffect(() => {
+    localStorage.setItem('activeMemberTab', activeMemberTab);
+    if (memberContentRef.current) {
+      memberContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [activeMemberTab]);
   useEffect(() => { localStorage.setItem('hasCompletedQuiz', hasCompletedQuiz); }, [hasCompletedQuiz]);
   useEffect(() => { localStorage.setItem('quizAnswers', JSON.stringify(quizAnswers)); }, [quizAnswers]);
   
@@ -1857,10 +1867,10 @@ function App() {
         )}
 
         {step === 5 && (
-          <div style={{ display: 'flex', width: '100vw', minHeight: '100vh', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box', animation: 'fadeIn 0.5s ease' }}>
+          <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
             
             {/* Sidebar Navigation */}
-            <div style={{ width: '260px', backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)' }}>
+            <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
               <div style={{ textAlign: 'center', marginBottom: '40px' }}>
                 <img src={logo} alt="Susan's Logo" style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '10px' }} />
                 <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
@@ -1889,7 +1899,7 @@ function App() {
                 ))}
               </div>
 
-              <div style={{ padding: '0 20px' }}>
+              <div style={{ padding: '20px 20px 0 20px' }}>
                 <button onClick={handleLogOut} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
                   Sign Out
                 </button>
@@ -1897,7 +1907,7 @@ function App() {
             </div>
 
             {/* Main Content Area */}
-            <div style={{ flex: 1, padding: '50px', overflowY: 'auto' }}>
+            <div ref={memberContentRef} style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '15px' }}>
                 <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', margin: 0 }}>
                   {activeMemberTab}
@@ -2061,9 +2071,7 @@ function App() {
         )}
 
         {step === 6 && (
-          <div style={{ animation: 'fadeIn 1s ease' }}>
-             <AdminDashboard adminData={adminData} onLogout={handleLogOut} backendProducts={backendProducts} />
-          </div>
+          <AdminDashboard adminData={adminData} onLogout={handleLogOut} backendProducts={backendProducts} />
         )}
 
         {/* ---------------- CONSULTATION QUIZ STEPS 11-21 ---------------- */}
