@@ -316,16 +316,35 @@ const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
   />
 );
 
-const AdminCalendar = ({ users }) => {
+const formatDateTimeLocal = (dateVal) => {
+  if (!dateVal) return '';
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const normalizeRoomUrl = (rawLink) => {
+  if (!rawLink || !String(rawLink).trim()) return '';
+  const trimmed = String(rawLink).trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('meet.jit.si/')) return `https://${trimmed}`;
+  return `https://meet.jit.si/${trimmed.replace(/^\/+/, '')}`;
+};
+
+const AdminCalendar = ({ users = [] }) => {
   const [appointments, setAppointments] = useState([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isScheduling, setIsScheduling] = useState(false);
-  
+  const [editingApptId, setEditingApptId] = useState(null);
+  const [calendarStatus, setCalendarStatus] = useState({ type: '', text: '' });
+
   const [newAppt, setNewAppt] = useState({
     clientId: '',
     startTime: '',
     durationInMinutes: 60,
-    notes: ''
+    notes: '',
+    meetingLink: ''
   });
 
   const fetchAppointments = async () => {
@@ -342,27 +361,70 @@ const AdminCalendar = ({ users }) => {
 
   useEffect(() => {
     fetchAppointments();
+    const interval = setInterval(fetchAppointments, 15000);
+    return () => clearInterval(interval);
   }, []);
+
+  const resetSchedulerForm = () => {
+    setIsScheduling(false);
+    setEditingApptId(null);
+    setNewAppt({ clientId: '', startTime: '', durationInMinutes: 60, notes: '', meetingLink: '' });
+  };
+
+  const handleStartReschedule = (appt) => {
+    const duration = Math.max(
+      15,
+      Math.round((new Date(appt.endTime).getTime() - new Date(appt.startTime).getTime()) / 60000) || 60
+    );
+    setEditingApptId(appt._id);
+    setNewAppt({
+      clientId: appt.clientId?._id || appt.clientId || '',
+      startTime: formatDateTimeLocal(appt.startTime),
+      durationInMinutes: duration,
+      notes: appt.notes || '',
+      meetingLink: appt.meetingLink || ''
+    });
+    setIsScheduling(true);
+    setCalendarStatus({ type: '', text: '' });
+  };
 
   const handleSchedule = async (e) => {
     e.preventDefault();
     const token = localStorage.getItem('token');
+    setCalendarStatus({ type: '', text: '' });
+
+    const isRescheduling = Boolean(editingApptId);
+    const url = isRescheduling
+      ? `${API_BASE_URL}/api/admin/appointments/${editingApptId}`
+      : `${API_BASE_URL}/api/admin/appointments`;
+    const method = isRescheduling ? 'PUT' : 'POST';
+
     try {
-      const res = await fetch(`${API_BASE_URL}/api/admin/appointments`, {
-        method: 'POST',
-        headers: { 
+      const res = await fetch(url, {
+        method,
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` 
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(newAppt)
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        fetchAppointments();
-        setIsScheduling(false);
-        setNewAppt({ clientId: '', startTime: '', durationInMinutes: 60, notes: '' });
+        await fetchAppointments();
+        resetSchedulerForm();
+        setCalendarStatus({
+          type: 'success',
+          text: isRescheduling
+            ? 'Consultation rescheduled and synced to the member calendar! ✧'
+            : 'Consultation scheduled and synced to the member calendar! ✧'
+        });
+        setTimeout(() => setCalendarStatus({ type: '', text: '' }), 4000);
+      } else {
+        setCalendarStatus({ type: 'error', text: data.error || 'Failed to save consultation.' });
       }
     } catch (err) {
       console.error('Error scheduling:', err);
+      setCalendarStatus({ type: 'error', text: 'Network error while saving consultation.' });
     }
   };
 
@@ -374,7 +436,10 @@ const AdminCalendar = ({ users }) => {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) fetchAppointments();
+      if (res.ok) {
+        if (editingApptId === id) resetSchedulerForm();
+        fetchAppointments();
+      }
     } catch (err) {
       console.error('Error canceling:', err);
     }
@@ -388,6 +453,14 @@ const AdminCalendar = ({ users }) => {
     setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
   };
 
+  const handleDayClick = (dayNumber) => {
+    if (isScheduling && editingApptId) return;
+    const pad = (n) => String(n).padStart(2, '0');
+    const defaultSlot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T10:00`;
+    setNewAppt(prev => ({ ...prev, startTime: defaultSlot }));
+    setIsScheduling(true);
+  };
+
   return (
     <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -398,19 +471,91 @@ const AdminCalendar = ({ users }) => {
         <button onClick={() => changeMonth(1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>▶</button>
       </div>
 
-      <button onClick={() => setIsScheduling(!isScheduling)} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', marginBottom: '20px' }}>
-        {isScheduling ? 'Close Scheduler' : '+ Schedule Consultation ✧'}
-      </button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+        <button
+          onClick={() => {
+            if (isScheduling) resetSchedulerForm();
+            else setIsScheduling(true);
+          }}
+          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', fontSize: '1.05rem' }}
+        >
+          {isScheduling ? 'Close Scheduler' : '+ Schedule Consultation ✧'}
+        </button>
+
+        <button
+          onClick={fetchAppointments}
+          style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
+        >
+          ↻ Sync Calendar
+        </button>
+      </div>
+
+      {calendarStatus.text && (
+        <div style={{
+          marginBottom: '20px',
+          padding: '12px 16px',
+          borderRadius: '10px',
+          fontFamily: 'sans-serif',
+          fontSize: '0.95rem',
+          backgroundColor: calendarStatus.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+          color: calendarStatus.type === 'success' ? '#2E7D32' : '#C62828',
+          border: `1px solid ${calendarStatus.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+        }}>
+          {calendarStatus.text}
+        </div>
+      )}
 
       {isScheduling && (
-        <form onSubmit={handleSchedule} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '10px', border: '1px solid #E8C5C8', marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
-          <select required value={newAppt.clientId} onChange={e => setNewAppt({...newAppt, clientId: e.target.value})} style={{ flex: 1, minWidth: '200px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }}>
+        <form onSubmit={handleSchedule} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '12px', border: '1px solid #E8C5C8', marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center' }}>
+          <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#B38B8F' }}>
+              {editingApptId ? 'Reschedule / Update Consultation ✧' : 'Schedule New Consultation ✧'}
+            </strong>
+            {editingApptId && (
+              <button type="button" onClick={resetSchedulerForm} style={{ background: 'none', border: 'none', color: '#8A797A', textDecoration: 'underline', cursor: 'pointer' }}>
+                Cancel Edit
+              </button>
+            )}
+          </div>
+
+          <select
+            required
+            disabled={Boolean(editingApptId)}
+            value={newAppt.clientId}
+            onChange={e => setNewAppt({ ...newAppt, clientId: e.target.value })}
+            style={{ flex: '1 1 220px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', backgroundColor: editingApptId ? '#F9F4F5' : '#FFFFFF' }}
+          >
             <option value="">Select Member...</option>
             {users.map(u => <option key={u._id} value={u._id}>{u.name} ({u.email})</option>)}
           </select>
-          <input required type="datetime-local" value={newAppt.startTime} onChange={e => setNewAppt({...newAppt, startTime: e.target.value})} style={{ flex: 1, minWidth: '200px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }} />
-          <input type="text" placeholder="Notes (e.g. Quarterly check-in)" value={newAppt.notes} onChange={e => setNewAppt({...newAppt, notes: e.target.value})} style={{ flex: 2, minWidth: '300px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif" }} />
-          <button type="submit" style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif" }}>Save</button>
+
+          <input
+            required
+            type="datetime-local"
+            value={newAppt.startTime}
+            onChange={e => setNewAppt({ ...newAppt, startTime: e.target.value })}
+            style={{ flex: '1 1 220px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem' }}
+          />
+
+          <input
+            type="text"
+            placeholder="Notes (e.g. Quarterly check-in)"
+            value={newAppt.notes}
+            onChange={e => setNewAppt({ ...newAppt, notes: e.target.value })}
+            style={{ flex: '2 1 260px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem' }}
+          />
+
+          <input
+            type="text"
+            placeholder="Video Link (optional — auto-generated if blank)"
+            value={newAppt.meetingLink}
+            onChange={e => setNewAppt({ ...newAppt, meetingLink: e.target.value })}
+            style={{ flex: '2 1 260px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem' }}
+          />
+
+          <button type="submit" style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '10px 24px', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+            {editingApptId ? 'Save Changes ✧' : 'Save ✧'}
+          </button>
         </form>
       )}
 
@@ -418,31 +563,412 @@ const AdminCalendar = ({ users }) => {
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
           <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
         ))}
-        
+
         {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} />)}
-        
+
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const dayNumber = i + 1;
           const dayAppointments = appointments.filter(appt => {
             const apptDate = new Date(appt.startTime);
-            return apptDate.getDate() === dayNumber && 
-                   apptDate.getMonth() === currentDate.getMonth() && 
+            return apptDate.getDate() === dayNumber &&
+                   apptDate.getMonth() === currentDate.getMonth() &&
                    apptDate.getFullYear() === currentDate.getFullYear();
           });
 
           return (
-            <div key={dayNumber} style={{ border: '1px solid #E8C5C8', borderRadius: '8px', padding: '10px', minHeight: '100px', backgroundColor: '#FFFFFF', textAlign: 'left', position: 'relative' }}>
+            <div
+              key={dayNumber}
+              onClick={() => handleDayClick(dayNumber)}
+              style={{ border: '1px solid #E8C5C8', borderRadius: '8px', padding: '10px', minHeight: '110px', backgroundColor: '#FFFFFF', textAlign: 'left', position: 'relative', cursor: 'pointer' }}
+            >
               <span style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', color: '#5C5454' }}>{dayNumber}</span>
-              
-              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+
+              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
                 {dayAppointments.map(appt => (
-                  <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '5px', borderRadius: '5px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
-                    <strong style={{ color: '#5C5454' }}>{new Date(appt.startTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</strong>
-                    <p style={{ margin: '2px 0 0 0', color: '#8A797A', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                      {appt.clientId?.name || 'Unknown'}
+                  <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '6px', borderRadius: '6px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
+                    <strong style={{ color: '#5C5454', display: 'block', paddingRight: '34px' }}>
+                      {new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </strong>
+                    <p style={{ margin: '2px 0 0 0', color: '#5C5454', fontWeight: '600', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                      {appt.clientId?.name || 'Member'}
                     </p>
-                    <button onClick={() => handleDelete(appt._id)} style={{ position: 'absolute', top: '2px', right: '2px', background: 'none', border: 'none', color: '#E8C5C8', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
+                    {appt.notes && (
+                      <p style={{ margin: '2px 0 0 0', color: '#8A797A', fontSize: '0.75rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        {appt.notes}
+                      </p>
+                    )}
+                    {appt.rescheduledBy === 'client' && (
+                      <span style={{ display: 'inline-block', marginTop: '3px', backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 5px', fontSize: '0.7rem', fontWeight: 'bold' }}>
+                        ✧ Rescheduled by Member
+                      </span>
+                    )}
+                    {appt.rescheduledBy === 'admin' && (
+                      <span style={{ display: 'inline-block', marginTop: '3px', backgroundColor: '#FFFFFF', color: '#8A797A', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 5px', fontSize: '0.7rem' }}>
+                        ✧ Rescheduled by You
+                      </span>
+                    )}
+                    <div style={{ position: 'absolute', top: '3px', right: '3px', display: 'flex', gap: '4px' }}>
+                      <button
+                        title="Reschedule consultation"
+                        onClick={() => handleStartReschedule(appt)}
+                        style={{ background: 'none', border: 'none', color: '#B38B8F', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px' }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        title="Cancel consultation"
+                        onClick={() => handleDelete(appt._id)}
+                        style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px' }}
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+const MemberCalendar = ({ onJoinVideoRoom }) => {
+  const [appointments, setAppointments] = useState([]);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [editingApptId, setEditingApptId] = useState(null);
+  const [statusBanner, setStatusBanner] = useState({ type: '', text: '' });
+
+  const [formState, setFormState] = useState({
+    startTime: '',
+    durationInMinutes: 60,
+    notes: ''
+  });
+
+  const fetchMemberAppointments = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/appointments`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAppointments(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error('Error fetching member calendar:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchMemberAppointments();
+    const interval = setInterval(fetchMemberAppointments, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const resetForm = () => {
+    setIsScheduling(false);
+    setEditingApptId(null);
+    setFormState({ startTime: '', durationInMinutes: 60, notes: '' });
+  };
+
+  const handleStartReschedule = (appt) => {
+    setEditingApptId(appt._id);
+    setFormState({
+      startTime: formatDateTimeLocal(appt.startTime),
+      durationInMinutes: 60,
+      notes: appt.notes || ''
+    });
+    setIsScheduling(true);
+    setStatusBanner({ type: '', text: '' });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    setStatusBanner({ type: '', text: '' });
+
+    const isRescheduling = Boolean(editingApptId);
+    const url = isRescheduling
+      ? `${API_BASE_URL}/api/users/me/appointments/${editingApptId}`
+      : `${API_BASE_URL}/api/users/me/appointments`;
+    const method = isRescheduling ? 'PUT' : 'POST';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(formState)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        await fetchMemberAppointments();
+        resetForm();
+        setStatusBanner({
+          type: 'success',
+          text: isRescheduling
+            ? "Your consultation has been rescheduled on Susan's calendar! ✧"
+            : "Your 1-on-1 consultation is confirmed on Susan's calendar! ✧"
+        });
+        setTimeout(() => setStatusBanner({ type: '', text: '' }), 4500);
+      } else {
+        setStatusBanner({ type: 'error', text: data.error || 'Could not schedule consultation.' });
+      }
+    } catch (err) {
+      console.error('Error booking consultation:', err);
+      setStatusBanner({ type: 'error', text: 'Network error while communicating with calendar.' });
+    }
+  };
+
+  const handleCancel = async (id) => {
+    if (!window.confirm('Would you like to cancel this scheduled consultation?')) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/appointments/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        if (editingApptId === id) resetForm();
+        fetchMemberAppointments();
+      }
+    } catch (err) {
+      console.error('Error cancelling consultation:', err);
+    }
+  };
+
+  const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  const changeMonth = (offset) => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
+  };
+
+  const handleDayClick = (dayNumber) => {
+    if (isScheduling && editingApptId) return;
+    const pad = (n) => String(n).padStart(2, '0');
+    const slot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T10:00`;
+    setFormState(prev => ({ ...prev, startTime: slot }));
+    setIsScheduling(true);
+  };
+
+  const myUpcomingAppointments = appointments.filter(a => a.isMine);
+
+  return (
+    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
+          {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
+        </h2>
+        <button onClick={() => changeMonth(1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>▶</button>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+        <button
+          onClick={() => {
+            if (isScheduling) resetForm();
+            else setIsScheduling(true);
+          }}
+          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 22px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', fontSize: '1.1rem' }}
+        >
+          {isScheduling ? 'Close Scheduler' : '+ Book Consultation with Susan ✧'}
+        </button>
+
+        <button
+          onClick={fetchMemberAppointments}
+          style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
+        >
+          ↻ Refresh Schedule
+        </button>
+      </div>
+
+      {statusBanner.text && (
+        <div style={{
+          marginBottom: '20px',
+          padding: '12px 16px',
+          borderRadius: '10px',
+          fontFamily: 'sans-serif',
+          fontSize: '0.95rem',
+          backgroundColor: statusBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+          color: statusBanner.type === 'success' ? '#2E7D32' : '#C62828',
+          border: `1px solid ${statusBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+        }}>
+          {statusBanner.text}
+        </div>
+      )}
+
+      {isScheduling && (
+        <form onSubmit={handleSubmit} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '12px', border: '1px solid #E8C5C8', marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center' }}>
+          <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#B38B8F' }}>
+              {editingApptId ? 'Reschedule Your Consultation ✧' : 'Reserve Your 1-on-1 Session with Susan ✧'}
+            </strong>
+            {editingApptId && (
+              <button type="button" onClick={resetForm} style={{ background: 'none', border: 'none', color: '#8A797A', textDecoration: 'underline', cursor: 'pointer' }}>
+                Cancel Edit
+              </button>
+            )}
+          </div>
+
+          <input
+            required
+            type="datetime-local"
+            value={formState.startTime}
+            onChange={e => setFormState({ ...formState, startTime: e.target.value })}
+            style={{ flex: '1 1 220px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem' }}
+          />
+
+          <input
+            type="text"
+            placeholder=" Topics or questions for Susan (e.g. Evening hydration ritual)"
+            value={formState.notes}
+            onChange={e => setFormState({ ...formState, notes: e.target.value })}
+            style={{ flex: '2 1 300px', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem' }}
+          />
+
+          <button type="submit" style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '10px 24px', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+            {editingApptId ? 'Confirm New Time ✧' : 'Confirm Booking ✧'}
+          </button>
+        </form>
+      )}
+
+      {myUpcomingAppointments.length > 0 && (
+        <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '18px', marginBottom: '25px', textAlign: 'left' }}>
+          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', color: '#5C5454', margin: '0 0 12px 0' }}>
+            Your Scheduled Consultations with Susan
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {myUpcomingAppointments.map(appt => (
+              <div key={appt._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', padding: '12px 15px', borderRadius: '10px', backgroundColor: '#FFF9F9', border: appt.rescheduledBy === 'admin' ? '1.5px solid #B38B8F' : '1px solid #E8C5C8' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
+                      {new Date(appt.startTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                    </strong>
+                    {appt.rescheduledBy === 'admin' && (
+                      <span style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '12px', padding: '2px 10px', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                        ✧ Rescheduled by Susan
+                      </span>
+                    )}
+                    {appt.rescheduledBy === 'client' && (
+                      <span style={{ backgroundColor: '#FFF0F2', color: '#8A797A', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '2px 10px', fontSize: '0.8rem' }}>
+                        ✧ Rescheduled by You
+                      </span>
+                    )}
+                  </div>
+                  {appt.rescheduledBy === 'admin' && appt.previousStartTime && (
+                    <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontStyle: 'italic' }}>
+                      Previously scheduled for {new Date(appt.previousStartTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                    </p>
+                  )}
+                  {appt.notes && (
+                    <p style={{ margin: '4px 0 0 0', fontSize: '0.9rem', color: '#736A6A' }}>
+                      Notes: "{appt.notes}"
+                    </p>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {appt.meetingLink && onJoinVideoRoom && (
+                    <button
+                      type="button"
+                      onClick={() => onJoinVideoRoom(appt.meetingLink)}
+                      style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '8px 14px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: 'pointer' }}
+                    >
+                      🎥 Join Video Room
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleStartReschedule(appt)}
+                    style={{ backgroundColor: '#FFFFFF', color: '#5C5454', border: '1px solid #B38B8F', padding: '8px 14px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: 'pointer' }}
+                  >
+                    ✎ Reschedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCancel(appt._id)}
+                    style={{ backgroundColor: 'transparent', color: '#A89999', border: '1px solid #E8C5C8', padding: '8px 12px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', textAlign: 'center' }}>
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+          <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
+        ))}
+
+        {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} />)}
+
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const dayNumber = i + 1;
+          const dayAppointments = appointments.filter(appt => {
+            const apptDate = new Date(appt.startTime);
+            return apptDate.getDate() === dayNumber &&
+                   apptDate.getMonth() === currentDate.getMonth() &&
+                   apptDate.getFullYear() === currentDate.getFullYear();
+          });
+
+          return (
+            <div
+              key={dayNumber}
+              onClick={() => handleDayClick(dayNumber)}
+              style={{ border: '1px solid #E8C5C8', borderRadius: '8px', padding: '10px', minHeight: '110px', backgroundColor: '#FFFFFF', textAlign: 'left', position: 'relative', cursor: 'pointer' }}
+            >
+              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', color: '#5C5454' }}>{dayNumber}</span>
+
+              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
+                {dayAppointments.map(appt => (
+                  appt.isMine ? (
+                    <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '6px', borderRadius: '6px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
+                      <strong style={{ color: '#5C5454', display: 'block', paddingRight: '32px' }}>
+                        {new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </strong>
+                      <p style={{ margin: '2px 0 0 0', color: '#5C5454', fontWeight: '600' }}>
+                        Your Session
+                      </p>
+                      {appt.rescheduledBy === 'admin' && (
+                        <span style={{ display: 'inline-block', marginTop: '3px', backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '6px', padding: '1px 5px', fontSize: '0.7rem', fontWeight: 'bold' }}>
+                          ✧ Rescheduled by Susan
+                        </span>
+                      )}
+                      <div style={{ position: 'absolute', top: '3px', right: '3px', display: 'flex', gap: '4px' }}>
+                        <button
+                          title="Reschedule"
+                          onClick={() => handleStartReschedule(appt)}
+                          style={{ background: 'none', border: 'none', color: '#B38B8F', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px' }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          title="Cancel"
+                          onClick={() => handleCancel(appt._id)}
+                          style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={appt._id} style={{ backgroundColor: '#F7F2F2', padding: '5px', borderRadius: '5px', fontSize: '0.75rem', borderLeft: '3px solid #D8C8C9', color: '#A89999' }}>
+                      <strong>{new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+                      <p style={{ margin: '2px 0 0 0' }}>Susan Reserved</p>
+                    </div>
+                  )
                 ))}
               </div>
             </div>
@@ -663,7 +1189,7 @@ const AdminVideoPortal = () => {
   );
 };
 
-const AdminAiAssistant = () => {
+const AdminAiAssistant = ({ onProductDeleted }) => {
   const [messages, setMessages] = useState([{ role: 'model', text: 'Hello Susan ✧ How may I assist you with your boutique today?' }]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -679,15 +1205,20 @@ const AdminAiAssistant = () => {
 
   const handleSend = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    const trimmedInput = input.trim();
+    if (!trimmedInput || isTyping) return;
 
-    const userMessage = { role: 'user', text: input };
+    const userMessage = { role: 'user', text: trimmedInput };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
     setIsTyping(true);
 
-    const history = newMessages.slice(1, -1);
+    // Exclude the initial greeting and any prior error bubbles from multi-turn history
+    const history = messages
+      .slice(1)
+      .filter(msg => !msg.isError && msg.text && !String(msg.text).startsWith('⚠️'))
+      .map(({ role, text }) => ({ role, text }));
 
     try {
       const token = localStorage.getItem('token');
@@ -697,18 +1228,30 @@ const AdminAiAssistant = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ message: input, history })
+        body: JSON.stringify({ message: trimmedInput, history })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setMessages(prev => [...prev, { role: 'model', text: data.response }]);
+        setMessages(prev => [
+          ...prev,
+          { role: 'model', text: data.response || "I'm here, Susan ✧ How may I help?" }
+        ]);
+        if (data.deletedProductId && onProductDeleted) {
+          onProductDeleted(data.deletedProductId);
+        }
       } else {
-        setMessages(prev => [...prev, { role: 'model', text: '⚠️ AI Connection failed: ' + (data.error || 'Unknown error') }]);
+        setMessages(prev => [
+          ...prev,
+          { role: 'model', text: '⚠️ AI Connection failed: ' + (data.error || 'Unknown error'), isError: true }
+        ]);
       }
     } catch (err) {
       console.error(err);
-      setMessages(prev => [...prev, { role: 'model', text: '⚠️ Network error communicating with Gemini.' }]);
+      setMessages(prev => [
+        ...prev,
+        { role: 'model', text: '⚠️ Network error communicating with Gemini.', isError: true }
+      ]);
     }
     setIsTyping(false);
   };
@@ -769,7 +1312,7 @@ const AdminAiAssistant = () => {
   );
 };
 
-const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
+const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted }) => {
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('adminActiveTab') || 'Inbox';
   });
@@ -811,6 +1354,9 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
 
   const [selectedBlueprint, setSelectedBlueprint] = useState(null);
   const [pushingId, setPushingId] = useState(null);
+  const [curationNote, setCurationNote] = useState('');
+  const [curationFeedback, setCurationFeedback] = useState({ type: '', text: '' });
+  const [pushedProductMap, setPushedProductMap] = useState({});
 
   const handleSendEmail = async (e) => {
     e.preventDefault();
@@ -846,10 +1392,11 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
 
   const handlePushRecommendation = async (productId, userId) => {
     if (!userId) {
-      alert('Cannot push recommendation: User account not found for this blueprint.');
+      setCurationFeedback({ type: 'error', text: 'Cannot push recommendation: User account not found for this blueprint.' });
       return;
     }
     setPushingId(productId);
+    setCurationFeedback({ type: '', text: '' });
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/recommend`, {
@@ -858,17 +1405,31 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ productId })
+        body: JSON.stringify({
+          productId,
+          message: curationNote.trim() || undefined
+        })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        alert('Product successfully pushed to user dashboard! ✧');
+        setPushedProductMap(prev => {
+          const existing = prev[userId] || [];
+          return {
+            ...prev,
+            [userId]: existing.includes(productId) ? existing : [...existing, productId]
+          };
+        });
+        setCurationFeedback({
+          type: 'success',
+          text: 'Product pushed to member Inbox & Blueprint curation! ✧'
+        });
+        setTimeout(() => setCurationFeedback({ type: '', text: '' }), 4000);
       } else {
-        alert(data.error || 'Failed to push recommendation.');
+        setCurationFeedback({ type: 'error', text: data.error || 'Failed to push recommendation.' });
       }
     } catch (err) {
       console.error('Error pushing recommendation:', err);
-      alert('Network error while pushing recommendation.');
+      setCurationFeedback({ type: 'error', text: 'Network error while pushing recommendation.' });
     }
     setPushingId(null);
   };
@@ -1107,23 +1668,62 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
                     <BlueprintCard label="Regimen Focus" value={selectedBlueprint.routineFocus}/>
                   </div>
 
-                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#B38B8F', marginBottom: '15px', borderTop: '1px solid #E8C5C8', paddingTop: '20px' }}>Curate Products</h3>
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#B38B8F', marginBottom: '12px', borderTop: '1px solid #E8C5C8', paddingTop: '20px' }}>Curate Products for {selectedBlueprint.userId?.name || 'Member'}</h3>
+                  <div style={{ marginBottom: '20px', backgroundColor: '#FFF9F9', padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
+                    <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', marginBottom: '8px' }}>
+                      Personal Note from Susan (optional — sent with each recommended product):
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Susan has hand-selected this specifically for your custom beauty profile ✧"
+                      value={curationNote}
+                      onChange={(e) => setCurationNote(e.target.value)}
+                      style={{ width: '100%', padding: '12px 15px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.95rem', backgroundColor: '#FFFFFF', outline: 'none', boxSizing: 'border-box' }}
+                    />
+                    {curationFeedback.text && (
+                      <div style={{
+                        marginTop: '12px',
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        fontSize: '0.95rem',
+                        fontFamily: 'sans-serif',
+                        backgroundColor: curationFeedback.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+                        color: curationFeedback.type === 'success' ? '#2E7D32' : '#C62828',
+                        border: `1px solid ${curationFeedback.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+                      }}>
+                        {curationFeedback.text}
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
                     {backendProducts.map(product => {
                       const title = product.title || 'Untitled Product';
                       const price = product.variants?.[0]?.retailPrice || product.variants?.[0]?.price || product.retailPrice || product.price || 0;
+                      const clientId = selectedBlueprint.userId?._id;
+                      const initialRecs = (selectedBlueprint.userId?.recommendedProducts || []).map(id =>
+                        typeof id === 'object' && id !== null ? id._id || id.toString() : String(id)
+                      );
+                      const sessionRecs = (clientId && pushedProductMap[clientId]) ? pushedProductMap[clientId] : [];
+                      const isAlreadyRecommended = initialRecs.includes(String(product._id)) || sessionRecs.includes(String(product._id));
+
                       return (
-                        <div key={product._id} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
+                        <div key={product._id} style={{ backgroundColor: '#FFF9F9', border: isAlreadyRecommended ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', borderRadius: '12px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
                           <div style={{ marginBottom: '15px' }}>
+                            {isAlreadyRecommended && (
+                              <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 'bold', marginBottom: '6px' }}>
+                                ✓ In Member's Curation
+                              </span>
+                            )}
                             <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0' }}>{title}</h4>
                             <p style={{ fontFamily: 'sans-serif', fontSize: '1rem', color: '#B38B8F', fontWeight: 'bold', margin: 0 }}>${parseFloat(price).toFixed(2)}</p>
                           </div>
                           <button
                             onClick={() => handlePushRecommendation(product._id, selectedBlueprint.userId?._id)}
                             disabled={pushingId === product._id}
-                            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: pushingId === product._id ? 'not-allowed' : 'pointer', width: '100%', transition: 'all 0.3s ease' }}
+                            style={{ backgroundColor: isAlreadyRecommended ? '#FFFFFF' : '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: pushingId === product._id ? 'not-allowed' : 'pointer', width: '100%', transition: 'all 0.3s ease' }}
                           >
-                            {pushingId === product._id ? 'Pushing...' : 'Push to Member ✧'}
+                            {pushingId === product._id ? 'Pushing...' : isAlreadyRecommended ? 'Push Again with Note ✧' : 'Push to Member ✧'}
                           </button>
                         </div>
                       );
@@ -1148,7 +1748,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts }) => {
           <AdminVideoPortal />
         )}
         {activeTab === 'AI' && (
-          <AdminAiAssistant />
+          <AdminAiAssistant onProductDeleted={onProductDeleted} />
         )}
       </div>
     </div>
@@ -1208,6 +1808,8 @@ function App() {
   const [userRecommendations, setUserRecommendations] = useState([]);
   const [userOrders, setUserOrders] = useState([]);
   const [inboxItems, setInboxItems] = useState([]);
+  const [memberVideoLink, setMemberVideoLink] = useState('');
+  const [activeMemberVideoUrl, setActiveMemberVideoUrl] = useState('');
 
   const [forgotEmail, setForgotEmail] = useState('');
   const [resetPassword, setResetPassword] = useState('');
@@ -1279,7 +1881,7 @@ function App() {
     if (step === 5) {
       fetchDashboardData();
     }
-  }, [step]);
+  }, [step, activeMemberTab]);
 
   // Restore Admin Data if a user refreshes mid-session
   useEffect(() => {
@@ -1592,7 +2194,7 @@ function App() {
 
       <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} />
 
-      {(step === 1 || step === 5 || step === 6) && (
+      {step === 1 && (
         <div style={{ position: 'fixed', top: '30px', right: '30px', zIndex: 1000 }}>
           <button
             onClick={() => setIsCartOpen(!isCartOpen)}
@@ -1953,6 +2555,44 @@ function App() {
                     </div>
                   )}
 
+                  <div style={{ textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.85)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
+                      <div>
+                        <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 5px 0' }}>
+                          Susan's Bespoke Curation For You ✧
+                        </h3>
+                        <p style={{ margin: 0, color: '#8A797A', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', fontSize: '1.15rem' }}>
+                          Hand-selected essentials tailored to your beauty blueprint and personal consultations.
+                        </p>
+                      </div>
+                      {inboxItems.length > 0 && (
+                        <button
+                          onClick={() => setActiveMemberTab('Inbox')}
+                          style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: 'pointer' }}
+                        >
+                          💌 View Susan's Notes ({inboxItems.length})
+                        </button>
+                      )}
+                    </div>
+
+                    {userRecommendations.length > 0 ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                        {userRecommendations.map((product) => (
+                          <ProductCard
+                            key={product._id || product.title}
+                            product={product}
+                            onAddToCart={handleAddToCart}
+                            onCardClick={setSelectedProduct}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', margin: 0 }}>
+                        Complete your consultation quiz above or check back soon as Susan curates your personalized ritual essentials.
+                      </p>
+                    )}
+                  </div>
+
                   {userOrders.length > 0 && (
                     <div style={{ textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)' }}>
                       <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 20px 0' }}>Order History</h3>
@@ -2030,38 +2670,71 @@ function App() {
               {activeMemberTab === 'Consultations' && (
                 <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '30px' }}>
                   <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Book Your Session</h2>
-                    <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '30px' }}>
-                      Select a time on Susan's calendar below to reserve your 1-on-1 virtual consultation.
+                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>
+                      Book & Manage Your Consultation with Susan
+                    </h2>
+                    <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '25px' }}>
+                      Select any date on Susan's live calendar below to book a 1-on-1 consultation, or view updates if Susan reschedules your session.
                     </p>
-                    
-                    <div style={{ height: '650px', width: '100%', borderRadius: '15px', overflow: 'hidden', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9' }}>
-                      <iframe
-                        src="https://calendly.com/YOUR_CALENDLY_LINK?hide_event_type_details=1&hide_gdpr_banner=1&background_color=FFF9F9&text_color=5C5454&primary_color=B38B8F"
-                        width="100%"
-                        height="100%"
-                        frameBorder="0"
-                        title="Schedule Consultation"
-                        style={{ display: 'block' }}
-                      ></iframe>
-                    </div>
+
+                    <MemberCalendar
+                      onJoinVideoRoom={(link) => {
+                        const normalized = normalizeRoomUrl(link);
+                        setMemberVideoLink(normalized);
+                        setActiveMemberVideoUrl(normalized);
+                      }}
+                    />
                   </div>
 
                   <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Join Active Room</h2>
+                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Join Active Video Sanctuary</h2>
                     <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '20px' }}>
-                      If it's time for your scheduled appointment, paste your private room link here to join directly from your sanctuary.
+                      Click "🎥 Join Video Room" on your scheduled consultation above, or paste a private room link from Susan below to enter your live 1-on-1 studio.
                     </p>
                     <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
-                      <input 
-                        type="text" 
-                        placeholder="Paste meeting link (e.g., meet.jit.si/...)" 
-                        style={{ flex: 1, minWidth: '250px', padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', outline: 'none', fontFamily: 'sans-serif', fontSize: '1rem', backgroundColor: '#FFF9F9' }} 
+                      <input
+                        type="text"
+                        value={memberVideoLink}
+                        onChange={(e) => setMemberVideoLink(e.target.value)}
+                        placeholder="Paste meeting link (e.g., https://meet.jit.si/SusansBoutique_Consultation_...)"
+                        style={{ flex: 1, minWidth: '250px', padding: '15px', borderRadius: '12px', border: '1px solid #E8C5C8', outline: 'none', fontFamily: 'sans-serif', fontSize: '1rem', backgroundColor: '#FFF9F9' }}
                       />
-                      <button style={{ backgroundColor: '#B38B8F', border: 'none', padding: '15px 30px', borderRadius: '12px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', transition: 'background-color 0.3s ease' }}>
-                        Enter Room ✧
-                      </button>
+                      {!activeMemberVideoUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const url = normalizeRoomUrl(memberVideoLink);
+                            if (!url) {
+                              alert('Please paste a valid consultation room link or click "Join Video Room" on a scheduled appointment.');
+                              return;
+                            }
+                            setActiveMemberVideoUrl(url);
+                          }}
+                          style={{ backgroundColor: '#B38B8F', border: 'none', padding: '15px 30px', borderRadius: '12px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', transition: 'background-color 0.3s ease' }}
+                        >
+                          Enter Room ✧
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setActiveMemberVideoUrl('')}
+                          style={{ backgroundColor: '#5C5454', border: 'none', padding: '15px 30px', borderRadius: '12px', color: '#FFFFFF', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}
+                        >
+                          Leave Room
+                        </button>
+                      )}
                     </div>
+
+                    {activeMemberVideoUrl && (
+                      <div style={{ marginTop: '25px', width: '100%', height: '600px', borderRadius: '15px', overflow: 'hidden', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.2)' }}>
+                        <iframe
+                          allow="camera; microphone; fullscreen; display-capture; autoplay"
+                          src={activeMemberVideoUrl}
+                          style={{ width: '100%', height: '100%', border: '0' }}
+                          title="Member Consultation Room"
+                        ></iframe>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -2071,7 +2744,12 @@ function App() {
         )}
 
         {step === 6 && (
-          <AdminDashboard adminData={adminData} onLogout={handleLogOut} backendProducts={backendProducts} />
+          <AdminDashboard
+            adminData={adminData}
+            onLogout={handleLogOut}
+            backendProducts={backendProducts}
+            onProductDeleted={(deletedId) => setBackendProducts(prev => prev.filter(p => p._id !== deletedId))}
+          />
         )}
 
         {/* ---------------- CONSULTATION QUIZ STEPS 11-21 ---------------- */}

@@ -49,36 +49,54 @@ const authLimiter = rateLimit({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---------------- EMAIL TRANSPORTER ---------------- //
+// ---------------- EMAIL TRANSPORTER (IONOS SMTP) ---------------- //
+const cleanEnv = (val) => (val || '').toString().trim().replace(/^["']|["']$/g, '');
+
+const smtpHost = cleanEnv(process.env.SMTP_HOST) || 'smtp.ionos.com';
+const smtpPort = Number(cleanEnv(process.env.SMTP_PORT)) || 465;
+const smtpSecure = process.env.SMTP_SECURE
+  ? cleanEnv(process.env.SMTP_SECURE).toLowerCase() === 'true'
+  : smtpPort === 465;
+const smtpUser = cleanEnv(process.env.SMTP_USER);
+const smtpPass = cleanEnv(process.env.SMTP_PASS);
+const smtpFrom = cleanEnv(process.env.SMTP_FROM) || `"Susan's Beauty Consulting" <${smtpUser || 'susan.coke@susansbeautyconsulting.com'}>`;
+
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.ionos.com',
-  port: process.env.SMTP_PORT || 465,
-  secure: process.env.SMTP_PORT == 465, 
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure, // true for 465 (Implicit SSL/TLS), false for 587 (STARTTLS)
+  requireTLS: !smtpSecure, // Enforce STARTTLS upgrade when using port 587
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
+    user: smtpUser,
+    pass: smtpPass,
   },
-  pool: true, 
-  maxConnections: 5, 
-  maxMessages: 100, 
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 100,
   tls: {
-    ciphers: 'SSLv3'
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: true
   }
 });
 
 const sendEmail = async (to, subject, htmlContent, textContent) => {
+  if (!smtpUser || !smtpPass) {
+    const configErr = new Error('SMTP_USER or SMTP_PASS is missing in environment variables.');
+    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
+    throw configErr;
+  }
   try {
     await transporter.sendMail({
-      from: process.env.SMTP_FROM || '"Susan\'s Beauty Consulting" <susan.coke@susansbeautyconsulting.com>',
+      from: smtpFrom,
       to,
       subject,
-      text: textContent, 
+      text: textContent,
       html: htmlContent,
     });
     console.log(`✉️ Email dispatched to ${to}: "${subject}"`);
   } catch (err) {
     console.error(`⚠️ Failed to send email to ${to}:`, err.message);
-    throw err; 
+    throw err;
   }
 };
 
@@ -113,18 +131,25 @@ const Service = mongoose.model('Service', serviceSchema);
 
 const appointmentSchema = new mongoose.Schema({
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, index: true },
   serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: false, index: true },
   startTime: { type: Date, required: true, index: true },
   endTime: { type: Date, required: true },
   status: { 
     type: String, 
     enum: ['pending', 'confirmed', 'completed', 'cancelled'], 
-    default: 'pending',
+    default: 'confirmed',
     index: true
   },
   depositPaid: { type: Boolean, default: false },
-  notes: { type: String }
+  notes: { type: String, default: '' },
+  meetingLink: { type: String, default: '' },
+  rescheduledBy: {
+    type: String,
+    enum: ['admin', 'client', null],
+    default: null
+  },
+  previousStartTime: { type: Date, default: null }
 }, { timestamps: true });
 appointmentSchema.index({ staffId: 1, startTime: 1, endTime: 1 });
 const Appointment = mongoose.model('Appointment', appointmentSchema);
@@ -368,8 +393,8 @@ const syncCJCatalog = async () => {
 
 app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const users = await User.find({}, 'name email membershipTier createdAt').sort({ createdAt: -1 });
-    const blueprints = await Consultation.find({}).populate('userId', 'name email').sort({ createdAt: -1 });
+    const users = await User.find({}, 'name email membershipTier recommendedProducts createdAt').sort({ createdAt: -1 });
+    const blueprints = await Consultation.find({}).populate('userId', 'name email recommendedProducts').sort({ createdAt: -1 });
     const orders = await Order.find({}).sort({ createdAt: -1 });
     
     res.status(200).json({ 
@@ -414,7 +439,7 @@ app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, r
     
   } catch (error) {
     console.error('Email Dispatch Error:', error);
-    res.status(500).json({ error: 'Failed to send email. Please check SMTP configuration.' });
+    res.status(500).json({ error: error.message || 'Failed to send email. Please check SMTP configuration.' });
   }
 });
 
@@ -429,38 +454,87 @@ app.get('/api/admin/email-logs', authenticateToken, requireAdmin, async (req, re
 
 app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { productId } = req.body;
-    const user = await User.findById(req.params.userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
+    const { productId, message } = req.body;
+    if (!productId) {
+      return res.status(400).json({ error: 'productId is required to recommend a product.' });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found in boutique inventory.' });
+    }
+
+    const customMessage = (message && String(message).trim())
+      ? String(message).trim()
+      : "Susan has hand-selected this specifically for your custom beauty profile ✧";
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.userId,
+      { $addToSet: { recommendedProducts: product._id } },
+      { returnDocument: 'after' }
+    ).populate('recommendedProducts');
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     const newInboxItem = new InboxItem({
-      userId: req.params.userId,
-      productId: productId,
-      message: "Susan has hand-selected this specifically for your custom beauty profile ✧"
+      userId: updatedUser._id,
+      productId: product._id,
+      message: customMessage
     });
     await newInboxItem.save();
+    const populatedInboxItem = await InboxItem.findById(newInboxItem._id).populate('productId');
 
-    if (!user.recommendedProducts.includes(productId)) {
-      user.recommendedProducts.push(productId);
-      await user.save();
-    }
-    
-    res.status(200).json({ message: 'Product successfully pushed to user inbox.' });
+    res.status(200).json({
+      message: 'Product successfully pushed to user inbox and blueprint.',
+      inboxItem: populatedInboxItem,
+      recommendedProducts: updatedUser.recommendedProducts
+    });
   } catch (error) {
+    console.error('Push recommendation error:', error);
     res.status(500).json({ error: 'Failed to push recommendation' });
   }
 });
 
 // ---------------- AI ASSISTANT ROUTE ---------------- //
+const getGeminiClient = () => {
+  let GoogleGenAI, Type;
+  try {
+    ({ GoogleGenAI, Type } = require('@google/genai'));
+  } catch (err) {
+    throw new Error("Missing '@google/genai' package on server. Run: npm install @google/genai");
+  }
+
+  const rawKey = (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+  if (!rawKey) {
+    throw new Error('GEMINI_API_KEY is missing or empty in server .env file.');
+  }
+
+  return { ai: new GoogleGenAI({ apiKey: rawKey }), Type };
+};
+
 app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { message, history } = req.body;
-    const { GoogleGenAI, Type } = require('@google/genai');
-    
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ error: 'Please enter a message for the AI Assistant.' });
+    }
 
-    const catalog = await Product.find({}).select('_id title price tags').lean();
-    const blueprints = await Consultation.find({}).populate('userId', 'name').lean();
+    const { ai, Type } = getGeminiClient();
+
+    const rawCatalog = await Product.find({}).select('_id title variants tags').limit(150).lean();
+    const catalog = rawCatalog.map(prod => ({
+      _id: prod._id,
+      title: prod.title,
+      price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
+      tags: prod.tags || []
+    }));
+    const blueprints = await Consultation.find({})
+      .populate('userId', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
 
     const systemInstruction = `You are Susan's elite AI Assistant for her boutique.
 Your job is to help Susan draft elegant emails to clients, evaluate skin profiles, and manage the boutique inventory.
@@ -468,17 +542,29 @@ Here is the current boutique inventory (use the _id field if you need to delete 
 Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
 Maintain a graceful, sophisticated, and helpful tone.`;
 
-    let promptInput = `[SYSTEM INSTRUCTIONS]\n${systemInstruction}\n\n`;
-    
-    if (history && Array.isArray(history) && history.length > 0) {
-      promptInput += "--- Conversation History ---\n";
-      history.forEach(msg => {
-        const role = msg.role === 'user' ? 'User' : 'Assistant';
-        promptInput += `${role}: ${msg.text}\n\n`;
-      });
-      promptInput += "--- Current Request ---\n";
+    // Build a clean, alternating multi-turn contents array that ignores error bubbles
+    const contents = [];
+    if (Array.isArray(history)) {
+      for (const msg of history) {
+        if (!msg || !msg.text || String(msg.text).startsWith('⚠️')) continue;
+        const role = msg.role === 'user' ? 'user' : 'model';
+        const text = String(msg.text).trim();
+        if (!text) continue;
+        if (contents.length === 0 && role === 'model') continue;
+        if (contents.length > 0 && contents[contents.length - 1].role === role) {
+          contents[contents.length - 1].parts[0].text += `\n\n${text}`;
+        } else {
+          contents.push({ role, parts: [{ text }] });
+        }
+      }
     }
-    promptInput += `User: ${message}\nAssistant:`;
+
+    const cleanMessage = String(message).trim();
+    if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+      contents[contents.length - 1].parts[0].text += `\n\n${cleanMessage}`;
+    } else {
+      contents.push({ role: 'user', parts: [{ text: cleanMessage }] });
+    }
 
     const deleteProductTool = {
       functionDeclarations: [{
@@ -498,11 +584,12 @@ Maintain a graceful, sophisticated, and helpful tone.`;
     };
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash', 
-      contents: promptInput,
+      model: 'gemini-2.5-flash',
+      contents,
       config: {
+        systemInstruction,
         tools: [deleteProductTool],
-        temperature: 0.1, 
+        temperature: 0.2,
       }
     });
 
@@ -510,29 +597,43 @@ Maintain a graceful, sophisticated, and helpful tone.`;
       const call = response.functionCalls[0];
       
       if (call.name === 'deleteProduct') {
-        const pid = call.args.productId;
-        await Product.findByIdAndDelete(pid);
+        const pid = call.args?.productId;
+        const deleted = pid ? await Product.findByIdAndDelete(pid) : null;
         console.log(`🤖 AI triggered deletion of product ID: ${pid}`);
         return res.status(200).json({ 
-          response: `✧ Done. I have permanently removed that product from the boutique's database, Susan.` 
+          response: deleted
+            ? `✧ Done. I have permanently removed "${deleted.title}" from the boutique's database, Susan.`
+            : `✧ I couldn't find a product with ID ${pid} in the database, Susan.`,
+          deletedProductId: deleted ? pid : null
         });
       }
     }
 
-    res.status(200).json({ response: response.text });
+    const replyText = (response && typeof response.text === 'string' && response.text.trim())
+      ? response.text.trim()
+      : "I'm here, Susan ✧ Could you rephrase that request for me?";
+
+    res.status(200).json({ response: replyText });
 
   } catch (error) {
     console.error("AI Chat Error:", error);
-    res.status(500).json({ error: 'Failed to communicate with AI Assistant.' });
+    res.status(500).json({ 
+      error: error?.message || 'Failed to communicate with AI Assistant.' 
+    });
   }
 });
 
-// ---------------- APPOINTMENT & CALENDAR ROUTES ---------------- //
+// ---------------- APPOINTMENT & CALENDAR ROUTES (TWO-WAY SYNC) ---------------- //
+
+const buildDefaultMeetingLink = () => {
+  const roomCode = crypto.randomBytes(4).toString('hex');
+  return `https://meet.jit.si/SusansBoutique_Consultation_${roomCode}`;
+};
 
 app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const appointments = await Appointment.find()
-      .populate('clientId', 'name email')
+      .populate('clientId', 'name email membershipTier')
       .populate('serviceId', 'name')
       .sort({ startTime: 1 });
     res.status(200).json(appointments);
@@ -543,33 +644,143 @@ app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, 
 
 app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { clientId, serviceId, startTime, durationInMinutes, notes } = req.body;
+    const { clientId, serviceId, startTime, durationInMinutes, notes, meetingLink } = req.body;
     if (!clientId || !startTime) {
       return res.status(400).json({ error: 'Client and start time are required.' });
     }
 
     const start = new Date(startTime);
-    const end = new Date(start.getTime() + (Number(durationInMinutes) || 60) * 60000);
+    if (isNaN(start.getTime())) {
+      return res.status(400).json({ error: 'Invalid start time format.' });
+    }
+    const duration = Number(durationInMinutes) || 60;
+    const end = new Date(start.getTime() + duration * 60000);
+
+    const conflict = await Appointment.findOne({
+      status: { $ne: 'cancelled' },
+      startTime: { $lt: end },
+      endTime: { $gt: start }
+    });
+    if (conflict) {
+      return res.status(409).json({ error: 'This time slot overlaps with another scheduled consultation.' });
+    }
 
     const newAppointment = new Appointment({
       clientId,
-      staffId: req.user._id, 
+      staffId: req.user._id,
       ...(serviceId ? { serviceId } : {}),
       startTime: start,
       endTime: end,
       status: 'confirmed',
-      notes
+      notes: notes ? String(notes).trim() : '',
+      meetingLink: (meetingLink && String(meetingLink).trim()) ? String(meetingLink).trim() : buildDefaultMeetingLink()
     });
 
     await newAppointment.save();
-    
+
     const populatedAppointment = await Appointment.findById(newAppointment._id)
-      .populate('clientId', 'name email')
+      .populate('clientId', 'name email membershipTier')
       .populate('serviceId', 'name');
-      
+
+    if (populatedAppointment?.clientId?.email) {
+      const formattedTime = start.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const html = `
+        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+          <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your 1-on-1 Consultation is Scheduled ✧</h2>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Dear ${populatedAppointment.clientId.name || 'Member'},</p>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Susan has scheduled a private consultation with you:</p>
+          <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+            <p style="margin: 5px 0;"><strong>Date & Time:</strong> ${formattedTime}</p>
+            ${populatedAppointment.notes ? `<p style="margin: 5px 0;"><strong>Notes:</strong> ${populatedAppointment.notes}</p>` : ''}
+            ${populatedAppointment.meetingLink ? `<p style="margin: 5px 0;"><strong>Video Sanctuary Link:</strong> <a href="${populatedAppointment.meetingLink}" style="color: #B38B8F;">${populatedAppointment.meetingLink}</a></p>` : ''}
+          </div>
+          <p style="font-size: 0.95rem; color: #8A797A;">You can view or manage this session anytime in the Consultations tab of your Member Sanctuary.</p>
+        </div>
+      `;
+      const text = `Your 1-on-1 Consultation with Susan is scheduled for ${formattedTime}. Video link: ${populatedAppointment.meetingLink || 'Available in your dashboard'}`;
+      sendEmail(populatedAppointment.clientId.email, "✧ New Consultation Scheduled with Susan", html, text).catch(() => {});
+    }
+
     res.status(201).json(populatedAppointment);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { startTime, durationInMinutes, notes, status, meetingLink } = req.body;
+    const appointment = await Appointment.findById(req.params.id);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Consultation not found.' });
+    }
+
+    let timeChanged = false;
+    if (startTime) {
+      const newStart = new Date(startTime);
+      if (isNaN(newStart.getTime())) {
+        return res.status(400).json({ error: 'Invalid start time format.' });
+      }
+      const existingDuration = Math.max(
+        15,
+        Math.round((new Date(appointment.endTime).getTime() - new Date(appointment.startTime).getTime()) / 60000) || 60
+      );
+      const duration = Number(durationInMinutes) || existingDuration;
+      const newEnd = new Date(newStart.getTime() + duration * 60000);
+
+      const conflict = await Appointment.findOne({
+        _id: { $ne: appointment._id },
+        status: { $ne: 'cancelled' },
+        startTime: { $lt: newEnd },
+        endTime: { $gt: newStart }
+      });
+      if (conflict) {
+        return res.status(409).json({ error: 'That new time overlaps with another consultation on the calendar.' });
+      }
+
+      if (newStart.getTime() !== new Date(appointment.startTime).getTime()) {
+        appointment.previousStartTime = appointment.startTime;
+        appointment.rescheduledBy = 'admin';
+        timeChanged = true;
+      }
+      appointment.startTime = newStart;
+      appointment.endTime = newEnd;
+    }
+
+    if (notes !== undefined) appointment.notes = String(notes).trim();
+    if (status) appointment.status = status;
+    if (meetingLink !== undefined) {
+      appointment.meetingLink = String(meetingLink).trim() || appointment.meetingLink || buildDefaultMeetingLink();
+    }
+
+    await appointment.save();
+
+    const populatedAppointment = await Appointment.findById(appointment._id)
+      .populate('clientId', 'name email membershipTier')
+      .populate('serviceId', 'name');
+
+    if (timeChanged && populatedAppointment?.clientId?.email) {
+      const formattedTime = new Date(populatedAppointment.startTime).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const html = `
+        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+          <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Consultation Rescheduled by Susan ✧</h2>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Dear ${populatedAppointment.clientId.name || 'Member'},</p>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Susan has updated the time for your upcoming 1-on-1 beauty consultation:</p>
+          <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+            <p style="margin: 5px 0;"><strong>New Date & Time:</strong> ${formattedTime}</p>
+            ${populatedAppointment.notes ? `<p style="margin: 5px 0;"><strong>Notes:</strong> ${populatedAppointment.notes}</p>` : ''}
+            ${populatedAppointment.meetingLink ? `<p style="margin: 5px 0;"><strong>Video Sanctuary Link:</strong> <a href="${populatedAppointment.meetingLink}" style="color: #B38B8F;">${populatedAppointment.meetingLink}</a></p>` : ''}
+          </div>
+          <p style="font-size: 0.95rem; color: #8A797A;">This change is now live on your Member Sanctuary calendar.</p>
+        </div>
+      `;
+      const text = `Susan has rescheduled your consultation to ${formattedTime}. Video link: ${populatedAppointment.meetingLink || 'Available in your dashboard'}`;
+      sendEmail(populatedAppointment.clientId.email, "✧ Your Consultation with Susan Has Been Rescheduled", html, text).catch(() => {});
+    }
+
+    res.status(200).json(populatedAppointment);
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to update consultation' });
   }
 });
 
@@ -579,6 +790,184 @@ app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async
     res.status(200).json({ message: 'Consultation removed successfully.' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete appointment' });
+  }
+});
+
+// Member-facing two-way calendar endpoints
+app.get('/api/users/me/appointments', authenticateToken, async (req, res) => {
+  try {
+    const allActive = await Appointment.find({ status: { $ne: 'cancelled' } })
+      .populate('clientId', 'name email')
+      .populate('serviceId', 'name')
+      .sort({ startTime: 1 })
+      .lean();
+
+    const myIdStr = req.user._id.toString();
+    const formatted = allActive.map(appt => {
+      const apptClientId = appt.clientId?._id ? appt.clientId._id.toString() : appt.clientId?.toString();
+      const isMine = apptClientId === myIdStr;
+      if (isMine) {
+        return {
+          ...appt,
+          isMine: true
+        };
+      }
+      // Return anonymized busy slot so the member calendar displays unavailable times
+      return {
+        _id: appt._id,
+        startTime: appt.startTime,
+        endTime: appt.endTime,
+        status: appt.status,
+        isMine: false
+      };
+    });
+
+    res.status(200).json(formatted);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch member appointments' });
+  }
+});
+
+app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
+  try {
+    const { startTime, durationInMinutes, notes, serviceId } = req.body;
+    if (!startTime) {
+      return res.status(400).json({ error: 'Please select a date and time for your consultation.' });
+    }
+
+    const start = new Date(startTime);
+    if (isNaN(start.getTime())) {
+      return res.status(400).json({ error: 'Invalid date and time selected.' });
+    }
+    const duration = Number(durationInMinutes) || 60;
+    const end = new Date(start.getTime() + duration * 60000);
+
+    const conflict = await Appointment.findOne({
+      status: { $ne: 'cancelled' },
+      startTime: { $lt: end },
+      endTime: { $gt: start }
+    });
+    if (conflict) {
+      return res.status(409).json({
+        error: "That time slot overlaps with an existing consultation on Susan's calendar. Please select another time."
+      });
+    }
+
+    const adminUser = await User.findOne({
+      $or: [
+        { role: 'admin' },
+        { membershipTier: 'admin' },
+        { email: /^susan\.coke@susansbeautyconsulting\.com$/i }
+      ]
+    }).select('_id email');
+
+    const newAppointment = new Appointment({
+      clientId: req.user._id,
+      staffId: adminUser ? adminUser._id : req.user._id,
+      ...(serviceId ? { serviceId } : {}),
+      startTime: start,
+      endTime: end,
+      status: 'confirmed',
+      notes: notes ? String(notes).trim() : '',
+      meetingLink: buildDefaultMeetingLink()
+    });
+
+    await newAppointment.save();
+
+    const populated = await Appointment.findById(newAppointment._id)
+      .populate('clientId', 'name email membershipTier')
+      .populate('serviceId', 'name')
+      .lean();
+
+    if (adminUser?.email) {
+      const formattedTime = start.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const html = `
+        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+          <h2 style="color: #B38B8F; font-style: italic; text-align: center;">New Member Consultation Booked ✧</h2>
+          <p style="font-size: 1.05rem; line-height: 1.6;"><strong>${req.user.name}</strong> (${req.user.email}) just booked a 1-on-1 consultation on your calendar:</p>
+          <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+            <p style="margin: 5px 0;"><strong>Date & Time:</strong> ${formattedTime}</p>
+            ${newAppointment.notes ? `<p style="margin: 5px 0;"><strong>Client Notes:</strong> ${newAppointment.notes}</p>` : ''}
+            <p style="margin: 5px 0;"><strong>Video Room:</strong> <a href="${newAppointment.meetingLink}" style="color: #B38B8F;">${newAppointment.meetingLink}</a></p>
+          </div>
+        </div>
+      `;
+      const text = `${req.user.name} (${req.user.email}) booked a consultation for ${formattedTime}.`;
+      sendEmail(adminUser.email, `✧ New Consultation Booked: ${req.user.name}`, html, text).catch(() => {});
+    }
+
+    res.status(201).json({ ...populated, isMine: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to schedule consultation' });
+  }
+});
+
+app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) => {
+  try {
+    const { startTime, durationInMinutes, notes } = req.body;
+    const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user._id });
+    if (!appointment) {
+      return res.status(404).json({ error: 'Consultation not found.' });
+    }
+
+    if (startTime) {
+      const newStart = new Date(startTime);
+      if (isNaN(newStart.getTime())) {
+        return res.status(400).json({ error: 'Invalid date and time format.' });
+      }
+      const existingDuration = Math.max(
+        15,
+        Math.round((new Date(appointment.endTime).getTime() - new Date(appointment.startTime).getTime()) / 60000) || 60
+      );
+      const duration = Number(durationInMinutes) || existingDuration;
+      const newEnd = new Date(newStart.getTime() + duration * 60000);
+
+      const conflict = await Appointment.findOne({
+        _id: { $ne: appointment._id },
+        status: { $ne: 'cancelled' },
+        startTime: { $lt: newEnd },
+        endTime: { $gt: newStart }
+      });
+      if (conflict) {
+        return res.status(409).json({
+          error: "That new time overlaps with another consultation on Susan's calendar. Please choose another time."
+        });
+      }
+
+      if (newStart.getTime() !== new Date(appointment.startTime).getTime()) {
+        appointment.previousStartTime = appointment.startTime;
+        appointment.rescheduledBy = 'client';
+      }
+      appointment.startTime = newStart;
+      appointment.endTime = newEnd;
+    }
+
+    if (notes !== undefined) {
+      appointment.notes = String(notes).trim();
+    }
+
+    await appointment.save();
+
+    const populated = await Appointment.findById(appointment._id)
+      .populate('clientId', 'name email membershipTier')
+      .populate('serviceId', 'name')
+      .lean();
+
+    res.status(200).json({ ...populated, isMine: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to reschedule consultation' });
+  }
+});
+
+app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res) => {
+  try {
+    const deleted = await Appointment.findOneAndDelete({ _id: req.params.id, clientId: req.user._id });
+    if (!deleted) {
+      return res.status(404).json({ error: 'Consultation not found.' });
+    }
+    res.status(200).json({ message: 'Consultation cancelled successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to cancel consultation' });
   }
 });
 
@@ -833,10 +1222,18 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
 
     // ---------------- GOOGLE GEN AI CURATION ---------------- //
     try {
-      const { GoogleGenAI, Type } = require('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const { ai, Type } = getGeminiClient();
       
-      const catalog = await Product.find({}).select('_id title tags description').lean();
+      const rawCatalog = await Product.find({}).select('_id title variants tags description').limit(150).lean();
+      const catalog = rawCatalog.map(prod => ({
+        _id: prod._id,
+        title: prod.title,
+        price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
+        tags: prod.tags || [],
+        description: typeof prod.description === 'string'
+          ? prod.description.replace(/<[^>]*>?/gm, '').slice(0, 160)
+          : ''
+      }));
       
       const systemInstruction = `You are Susan, a master beauty consultant. Curate a bespoke 3 to 5 piece skincare and makeup ritual for this client based on their profile. Select the most optimal products from the provided catalog.`;
       
@@ -1160,11 +1557,18 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     
-    try {
-      await transporter.verify();
-      console.log('✧ SMTP Server verified and ready to dispatch emails');
-    } catch (smtpError) {
-      console.error('⚠️ SMTP Verification failed on startup. Emails will not send:', smtpError.message);
+    if (!smtpUser || !smtpPass) {
+      console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
+    } else {
+      try {
+        await transporter.verify();
+        console.log(`✧ IONOS SMTP Server (${smtpHost}:${smtpPort}, secure=${smtpSecure}) verified for ${smtpUser}`);
+      } catch (smtpError) {
+        console.error(
+          `⚠️ SMTP Verification failed on startup (${smtpHost}:${smtpPort}, secure=${smtpSecure}):`,
+          smtpError.message
+        );
+      }
     }
 
     app.listen(PORT, () => {
