@@ -316,12 +316,79 @@ const ElegantInput = ({ type, placeholder, name, value, onChange }) => (
   />
 );
 
-const formatDateTimeLocal = (dateVal) => {
+const CENTRAL_TIMEZONE = 'America/Chicago';
+
+const getCentralParts = (dateVal) => {
+  if (!dateVal) return null;
+  const d = dateVal instanceof Date ? dateVal : new Date(dateVal);
+  if (isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CENTRAL_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(d);
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour: Number(map.hour),
+    minute: Number(map.minute),
+    yearStr: map.year,
+    monthStr: map.month,
+    dayStr: map.day,
+    hourStr: map.hour,
+    minuteStr: map.minute
+  };
+};
+
+const getYMDInCT = (dateVal) => {
+  const parts = getCentralParts(dateVal);
+  if (!parts) return { year: -1, monthIndex: -1, day: -1 };
+  return {
+    year: parts.year,
+    monthIndex: parts.month - 1,
+    day: parts.day
+  };
+};
+
+const formatDateTimeLocalCT = (dateVal) => {
   if (!dateVal) return '';
-  const d = new Date(dateVal);
+  if (typeof dateVal === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateVal.trim())) {
+    return dateVal.trim();
+  }
+  const parts = getCentralParts(dateVal);
+  if (!parts) return '';
+  return `${parts.yearStr}-${parts.monthStr}-${parts.dayStr}T${parts.hourStr}:${parts.minuteStr}`;
+};
+
+const formatTimeCT = (dateVal) => {
+  if (!dateVal) return '';
+  const d = dateVal instanceof Date ? dateVal : new Date(dateVal);
   if (isNaN(d.getTime())) return '';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.toLocaleTimeString('en-US', {
+    timeZone: CENTRAL_TIMEZONE,
+    hour: 'numeric',
+    minute: '2-digit'
+  })} CT`;
+};
+
+const formatDateTimeCT = (dateVal) => {
+  if (!dateVal) return '';
+  const d = dateVal instanceof Date ? dateVal : new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  return `${d.toLocaleString('en-US', {
+    timeZone: CENTRAL_TIMEZONE,
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  })} CT`;
 };
 
 const normalizeRoomUrl = (rawLink) => {
@@ -379,7 +446,7 @@ const AdminCalendar = ({ users = [] }) => {
     setEditingApptId(appt._id);
     setNewAppt({
       clientId: appt.clientId?._id || appt.clientId || '',
-      startTime: formatDateTimeLocal(appt.startTime),
+      startTime: formatDateTimeLocalCT(appt.startTime),
       durationInMinutes: duration,
       notes: appt.notes || '',
       meetingLink: appt.meetingLink || ''
@@ -456,13 +523,13 @@ const AdminCalendar = ({ users = [] }) => {
   const handleDayClick = (dayNumber) => {
     if (isScheduling && editingApptId) return;
     const pad = (n) => String(n).padStart(2, '0');
-    const defaultSlot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T10:00`;
+    const defaultSlot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T09:00`;
     setNewAppt(prev => ({ ...prev, startTime: defaultSlot }));
     setIsScheduling(true);
   };
 
   return (
-    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
@@ -482,12 +549,17 @@ const AdminCalendar = ({ users = [] }) => {
           {isScheduling ? 'Close Scheduler' : '+ Schedule Consultation ✧'}
         </button>
 
-        <button
-          onClick={fetchAppointments}
-          style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
-        >
-          ↻ Sync Calendar
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.85rem', color: '#8A797A', backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', padding: '6px 12px', borderRadius: '15px', fontFamily: 'sans-serif' }}>
+            🕒 US Central Time (Kansas — CT)
+          </span>
+          <button
+            onClick={fetchAppointments}
+            style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
+          >
+            ↻ Sync Calendar
+          </button>
+        </div>
       </div>
 
       {calendarStatus.text && (
@@ -569,10 +641,10 @@ const AdminCalendar = ({ users = [] }) => {
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const dayNumber = i + 1;
           const dayAppointments = appointments.filter(appt => {
-            const apptDate = new Date(appt.startTime);
-            return apptDate.getDate() === dayNumber &&
-                   apptDate.getMonth() === currentDate.getMonth() &&
-                   apptDate.getFullYear() === currentDate.getFullYear();
+            const ct = getYMDInCT(appt.startTime);
+            return ct.day === dayNumber &&
+                   ct.monthIndex === currentDate.getMonth() &&
+                   ct.year === currentDate.getFullYear();
           });
 
           return (
@@ -587,7 +659,7 @@ const AdminCalendar = ({ users = [] }) => {
                 {dayAppointments.map(appt => (
                   <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '6px', borderRadius: '6px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
                     <strong style={{ color: '#5C5454', display: 'block', paddingRight: '34px' }}>
-                      {new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {formatTimeCT(appt.startTime)}
                     </strong>
                     <p style={{ margin: '2px 0 0 0', color: '#5C5454', fontWeight: '600', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                       {appt.clientId?.name || 'Member'}
@@ -678,7 +750,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
   const handleStartReschedule = (appt) => {
     setEditingApptId(appt._id);
     setFormState({
-      startTime: formatDateTimeLocal(appt.startTime),
+      startTime: formatDateTimeLocalCT(appt.startTime),
       durationInMinutes: 60,
       notes: appt.notes || ''
     });
@@ -754,7 +826,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
   const handleDayClick = (dayNumber) => {
     if (isScheduling && editingApptId) return;
     const pad = (n) => String(n).padStart(2, '0');
-    const slot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T10:00`;
+    const slot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T09:00`;
     setFormState(prev => ({ ...prev, startTime: slot }));
     setIsScheduling(true);
   };
@@ -762,7 +834,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
   const myUpcomingAppointments = appointments.filter(a => a.isMine);
 
   return (
-    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
@@ -782,12 +854,17 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
           {isScheduling ? 'Close Scheduler' : '+ Book Consultation with Susan ✧'}
         </button>
 
-        <button
-          onClick={fetchMemberAppointments}
-          style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
-        >
-          ↻ Refresh Schedule
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.85rem', color: '#8A797A', backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', padding: '6px 12px', borderRadius: '15px', fontFamily: 'sans-serif' }}>
+            🕒 US Central Time (Kansas — CT)
+          </span>
+          <button
+            onClick={fetchMemberAppointments}
+            style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', padding: '8px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', cursor: 'pointer', fontSize: '1rem' }}
+          >
+            ↻ Refresh Schedule
+          </button>
+        </div>
       </div>
 
       {statusBanner.text && (
@@ -851,7 +928,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
-                      {new Date(appt.startTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                      {formatDateTimeCT(appt.startTime)}
                     </strong>
                     {appt.rescheduledBy === 'admin' && (
                       <span style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '12px', padding: '2px 10px', fontSize: '0.8rem', fontWeight: 'bold' }}>
@@ -866,7 +943,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
                   </div>
                   {appt.rescheduledBy === 'admin' && appt.previousStartTime && (
                     <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontStyle: 'italic' }}>
-                      Previously scheduled for {new Date(appt.previousStartTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                      Previously scheduled for {formatDateTimeCT(appt.previousStartTime)}
                     </p>
                   )}
                   {appt.notes && (
@@ -917,10 +994,10 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const dayNumber = i + 1;
           const dayAppointments = appointments.filter(appt => {
-            const apptDate = new Date(appt.startTime);
-            return apptDate.getDate() === dayNumber &&
-                   apptDate.getMonth() === currentDate.getMonth() &&
-                   apptDate.getFullYear() === currentDate.getFullYear();
+            const ct = getYMDInCT(appt.startTime);
+            return ct.day === dayNumber &&
+                   ct.monthIndex === currentDate.getMonth() &&
+                   ct.year === currentDate.getFullYear();
           });
 
           return (
@@ -936,7 +1013,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
                   appt.isMine ? (
                     <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '6px', borderRadius: '6px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
                       <strong style={{ color: '#5C5454', display: 'block', paddingRight: '32px' }}>
-                        {new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {formatTimeCT(appt.startTime)}
                       </strong>
                       <p style={{ margin: '2px 0 0 0', color: '#5C5454', fontWeight: '600' }}>
                         Your Session
@@ -965,7 +1042,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
                     </div>
                   ) : (
                     <div key={appt._id} style={{ backgroundColor: '#F7F2F2', padding: '5px', borderRadius: '5px', fontSize: '0.75rem', borderLeft: '3px solid #D8C8C9', color: '#A89999' }}>
-                      <strong>{new Date(appt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+                      <strong>{formatTimeCT(appt.startTime)}</strong>
                       <p style={{ margin: '2px 0 0 0' }}>Susan Reserved</p>
                     </div>
                   )
@@ -1139,7 +1216,7 @@ const AdminVideoPortal = () => {
   };
 
   return (
-    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px', animation: 'fadeIn 0.5s ease' }}>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px', animation: 'fadeIn 0.5s ease' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>Consultation Studio</h2>
         <button onClick={generateRoom} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', fontSize: '1.1rem' }}>
@@ -1257,7 +1334,7 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
   };
 
   return (
-    <div style={{ backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '600px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '600px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
       <div style={{ padding: '20px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', alignItems: 'center', gap: '15px' }}>
         <div style={{ fontSize: '2rem' }}>✨</div>
         <div>
@@ -1435,10 +1512,10 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
   };
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
       
       {/* Sidebar Navigation */}
-      <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
+      <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
         <div style={{ textAlign: 'center', marginBottom: '40px' }}>
           <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '3rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
           <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '5px 0 0 0', fontStyle: 'italic' }}>Susan's Beauty Consulting</p>
@@ -1850,6 +1927,49 @@ function App() {
     fetchBackendData();
   }, []);
 
+  const syncMemberBlueprintStatus = async (tokenToUse) => {
+    const activeToken = tokenToUse || localStorage.getItem('token');
+    if (!activeToken) return false;
+    try {
+      const resBp = await fetch(`${API_BASE_URL}/api/users/me/blueprint`, {
+        headers: { 'Authorization': `Bearer ${activeToken}` }
+      });
+      if (resBp.ok) {
+        const bpData = await resBp.json();
+        if (bpData.hasCompletedQuiz && bpData.blueprint) {
+          setHasCompletedQuiz(true);
+          setQuizAnswers({
+            skinType: bpData.blueprint.skinType || '',
+            primaryGoal: bpData.blueprint.primaryGoal || '',
+            climate: bpData.blueprint.climate || '',
+            skinSensitivity: bpData.blueprint.skinSensitivity || '',
+            complexion: bpData.blueprint.complexion || '',
+            undertone: bpData.blueprint.undertone || '',
+            eyeColor: bpData.blueprint.eyeColor || '',
+            faceShape: bpData.blueprint.faceShape || '',
+            makeupVibe: bpData.blueprint.makeupVibe || '',
+            routineFocus: bpData.blueprint.routineFocus || ''
+          });
+          return true;
+        } else {
+          setHasCompletedQuiz(false);
+          return false;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to sync member blueprint status:', err);
+    }
+    return false;
+  };
+
+  // Prevent members who have already completed their one-time Blueprint Quiz from accessing quiz steps 11-20
+  useEffect(() => {
+    if (hasCompletedQuiz && step >= 11 && step <= 20) {
+      setStep(5);
+      setActiveMemberTab('Blueprint');
+    }
+  }, [hasCompletedQuiz, step]);
+
   // Restore Dashboard state if a user refreshes mid-session
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -1857,6 +1977,8 @@ function App() {
 
     const fetchDashboardData = async () => {
       try {
+        await syncMemberBlueprintStatus(token);
+
         const resRecs = await fetch(`${API_BASE_URL}/api/users/me/recommendations`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -1878,9 +2000,10 @@ function App() {
       }
     };
 
-    if (step === 5) {
+    if (step === 5 || (step >= 11 && step <= 20)) {
       fetchDashboardData();
     }
+    // eslint-disable-next-line
   }, [step, activeMemberTab]);
 
   // Restore Admin Data if a user refreshes mid-session
@@ -1990,15 +2113,36 @@ function App() {
   };
 
   const submitQuiz = async (finalData) => {
+    if (hasCompletedQuiz) {
+      setStep(5);
+      return;
+    }
     setStep(21); 
     setIsLoading(true);
     try {
       const token = localStorage.getItem('token');
-      await fetch(`${API_BASE_URL}/api/consultations`, {
+      const res = await fetch(`${API_BASE_URL}/api/consultations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(finalData), 
       });
+      if (res.status === 403) {
+        const lockedData = await res.json().catch(() => ({}));
+        if (lockedData.blueprint) {
+          setQuizAnswers({
+            skinType: lockedData.blueprint.skinType || '',
+            primaryGoal: lockedData.blueprint.primaryGoal || '',
+            climate: lockedData.blueprint.climate || '',
+            skinSensitivity: lockedData.blueprint.skinSensitivity || '',
+            complexion: lockedData.blueprint.complexion || '',
+            undertone: lockedData.blueprint.undertone || '',
+            eyeColor: lockedData.blueprint.eyeColor || '',
+            faceShape: lockedData.blueprint.faceShape || '',
+            makeupVibe: lockedData.blueprint.makeupVibe || '',
+            routineFocus: lockedData.blueprint.routineFocus || ''
+          });
+        }
+      }
     } catch (error) {
       console.error('Failed to save consultation to backend:', error);
     }
@@ -2029,6 +2173,7 @@ function App() {
       }
 
       localStorage.setItem('token', regData.token);
+      setHasCompletedQuiz(false);
       
       setUserDetails(prev => ({ 
         ...prev, 
@@ -2108,6 +2253,7 @@ function App() {
           setStep(6);
           fetchAdminData(data.token);
         } else {
+          await syncMemberBlueprintStatus(data.token);
           setStep(5);
         }
       } else {
@@ -2469,10 +2615,10 @@ function App() {
         )}
 
         {step === 5 && (
-          <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#FFF9F9', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
+          <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
             
             {/* Sidebar Navigation */}
-            <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: '#FFFFFF', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
+            <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
               <div style={{ textAlign: 'center', marginBottom: '40px' }}>
                 <img src={logo} alt="Susan's Logo" style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '10px' }} />
                 <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
@@ -2537,21 +2683,34 @@ function App() {
                   {!hasCompletedQuiz ? (
                     <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '40px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
                       <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 15px 0' }}>Unlock Your Bespoke Routine</h3>
-                      <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '30px' }}>As a member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products.</p>
-                      <EmpowermentButton text="Start the Consultation" onClick={() => setStep(11)} />
+                      <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '12px' }}>As a member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products.</p>
+                      <p style={{ fontSize: '1rem', color: '#B38B8F', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', marginBottom: '30px' }}>
+                        🔒 Note: Your Beauty Blueprint is a one-time personal curation and will be permanently locked to your membership profile upon completion.
+                      </p>
+                      <EmpowermentButton text="Start the Consultation" onClick={() => { if (!hasCompletedQuiz) setStep(11); }} />
                     </div>
                   ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left', marginBottom: '45px' }}>
-                      <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
-                      <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
-                      <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
-                      <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
-                      <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
-                      <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
-                      <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
-                      <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
-                      <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
-                      <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
+                    <div style={{ marginBottom: '45px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '15px', padding: '12px 18px', backgroundColor: 'rgba(255, 255, 255, 0.85)', border: '1px solid #E8C5C8', borderRadius: '12px' }}>
+                        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', fontWeight: 'bold' }}>
+                          🔒 Permanent Beauty Blueprint — Locked to Your Personal Profile
+                        </span>
+                        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', color: '#8A797A', fontStyle: 'italic' }}>
+                          One-time personal curation completed ✧
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left' }}>
+                        <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
+                        <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
+                        <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
+                        <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
+                        <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
+                        <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
+                        <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
+                        <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
+                        <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
+                        <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
+                      </div>
                     </div>
                   )}
 

@@ -498,6 +498,8 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
 });
 
 // ---------------- AI ASSISTANT ROUTE ---------------- //
+const GEMINI_MODEL = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.8-flash';
+
 const getGeminiClient = () => {
   let GoogleGenAI, Type;
   try {
@@ -506,12 +508,12 @@ const getGeminiClient = () => {
     throw new Error("Missing '@google/genai' package on server. Run: npm install @google/genai");
   }
 
-  const rawKey = (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+  const rawKey = cleanEnv(process.env.GEMINI_API_KEY);
   if (!rawKey) {
     throw new Error('GEMINI_API_KEY is missing or empty in server .env file.');
   }
 
-  return { ai: new GoogleGenAI({ apiKey: rawKey }), Type };
+  return { ai: new GoogleGenAI({ apiKey: rawKey }), Type, model: GEMINI_MODEL };
 };
 
 app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res) => {
@@ -584,7 +586,7 @@ Maintain a graceful, sophisticated, and helpful tone.`;
     };
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: GEMINI_MODEL,
       contents,
       config: {
         systemInstruction,
@@ -623,7 +625,76 @@ Maintain a graceful, sophisticated, and helpful tone.`;
   }
 });
 
-// ---------------- APPOINTMENT & CALENDAR ROUTES (TWO-WAY SYNC) ---------------- //
+// ---------------- APPOINTMENT & CALENDAR ROUTES (TWO-WAY SYNC — US CENTRAL TIME) ---------------- //
+
+const CENTRAL_TIMEZONE = 'America/Chicago';
+
+// Parses a datetime-local string ("YYYY-MM-DDTHH:mm") explicitly in US Central Time (Kansas - America/Chicago)
+// so a 9:00 AM appointment is never misinterpreted as 09:00 UTC (4:00 AM Central).
+const parseCentralDateTime = (rawInput) => {
+  if (!rawInput) return new Date(NaN);
+  if (rawInput instanceof Date) return rawInput;
+
+  const str = String(rawInput).trim();
+  // If an explicit timezone offset or Z is already present, Date parses the exact instant directly
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
+    return new Date(str);
+  }
+
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) {
+    return new Date(str);
+  }
+
+  const [, yStr, mStr, dStr, hStr, minStr, sStr] = match;
+  const year = Number(yStr);
+  const month = Number(mStr);
+  const day = Number(dStr);
+  const hour = Number(hStr);
+  const minute = Number(minStr);
+  const second = Number(sStr || 0);
+
+  const desiredWallClockUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+
+  const getCentralWallClockAsUtcMs = (instantMs) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: CENTRAL_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(new Date(instantMs));
+    const map = {};
+    for (const p of parts) {
+      if (p.type !== 'literal') map[p.type] = Number(p.value);
+    }
+    return Date.UTC(map.year, map.month - 1, map.day, map.hour, map.minute, map.second);
+  };
+
+  // First pass adjustment from UTC to America/Chicago
+  let guessedInstantMs = desiredWallClockUtcMs;
+  const offset1 = getCentralWallClockAsUtcMs(guessedInstantMs) - desiredWallClockUtcMs;
+  guessedInstantMs -= offset1;
+
+  // Second pass refinement in case the timestamp crossed a DST boundary
+  const offset2 = getCentralWallClockAsUtcMs(guessedInstantMs) - desiredWallClockUtcMs;
+  guessedInstantMs -= offset2;
+
+  return new Date(guessedInstantMs);
+};
+
+const formatCentralDateTime = (dateVal) => {
+  const d = dateVal instanceof Date ? dateVal : new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  return `${d.toLocaleString('en-US', {
+    timeZone: CENTRAL_TIMEZONE,
+    dateStyle: 'full',
+    timeStyle: 'short'
+  })} CT`;
+};
 
 const buildDefaultMeetingLink = () => {
   const roomCode = crypto.randomBytes(4).toString('hex');
@@ -649,7 +720,7 @@ app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req,
       return res.status(400).json({ error: 'Client and start time are required.' });
     }
 
-    const start = new Date(startTime);
+    const start = parseCentralDateTime(startTime);
     if (isNaN(start.getTime())) {
       return res.status(400).json({ error: 'Invalid start time format.' });
     }
@@ -683,7 +754,7 @@ app.post('/api/admin/appointments', authenticateToken, requireAdmin, async (req,
       .populate('serviceId', 'name');
 
     if (populatedAppointment?.clientId?.email) {
-      const formattedTime = start.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const formattedTime = formatCentralDateTime(start);
       const html = `
         <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
           <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your 1-on-1 Consultation is Scheduled ✧</h2>
@@ -717,7 +788,7 @@ app.put('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (r
 
     let timeChanged = false;
     if (startTime) {
-      const newStart = new Date(startTime);
+      const newStart = parseCentralDateTime(startTime);
       if (isNaN(newStart.getTime())) {
         return res.status(400).json({ error: 'Invalid start time format.' });
       }
@@ -760,7 +831,7 @@ app.put('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (r
       .populate('serviceId', 'name');
 
     if (timeChanged && populatedAppointment?.clientId?.email) {
-      const formattedTime = new Date(populatedAppointment.startTime).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const formattedTime = formatCentralDateTime(populatedAppointment.startTime);
       const html = `
         <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
           <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Consultation Rescheduled by Susan ✧</h2>
@@ -835,7 +906,7 @@ app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Please select a date and time for your consultation.' });
     }
 
-    const start = new Date(startTime);
+    const start = parseCentralDateTime(startTime);
     if (isNaN(start.getTime())) {
       return res.status(400).json({ error: 'Invalid date and time selected.' });
     }
@@ -880,7 +951,7 @@ app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
       .lean();
 
     if (adminUser?.email) {
-      const formattedTime = start.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+      const formattedTime = formatCentralDateTime(start);
       const html = `
         <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
           <h2 style="color: #B38B8F; font-style: italic; text-align: center;">New Member Consultation Booked ✧</h2>
@@ -911,7 +982,7 @@ app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) =>
     }
 
     if (startTime) {
-      const newStart = new Date(startTime);
+      const newStart = parseCentralDateTime(startTime);
       if (isNaN(newStart.getTime())) {
         return res.status(400).json({ error: 'Invalid date and time format.' });
       }
@@ -1212,8 +1283,29 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
+  try {
+    const existingBlueprint = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 }).lean();
+    res.status(200).json({
+      hasCompletedQuiz: Boolean(existingBlueprint),
+      blueprint: existingBlueprint || null
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch member blueprint status' });
+  }
+});
+
 app.post('/api/consultations', authenticateToken, async (req, res) => {
   try {
+    // Enforce one-time-only Blueprint Quiz per member account
+    const existingConsultation = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 });
+    if (existingConsultation) {
+      return res.status(403).json({
+        error: 'Your Beauty Blueprint is a one-time personal curation and is permanently locked to your membership profile.',
+        blueprint: existingConsultation
+      });
+    }
+
     const newConsultation = new Consultation({
       ...req.body,
       userId: req.user._id
@@ -1251,7 +1343,7 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
       `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           systemInstruction: systemInstruction,
