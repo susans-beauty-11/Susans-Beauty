@@ -453,6 +453,7 @@ const AdminCalendar = ({ users = [] }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isScheduling, setIsScheduling] = useState(false);
   const [editingApptId, setEditingApptId] = useState(null);
+  const [remindingApptId, setRemindingApptId] = useState(null);
   const [calendarStatus, setCalendarStatus] = useState({ type: '', text: '' });
 
   const [newAppt, setNewAppt] = useState({
@@ -544,6 +545,39 @@ const AdminCalendar = ({ users = [] }) => {
     }
   };
 
+  const handleSendReminder = async (apptId) => {
+    const token = localStorage.getItem('token');
+    setRemindingApptId(apptId);
+    setCalendarStatus({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/appointments/${apptId}/remind`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        await fetchAppointments();
+        setCalendarStatus({
+          type: 'success',
+          text: data.message || '1-on-1 consultation reminder email dispatched to client and Susan! ✧'
+        });
+        setTimeout(() => setCalendarStatus({ type: '', text: '' }), 5000);
+      } else {
+        setCalendarStatus({
+          type: 'error',
+          text: data.error || 'Failed to send consultation reminder.'
+        });
+      }
+    } catch (err) {
+      console.error('Error sending reminder:', err);
+      setCalendarStatus({ type: 'error', text: 'Network error while dispatching consultation reminder.' });
+    }
+    setRemindingApptId(null);
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Cancel this consultation?')) return;
     const token = localStorage.getItem('token');
@@ -577,6 +611,10 @@ const AdminCalendar = ({ users = [] }) => {
     setIsScheduling(true);
   };
 
+  const upcomingConsultations = appointments
+    .filter(a => a.status !== 'cancelled' && new Date(a.endTime || a.startTime).getTime() >= Date.now() - 3600000)
+    .slice(0, 6);
+
   return (
     <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -600,7 +638,7 @@ const AdminCalendar = ({ users = [] }) => {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.85rem', color: '#8A797A', backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', padding: '6px 12px', borderRadius: '15px', fontFamily: 'sans-serif' }}>
-            🕒 US Central Time (Kansas — CT)
+            ⏰ Auto 24h Email Reminders Active • US Central Time (CT)
           </span>
           <button
             onClick={fetchAppointments}
@@ -623,6 +661,60 @@ const AdminCalendar = ({ users = [] }) => {
           border: `1px solid ${calendarStatus.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
         }}>
           {calendarStatus.text}
+        </div>
+      )}
+
+      {upcomingConsultations.length > 0 && (
+        <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '16px 20px', marginBottom: '22px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#5C5454' }}>
+              Upcoming 1-on-1 Consultations & Reminders ✧
+            </strong>
+            <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Reminders are emailed automatically 24h prior, or click 🔔 to dispatch immediately
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {upcomingConsultations.map(appt => (
+              <div key={`upcoming-${appt._id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '10px 14px', borderRadius: '10px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8' }}>
+                <div>
+                  <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454' }}>
+                    {appt.clientId?.name || 'Member'}
+                  </strong>
+                  <span style={{ color: '#8A797A', fontSize: '0.9rem', marginLeft: '8px', fontFamily: 'sans-serif' }}>
+                    • {formatDateTimeCT(appt.startTime)}
+                  </span>
+                  {appt.reminderSentAt && (
+                    <span style={{ marginLeft: '10px', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                      ✓ Reminder Sent
+                    </span>
+                  )}
+                  {appt.notes && (
+                    <p style={{ margin: '3px 0 0 0', fontSize: '0.84rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                      Notes: "{appt.notes}"
+                    </p>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={remindingApptId === appt._id}
+                    onClick={() => handleSendReminder(appt._id)}
+                    style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', padding: '6px 14px', borderRadius: '16px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.98rem', fontWeight: 'bold', cursor: remindingApptId === appt._id ? 'not-allowed' : 'pointer' }}
+                  >
+                    {remindingApptId === appt._id ? '⏳ Sending...' : '🔔 Send Reminder Email'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleStartReschedule(appt)}
+                    style={{ backgroundColor: '#FFFFFF', color: '#5C5454', border: '1px solid #E8C5C8', padding: '6px 12px', borderRadius: '16px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.95rem', cursor: 'pointer' }}
+                  >
+                    ✎ Edit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -707,7 +799,7 @@ const AdminCalendar = ({ users = [] }) => {
               <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
                 {dayAppointments.map(appt => (
                   <div key={appt._id} style={{ backgroundColor: '#FFF0F2', padding: '6px', borderRadius: '6px', fontSize: '0.8rem', borderLeft: '3px solid #B38B8F', position: 'relative' }}>
-                    <strong style={{ color: '#5C5454', display: 'block', paddingRight: '34px' }}>
+                    <strong style={{ color: '#5C5454', display: 'block', paddingRight: '46px' }}>
                       {formatTimeCT(appt.startTime)}
                     </strong>
                     <p style={{ margin: '2px 0 0 0', color: '#5C5454', fontWeight: '600', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
@@ -717,6 +809,11 @@ const AdminCalendar = ({ users = [] }) => {
                       <p style={{ margin: '2px 0 0 0', color: '#8A797A', fontSize: '0.75rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                         {appt.notes}
                       </p>
+                    )}
+                    {appt.reminderSentAt && (
+                      <span style={{ display: 'inline-block', marginTop: '3px', marginRight: '3px', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '6px', padding: '1px 5px', fontSize: '0.68rem', fontWeight: 'bold' }}>
+                        ✓ Reminded
+                      </span>
                     )}
                     {appt.rescheduledBy === 'client' && (
                       <span style={{ display: 'inline-block', marginTop: '3px', backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 5px', fontSize: '0.7rem', fontWeight: 'bold' }}>
@@ -728,7 +825,15 @@ const AdminCalendar = ({ users = [] }) => {
                         ✧ Rescheduled by You
                       </span>
                     )}
-                    <div style={{ position: 'absolute', top: '3px', right: '3px', display: 'flex', gap: '4px' }}>
+                    <div style={{ position: 'absolute', top: '3px', right: '3px', display: 'flex', gap: '3px' }}>
+                      <button
+                        title="Send consultation reminder email to client & Susan"
+                        disabled={remindingApptId === appt._id}
+                        onClick={() => handleSendReminder(appt._id)}
+                        style={{ background: 'none', border: 'none', color: '#B38B8F', cursor: 'pointer', fontSize: '0.78rem', padding: '0 2px' }}
+                      >
+                        🔔
+                      </button>
                       <button
                         title="Reschedule consultation"
                         onClick={() => handleStartReschedule(appt)}
@@ -1107,11 +1212,13 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
 
 const AdminInventory = ({ onCatalogUpdated }) => {
   const [inventory, setInventory] = useState([]);
-  const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState({ id: '', title: '', price: '', imageUrl: '', description: '', tags: '' });
+  const [createForm, setCreateForm] = useState({ title: '', price: '', imageUrl: '', description: '', tags: '' });
+  const [editModalData, setEditModalData] = useState(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [isSyncingCj, setIsSyncingCj] = useState(false);
   const [isCleaningCj, setIsCleaningCj] = useState(false);
   const [isTestingWebhooks, setIsTestingWebhooks] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
   const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
   const [webhookReport, setWebhookReport] = useState(null);
 
@@ -1208,31 +1315,92 @@ const AdminInventory = ({ onCatalogUpdated }) => {
     setIsTestingWebhooks(false);
   };
 
-  const handleSave = async (e) => {
+  const handleRunSmtpTest = async () => {
+    const token = localStorage.getItem('token');
+    setIsTestingSmtp(true);
+    setOpsBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/diagnostics/test-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpsBanner({
+          type: 'success',
+          text: data.message || 'IONOS SMTP test email delivered! ✧'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'IONOS SMTP test failed. Check SMTP_USER / SMTP_PASS in .env.'
+        });
+      }
+    } catch (err) {
+      console.error('SMTP test error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while testing IONOS SMTP.' });
+    }
+    setIsTestingSmtp(false);
+  };
+
+  const handleCreateProduct = async (e) => {
     e.preventDefault();
     const token = localStorage.getItem('token');
-    const url = formData.id ? `${API_BASE_URL}/api/admin/products/${formData.id}` : `${API_BASE_URL}/api/admin/products`;
-    const method = formData.id ? 'PUT' : 'POST';
-
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 
+      const res = await fetch(`${API_BASE_URL}/api/admin/products`, {
+        method: 'POST',
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` 
+          'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(createForm)
       });
       if (res.ok) {
         await fetchInventory();
-        resetForm();
+        setCreateForm({ title: '', price: '', imageUrl: '', description: '', tags: '' });
+        setOpsBanner({ type: 'success', text: `Added "${createForm.title}" to the boutique inventory! ✧` });
       } else {
-        const data = await res.json();
-        alert(data.error || 'Failed to save product.');
+        const data = await res.json().catch(() => ({}));
+        setOpsBanner({ type: 'error', text: data.error || 'Failed to add product.' });
       }
     } catch (err) {
-      console.error('Save error:', err);
+      console.error('Create product error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while adding product.' });
     }
+  };
+
+  const handleSaveModalEdit = async (e) => {
+    e.preventDefault();
+    if (!editModalData || !editModalData.id) return;
+    setIsSavingEdit(true);
+    const token = localStorage.getItem('token');
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/${editModalData.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(editModalData)
+      });
+      if (res.ok) {
+        const updatedTitle = editModalData.title;
+        setEditModalData(null);
+        await fetchInventory();
+        setOpsBanner({ type: 'success', text: `Updated "${updatedTitle}" in the boutique catalog! ✧` });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to update product.');
+      }
+    } catch (err) {
+      console.error('Update product error:', err);
+      alert('Network error while updating product.');
+    }
+    setIsSavingEdit(false);
   };
 
   const handleDelete = async (id) => {
@@ -1243,41 +1411,162 @@ const AdminInventory = ({ onCatalogUpdated }) => {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) await fetchInventory();
+      if (res.ok) {
+        if (editModalData && editModalData.id === id) setEditModalData(null);
+        await fetchInventory();
+      }
     } catch (err) {
       console.error('Delete error:', err);
     }
   };
 
   const handleEditClick = (prod) => {
-    setIsEditing(true);
-    const price = prod.variants?.[0]?.price || prod.price || 0;
-    setFormData({
+    const price = prod.variants?.[0]?.price ?? prod.price ?? 0;
+    const rawDesc = prod.description || prod.rawCjData?.description || '';
+    const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, '') : '';
+    setEditModalData({
       id: prod._id,
       title: prod.title || '',
       price: price,
-      imageUrl: prod.imageUrl || '',
-      description: typeof prod.description === 'string' ? prod.description.replace(/<[^>]*>?/gm, '') : '',
-      tags: prod.tags ? prod.tags.join(', ') : ''
+      imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
+      description: cleanDesc,
+      tags: Array.isArray(prod.tags) ? prod.tags.join(', ') : (prod.tags || '')
     });
-  };
-
-  const resetForm = () => {
-    setIsEditing(false);
-    setFormData({ id: '', title: '', price: '', imageUrl: '', description: '', tags: '' });
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
-      {/* CJ Health & Beauty Sync + Webhook Readiness Control Bar */}
+      {/* Pop-Up Edit Product Modal */}
+      {editModalData && (
+        <div
+          onClick={() => !isSavingEdit && setEditModalData(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+            backgroundColor: 'rgba(92, 84, 84, 0.55)', backdropFilter: 'blur(4px)',
+            zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px', boxSizing: 'border-box', animation: 'fadeIn 0.25s ease'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#FFF9F9', border: '1.5px solid #B38B8F', borderRadius: '22px',
+              padding: '30px', maxWidth: '520px', width: '100%', maxHeight: '90vh', overflowY: 'auto',
+              boxShadow: '0 15px 40px rgba(92, 84, 84, 0.35)', position: 'relative', boxSizing: 'border-box'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setEditModalData(null)}
+              style={{ position: 'absolute', top: '16px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#8A797A', cursor: 'pointer' }}
+            >
+              ✕
+            </button>
+
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 6px 0' }}>
+              Edit Boutique Product ✧
+            </h2>
+            <p style={{ margin: '0 0 18px 0', fontSize: '0.9rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Changes save directly to your live boutique catalog.
+            </p>
+
+            {editModalData.imageUrl && (
+              <div style={{ width: '100%', height: '160px', backgroundColor: '#FFF0F2', borderRadius: '12px', overflow: 'hidden', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #E8C5C8' }}>
+                <img
+                  src={editModalData.imageUrl.startsWith('//') ? `https:${editModalData.imageUrl}` : editModalData.imageUrl}
+                  alt={editModalData.title}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </div>
+            )}
+
+            <form onSubmit={handleSaveModalEdit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Product Title</label>
+                <input
+                  required
+                  type="text"
+                  value={editModalData.title}
+                  onChange={e => setEditModalData({ ...editModalData, title: e.target.value })}
+                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Retail Price ($)</label>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    value={editModalData.price}
+                    onChange={e => setEditModalData({ ...editModalData, price: e.target.value })}
+                    style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={editModalData.tags}
+                    onChange={e => setEditModalData({ ...editModalData, tags: e.target.value })}
+                    placeholder="skincare, serum, hydration"
+                    style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Image URL (HTTPS)</label>
+                <input
+                  type="url"
+                  value={editModalData.imageUrl}
+                  onChange={e => setEditModalData({ ...editModalData, imageUrl: e.target.value })}
+                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Description</label>
+                <textarea
+                  rows="4"
+                  value={editModalData.description}
+                  onChange={e => setEditModalData({ ...editModalData, description: e.target.value })}
+                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', resize: 'vertical', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditModalData(null)}
+                  style={{ flex: 1, backgroundColor: '#FFFFFF', color: '#736A6A', padding: '12px', borderRadius: '25px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  style={{ flex: 2, backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: isSavingEdit ? 'not-allowed' : 'pointer' }}
+                >
+                  {isSavingEdit ? 'Saving Changes...' : 'Update Product ✧'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CJ Health & Beauty Sync + Webhook & IONOS SMTP Readiness Control Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '22px 25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
           <div>
             <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#5C5454', margin: '0 0 4px 0' }}>
-              CJ Dropshipping Health & Beauty Filter + Webhook Diagnostics ✧
+              CJ Dropshipping Beauty & Skincare Sync + System Diagnostics ✧
             </h3>
             <p style={{ margin: 0, fontSize: '0.92rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-              Strictly syncs verified Health, Skincare, Makeup, Hair Care & Personal Care items while purging non-beauty products.
+              Pulls from CJ Beauty & Skincare categories + 44 targeted skincare/makeup queries, and verifies IONOS SMTP & Webhooks.
             </p>
           </div>
 
@@ -1288,7 +1577,7 @@ const AdminInventory = ({ onCatalogUpdated }) => {
               onClick={() => handleCjSyncOrClean(false)}
               style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
             >
-              {isSyncingCj ? '⏳ Syncing Health & Beauty...' : '🔄 Sync Health & Beauty'}
+              {isSyncingCj ? '⏳ Syncing Beauty & Skincare...' : '🔄 Sync Beauty & Skincare'}
             </button>
 
             <button
@@ -1298,6 +1587,15 @@ const AdminInventory = ({ onCatalogUpdated }) => {
               style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
             >
               {isCleaningCj ? '⏳ Cleaning...' : '🧹 Clean Non-Beauty Items'}
+            </button>
+
+            <button
+              type="button"
+              disabled={isTestingSmtp}
+              onClick={handleRunSmtpTest}
+              style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: isTestingSmtp ? 'not-allowed' : 'pointer' }}
+            >
+              {isTestingSmtp ? '⏳ Testing IONOS SMTP...' : '✉️ Test IONOS Email (SMTP)'}
             </button>
 
             <button
@@ -1377,20 +1675,19 @@ const AdminInventory = ({ onCatalogUpdated }) => {
       <div style={{ width: '350px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
-            {isEditing ? 'Edit Product' : 'Add Custom Product'}
+            Add Custom Product
           </h2>
-          {isEditing && <button onClick={resetForm} style={{ background: 'none', border: 'none', color: '#8A797A', cursor: 'pointer', textDecoration: 'underline' }}>Cancel</button>}
         </div>
 
-        <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <input required type="text" placeholder="Product Title" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input required type="number" step="0.01" placeholder="Retail Price ($)" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input type="url" placeholder="Image URL (HTTPS)" value={formData.imageUrl} onChange={e => setFormData({...formData, imageUrl: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input type="text" placeholder="Tags (comma separated)" value={formData.tags} onChange={e => setFormData({...formData, tags: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <textarea placeholder="Description..." rows="4" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', resize: 'vertical' }} />
+        <form onSubmit={handleCreateProduct} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <input required type="text" placeholder="Product Title" value={createForm.title} onChange={e => setCreateForm({...createForm, title: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input required type="number" step="0.01" placeholder="Retail Price ($)" value={createForm.price} onChange={e => setCreateForm({...createForm, price: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input type="url" placeholder="Image URL (HTTPS)" value={createForm.imageUrl} onChange={e => setCreateForm({...createForm, imageUrl: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <input type="text" placeholder="Tags (comma separated)" value={createForm.tags} onChange={e => setCreateForm({...createForm, tags: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+          <textarea placeholder="Description..." rows="4" value={createForm.description} onChange={e => setCreateForm({...createForm, description: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', resize: 'vertical' }} />
           
           <button type="submit" style={{ backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer', transition: 'all 0.3s ease', marginTop: '10px' }}>
-            {isEditing ? 'Update Product ✧' : 'Save to Boutique ✧'}
+            Save to Boutique ✧
           </button>
         </form>
       </div>
@@ -1421,8 +1718,20 @@ const AdminInventory = ({ onCatalogUpdated }) => {
                 <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 15px 0' }}>${parseFloat(price).toFixed(2)}</p>
                 
                 <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
-                  <button onClick={() => handleEditClick(prod)} style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>Edit</button>
-                  <button onClick={() => handleDelete(prod._id)} style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>Delete</button>
+                  <button
+                    type="button"
+                    onClick={() => handleEditClick(prod)}
+                    style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}
+                  >
+                    ✎ Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(prod._id)}
+                    style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             );
@@ -1506,11 +1815,25 @@ const AdminVideoPortal = () => {
   );
 };
 
-const AdminAiAssistant = ({ onProductDeleted }) => {
-  const [messages, setMessages] = useState([{ role: 'model', text: 'Hello Susan ✧ How may I assist you with your boutique today?' }]);
+const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
+  const [messages, setMessages] = useState([
+    {
+      role: 'model',
+      text: "Hello Susan ✧ I'm connected to your live boutique inventory, member blueprints, IONOS email, and Central Time consultation calendar. You can ask me to add or edit products, curate items for a member's inbox, schedule consultations, or dispatch email reminders!"
+    }
+  ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = React.useRef(null);
+
+  const quickActions = [
+    { label: '➕ Add Custom Product', prompt: 'Add a new product called "Rosewater Luminous Mist" priced at $48 with tags "skincare, hydration, mist" and a short description.' },
+    { label: '🏷️ Update Product Price', prompt: 'Update the price of our first boutique product to $54.00.' },
+    { label: '✨ Curate for Member', prompt: 'Recommend the best hydrating product from our inventory to our newest member with a warm personal note from me.' },
+    { label: '📅 Schedule Consultation', prompt: 'Schedule a 1-on-1 consultation with our newest member for tomorrow at 2:00 PM CT with notes "Seasonal Skincare Check-In".' },
+    { label: '🔔 Send Consultation Reminder', prompt: 'Send an immediate consultation reminder email for my next upcoming appointment.' },
+    { label: '✉️ Email a Client', prompt: 'Send a warm welcome email to susan.coke@susansbeautyconsulting.com with subject "Welcome to Susan\'s Sanctuary ✧".' }
+  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1552,10 +1875,26 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
       if (res.ok) {
         setMessages(prev => [
           ...prev,
-          { role: 'model', text: data.response || "I'm here, Susan ✧ How may I help?" }
+          {
+            role: 'model',
+            text: data.response || "I'm here, Susan ✧ How may I help?",
+            actionsTaken: data.actionsTaken || []
+          }
         ]);
         if (data.deletedProductId && onProductDeleted) {
           onProductDeleted(data.deletedProductId);
+        }
+        if (onExecutiveAction && (
+          (Array.isArray(data.actionsTaken) && data.actionsTaken.length > 0) ||
+          data.addedProduct ||
+          data.updatedProduct ||
+          data.deletedProductId ||
+          data.sentEmailLog ||
+          data.curatedRecommendation ||
+          data.scheduledAppointment ||
+          data.remindedAppointmentId
+        )) {
+          onExecutiveAction(data);
         }
       } else {
         setMessages(prev => [
@@ -1574,13 +1913,37 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
   };
 
   return (
-    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '600px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-      <div style={{ padding: '20px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', alignItems: 'center', gap: '15px' }}>
-        <div style={{ fontSize: '2rem' }}>✨</div>
-        <div>
-          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: 0 }}>Gemini Boutique Assistant</h2>
-          <p style={{ margin: 0, color: '#8A797A', fontSize: '0.9rem', fontFamily: 'sans-serif' }}>Powered by Google Gen AI</p>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '650px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+      <div style={{ padding: '18px 22px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+          <div style={{ fontSize: '2rem' }}>✨</div>
+          <div>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: 0 }}>Gemini Executive Boutique Assistant</h2>
+            <p style={{ margin: 0, color: '#8A797A', fontSize: '0.88rem', fontFamily: 'sans-serif' }}>
+              7 Live Tools: Add/Edit/Delete Products • Send IONOS Email • Curate Blueprints • Book & Remind Consultations
+            </p>
+          </div>
         </div>
+      </div>
+
+      {/* Quick-Action Executive Prompt Bar */}
+      <div style={{ padding: '10px 18px', backgroundColor: '#FFF9F9', borderBottom: '1px solid #E8C5C8', display: 'flex', gap: '8px', overflowX: 'auto' }}>
+        {quickActions.map((qa, idx) => (
+          <button
+            key={idx}
+            type="button"
+            onClick={() => setInput(qa.prompt)}
+            style={{
+              whiteSpace: 'nowrap', backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8',
+              borderRadius: '16px', padding: '6px 12px', fontSize: '0.82rem', color: '#5C5454',
+              cursor: 'pointer', fontFamily: 'sans-serif', transition: 'all 0.2s ease'
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#F2D4D7'; e.currentTarget.style.borderColor = '#B38B8F'; }}
+            onMouseOut={(e) => { e.currentTarget.style.backgroundColor = '#FFFFFF'; e.currentTarget.style.borderColor = '#E8C5C8'; }}
+          >
+            {qa.label}
+          </button>
+        ))}
       </div>
 
       <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '15px' }}>
@@ -1598,6 +1961,15 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
               lineHeight: '1.5',
               whiteSpace: 'pre-wrap'
             }}>
+              {Array.isArray(msg.actionsTaken) && msg.actionsTaken.length > 0 && (
+                <div style={{ marginBottom: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  {msg.actionsTaken.map((act, i) => (
+                    <span key={i} style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                      ✓ Executed: {act}
+                    </span>
+                  ))}
+                </div>
+              )}
               {msg.text}
             </div>
           </div>
@@ -1605,17 +1977,17 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
         {isTyping && (
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
             <div style={{ padding: '15px', borderRadius: '20px 20px 20px 0', backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', color: '#8A797A', fontStyle: 'italic' }}>
-              Gemini is composing...
+              Gemini is executing your request...
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      <form onSubmit={handleSend} style={{ padding: '20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E8C5C8', borderRadius: '0 0 15px 15px', display: 'flex', gap: '10px' }}>
+      <form onSubmit={handleSend} style={{ padding: '18px 20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E8C5C8', borderRadius: '0 0 15px 15px', display: 'flex', gap: '10px' }}>
         <input 
           type="text" 
-          placeholder="Ask Gemini to draft an email, analyze a skin profile, or suggest products..." 
+          placeholder="Ask Gemini to add/edit a product, email a client, curate a blueprint, or book a consultation..." 
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={isTyping}
@@ -1629,7 +2001,7 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
   );
 };
 
-const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted, onCatalogUpdated }) => {
+const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted, onCatalogUpdated, onRefreshAdminData }) => {
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('adminActiveTab') || 'Inbox';
   });
@@ -2065,7 +2437,22 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
           <AdminVideoPortal />
         )}
         {activeTab === 'AI' && (
-          <AdminAiAssistant onProductDeleted={onProductDeleted} />
+          <AdminAiAssistant
+            onProductDeleted={onProductDeleted}
+            onExecutiveAction={async (data) => {
+              if (data.addedProduct || data.updatedProduct || data.deletedProductId) {
+                try {
+                  const prodRes = await fetch(`${API_BASE_URL}/api/products`);
+                  if (prodRes.ok && onCatalogUpdated) {
+                    onCatalogUpdated(await prodRes.json());
+                  }
+                } catch (e) {}
+              }
+              if (onRefreshAdminData) {
+                onRefreshAdminData();
+              }
+            }}
+          />
         )}
       </div>
     </div>
@@ -3204,6 +3591,10 @@ function App() {
             backendProducts={backendProducts}
             onProductDeleted={(deletedId) => setBackendProducts(prev => prev.filter(p => p._id !== deletedId))}
             onCatalogUpdated={(updatedCatalog) => setBackendProducts(updatedCatalog)}
+            onRefreshAdminData={() => {
+              const token = localStorage.getItem('token');
+              if (token) fetchAdminData(token);
+            }}
           />
         )}
 

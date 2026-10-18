@@ -76,31 +76,83 @@ const getMemberDiscountInfo = (tier = '') => {
 };
 
 const smtpHost = cleanEnv(process.env.SMTP_HOST) || 'smtp.ionos.com';
-const smtpPort = Number(cleanEnv(process.env.SMTP_PORT)) || 465;
-const smtpSecure = process.env.SMTP_SECURE
+const configuredPort = Number(cleanEnv(process.env.SMTP_PORT)) || 587;
+const configuredSecure = process.env.SMTP_SECURE
   ? cleanEnv(process.env.SMTP_SECURE).toLowerCase() === 'true'
-  : smtpPort === 465;
+  : configuredPort === 465;
+const fallbackPort = configuredPort === 465 ? 587 : 465;
+const fallbackSecure = fallbackPort === 465;
+
 const smtpUser = cleanEnv(process.env.SMTP_USER);
 const smtpPass = cleanEnv(process.env.SMTP_PASS);
 const smtpFrom = cleanEnv(process.env.SMTP_FROM) || `"Susan's Beauty Consulting" <${smtpUser || 'susan.coke@susansbeautyconsulting.com'}>`;
 
-const transporter = nodemailer.createTransport({
-  host: smtpHost,
-  port: smtpPort,
-  secure: smtpSecure, // true for 465 (Implicit SSL/TLS), false for 587 (STARTTLS)
-  requireTLS: !smtpSecure, // Enforce STARTTLS upgrade when using port 587
-  auth: {
-    user: smtpUser,
-    pass: smtpPass,
-  },
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-  tls: {
-    minVersion: 'TLSv1.2',
-    rejectUnauthorized: true
+// Creates a Nodemailer transporter for IONOS with IPv4 enforcement (family: 4) and strict timeouts
+// so cloud IPv6 DNS blackholes or blocked ports fail over in <10s instead of hanging for 2 minutes.
+const createIonosTransporter = (port, secure) =>
+  nodemailer.createTransport({
+    host: smtpHost,
+    port,
+    secure, // true for 465 (Implicit SSL/TLS), false for 587 (STARTTLS)
+    requireTLS: !secure, // Enforce STARTTLS upgrade when using port 587
+    family: 4, // Force IPv4 resolution to prevent IPv6 ETIMEDOUT stalls on cloud hosts
+    connectionTimeout: 10000, // 10 seconds max to establish TCP connection
+    greetingTimeout: 10000, // 10 seconds max for SMTP greeting
+    socketTimeout: 15000, // 15 seconds max for socket inactivity
+    auth: {
+      user: smtpUser,
+      pass: smtpPass,
+    },
+    tls: {
+      minVersion: 'TLSv1.2',
+      servername: smtpHost,
+      rejectUnauthorized: true
+    }
+  });
+
+const primaryTransporter = createIonosTransporter(configuredPort, configuredSecure);
+const fallbackTransporter = createIonosTransporter(fallbackPort, fallbackSecure);
+let activeSmtpPort = configuredPort;
+
+const getOrderedTransporters = () => {
+  if (activeSmtpPort === fallbackPort) {
+    return [
+      { client: fallbackTransporter, port: fallbackPort, secure: fallbackSecure },
+      { client: primaryTransporter, port: configuredPort, secure: configuredSecure }
+    ];
   }
-});
+  return [
+    { client: primaryTransporter, port: configuredPort, secure: configuredSecure },
+    { client: fallbackTransporter, port: fallbackPort, secure: fallbackSecure }
+  ];
+};
+
+const verifySmtpConnection = async () => {
+  if (!smtpUser || !smtpPass) {
+    return { verified: false, error: 'SMTP_USER or SMTP_PASS is missing in environment variables.' };
+  }
+  const candidates = getOrderedTransporters();
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      await candidate.client.verify();
+      activeSmtpPort = candidate.port;
+      console.log(`✧ IONOS SMTP Server (${smtpHost}:${candidate.port}, secure=${candidate.secure}, IPv4) verified for ${smtpUser}`);
+      return { verified: true, host: smtpHost, port: candidate.port, secure: candidate.secure };
+    } catch (err) {
+      lastError = err;
+      console.warn(`⚠️ SMTP verify on ${smtpHost}:${candidate.port} (secure=${candidate.secure}) failed: ${err.message}. Trying alternate port...`);
+    }
+  }
+
+  return {
+    verified: false,
+    host: smtpHost,
+    triedPorts: candidates.map(c => c.port),
+    error: lastError ? lastError.message : 'Unknown SMTP verification error'
+  };
+};
 
 const sendEmail = async (to, subject, htmlContent, textContent) => {
   if (!smtpUser || !smtpPass) {
@@ -108,19 +160,32 @@ const sendEmail = async (to, subject, htmlContent, textContent) => {
     console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
     throw configErr;
   }
-  try {
-    await transporter.sendMail({
-      from: smtpFrom,
-      to,
-      subject,
-      text: textContent,
-      html: htmlContent,
-    });
-    console.log(`✉️ Email dispatched to ${to}: "${subject}"`);
-  } catch (err) {
-    console.error(`⚠️ Failed to send email to ${to}:`, err.message);
-    throw err;
+
+  const mailOptions = {
+    from: smtpFrom,
+    to,
+    subject,
+    text: textContent,
+    html: htmlContent,
+  };
+
+  const candidates = getOrderedTransporters();
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const info = await candidate.client.sendMail(mailOptions);
+      activeSmtpPort = candidate.port;
+      console.log(`✉️ Email dispatched via ${smtpHost}:${candidate.port} to ${to}: "${subject}"`);
+      return { info, portUsed: candidate.port, secureUsed: candidate.secure };
+    } catch (err) {
+      lastError = err;
+      console.warn(`⚠️ SMTP send failed on ${smtpHost}:${candidate.port} to ${to} (${err.code || err.message}). Retrying on alternate port...`);
+    }
   }
+
+  console.error(`❌ Failed to send email to ${to} on both ports (${configuredPort} & ${fallbackPort}):`, lastError?.message);
+  throw new Error(`SMTP delivery failed across ports ${configuredPort} and ${fallbackPort}: ${lastError?.message || 'Connection timed out'}`);
 };
 
 // ---------------- MONGODB SCHEMAS ---------------- //
@@ -172,7 +237,8 @@ const appointmentSchema = new mongoose.Schema({
     enum: ['admin', 'client', null],
     default: null
   },
-  previousStartTime: { type: Date, default: null }
+  previousStartTime: { type: Date, default: null },
+  reminderSentAt: { type: Date, default: null, index: true }
 }, { timestamps: true });
 appointmentSchema.index({ staffId: 1, startTime: 1, endTime: 1 });
 const Appointment = mongoose.model('Appointment', appointmentSchema);
@@ -300,10 +366,60 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION (STRICT HEALTH & BEAUTY) ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (FULL BEAUTY & SKINCARE MULTI-QUERY SYNC) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 5);
-const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 60);
+const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 35);
+const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 300);
+const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
+
+// Targeted Beauty, Skincare, Cosmetics & Personal Care search queries used to actively pull
+// all beauty & skincare items from CJ Dropshipping rather than scanning random general-merchandise pages.
+const CJ_BEAUTY_SEARCH_QUERIES = [
+  'skincare',
+  'skin care',
+  'facial serum',
+  'face cream',
+  'moisturizer',
+  'facial cleanser',
+  'face toner',
+  'facial mask',
+  'sheet mask',
+  'eye cream',
+  'eye patch',
+  'hyaluronic acid',
+  'retinol',
+  'vitamin c serum',
+  'collagen',
+  'niacinamide',
+  'sunscreen',
+  'acne patch',
+  'lip gloss',
+  'lipstick',
+  'lip balm',
+  'lip oil',
+  'foundation',
+  'concealer',
+  'blush',
+  'highlighter',
+  'eyeshadow',
+  'mascara',
+  'eyeliner',
+  'eyebrow',
+  'makeup brush',
+  'beauty sponge',
+  'gua sha',
+  'jade roller',
+  'facial massager',
+  'body lotion',
+  'body scrub',
+  'essential oil',
+  'hair oil',
+  'hair mask',
+  'shampoo',
+  'conditioner',
+  'nail gel',
+  'perfume'
+];
 
 const getCjHeaders = () => {
   const token = cleanEnv(process.env.CJ_ACCESS_TOKEN);
@@ -319,37 +435,47 @@ const getCjHeaders = () => {
 
 // Word-boundary exclusion list to reject non-beauty items that previously matched substrings
 // like "chair" (matched "hair"), "phone skin" (matched "skin"), "clock face" (matched "face"), or "ice cream" (matched "cream").
-const NON_BEAUTY_EXCLUSION_REGEX = /\b(chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|Crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton| tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
+const NON_BEAUTY_EXCLUSION_REGEX = /\b(chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton|tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
 
-// Legitimate Health & Beauty category indicators in CJ's category tree
-const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(health|beauty|cosmetic|cosmetics|skincare|skin care|makeup|make-up|make up|personal care|fragrance|perfume|nail|manicure|pedicure|hair care|haircare|hair styling|wig|extensions|salon|spa|hygiene|oral care|dental|body care|bath|shower|facial|massage|relaxation|wellness|shaving|epilator|grooming|eyelash|brow)\b/i;
+// Non-beauty top-level CJ category names to reject immediately if present
+const NON_BEAUTY_CATEGORY_REGEX = /\b(computer|office|electronics|phone|automotive|automobile|motorcycle|home improvement|lighting|furniture|kitchen|dining|pet|toy|hobbies|sports|outdoors|apparel|clothing|shoes|bags|luggage|jewelry|watches|security|industrial|mother & kids|kids|baby)\b/i;
 
-// Specific Health & Beauty product terms (matched on word boundaries)
-const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|cosmetic|cosmetics|makeup|make-up|serum|cleanser|cleansing|toner|moisturizer|moisturizing|lotion|face cream|night cream|day cream|eye cream|hand cream|foot cream|body cream|BB cream|CC cream|balm|ointment|essence|ampoule|emulsion|exfoliant|exfoliating|scrub|peel|peeling|facial mask|face mask|sheet mask|clay mask|mud mask|eye mask|eye patch|sleeping mask|lip mask|lip balm|lip gloss|lipgloss|lipstick|lip liner|lip oil|lip tint|lip plumper|foundation|concealer|primer|blush|bronzer|highlighter|contour|setting powder|loose powder|pressed powder|setting spray|makeup fixer|eyeshadow|eyeliner|mascara|eyebrow|brow gel|brow pencil|false lashes|eyelash|lash extension|lash curler|makeup brush|kabuki|beauty sponge|powder puff|makeup remover|micellar|cotton pad|nail polish|gel nail|nail art|nail file|nail drill|nail lamp|UV lamp|cuticle|manicure|pedicure|press on nails|poly gel|acrylic nail|shampoo|conditioner|hair mask|hair oil|hair serum|hair treatment|scalp|keratin|argan|biotin|edge control|hair growth|beard oil|beard balm|curl cream|detangler|comb|hairbrush|flat iron|curling iron|hair dryer|diffuser|epilator|trimmer|shaver|razor|waxing|depilatory|collagen|retinol|hyaluronic|vitamin c|vitamin e|niacinamide|nicotinamide|salicylic|glycolic|lactic acid|azelaic|ceramide|peptide|squalane|centella|snail mucin|tea tree|aloe vera|rosehip|spf|sunscreen|sunblock|self tanner|aftersun|fragrance|perfume|parfum|cologne|eau de|body mist|deodorant|antiperspirant|body wash|shower gel|bath bomb|bath salt|body butter|body scrub|body oil|essential oil|aromatherapy|gua sha|jade roller|ice roller|derma roller|microneedle|led mask|facial steamer|blackhead|pore vacuum|ultrasonic scrubber|acne patch|pimple patch|blemish|anti-aging|anti aging|wrinkle|whitening|brightening|hydrating|firming|lifting|massager|cupping|posture corrector|heating pad|sleep mask|teeth whitening|toothbrush|water flosser|oral irrigator|tongue scraper)\b/i;
+// Legitimate Health, Beauty & Skincare category indicators in CJ's category tree
+const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(health|beauty|cosmetic|cosmetics|skincare|skin care|skin|makeup|make-up|make up|personal care|fragrance|perfume|nail|manicure|pedicure|hair care|haircare|hair styling|hair|wig|extensions|salon|spa|hygiene|oral care|dental|body care|bath|shower|facial|face|massage|relaxation|wellness|shaving|epilator|grooming|eyelash|brow|lip|eye care)\b/i;
 
-const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '') => {
+// Comprehensive Beauty & Skincare product terms (matched on word boundaries)
+const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|facial|face care|cosmetic|cosmetics|makeup|make-up|beauty|serum|cleanser|cleansing|toner|moisturizer|moisturizing|lotion|cream|face cream|night cream|day cream|eye cream|hand cream|foot cream|body cream|bb cream|cc cream|balm|ointment|essence|ampoule|emulsion|gel|exfoliant|exfoliating|scrub|peel|peeling|mask|facial mask|face mask|sheet mask|clay mask|mud mask|eye mask|eye patch|eye patches|hydrogel|sleeping mask|lip mask|lip balm|lip gloss|lipgloss|lipstick|lip liner|lip oil|lip tint|lip stain|lip scrub|lip plumper|lip clay|lip glaze|foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lash extension|lash lift|lash curler|lash serum|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|makeup remover|micellar|cleansing oil|cleansing balm|cotton pad|nail polish|gel nail|nail gel|nail art|nail file|nail drill|nail lamp|uv lamp|cuticle|manicure|pedicure|press on nails|poly gel|acrylic nail|shampoo|conditioner|hair mask|hair oil|hair serum|hair spray|hair mist|hair wax|hair treatment|scalp|keratin|argan|biotin|rosemary|edge control|hair growth|beard oil|beard balm|curl cream|detangler|comb|hairbrush|flat iron|curling iron|hair straightener|hair dryer|diffuser|epilator|trimmer|shaver|razor|waxing|wax beans|depilatory|collagen|retinol|retinoid|hyaluronic|vitamin c|vitamin e|niacinamide|nicotinamide|salicylic|glycolic|lactic acid|aha|bha|pha|azelaic|ceramide|peptide|squalane|centella|cica|snail|mucin|tea tree|aloe vera|rosehip|turmeric|kojic|bakuchiol|spf|sunscreen|sunblock|self tanner|tanning|aftersun|fragrance|perfume|parfum|cologne|eau de|body mist|deodorant|antiperspirant|body wash|shower gel|bath bomb|bath salt|body butter|body scrub|body lotion|body oil|essential oil|aromatherapy|gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|blackhead|pore|ultrasonic scrubber|acne|pimple patch|blemish|spot treatment|anti-aging|anti aging|anti-wrinkle|wrinkle|whitening|brightening|hydrating|hydration|firming|lifting|soothing|repairing|barrier|massager|cupping|posture corrector|heating pad|sleep mask|teeth whitening|whitening strips|toothbrush|water flosser|oral irrigator|tongue scraper)\b/i;
+
+const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '', fromBeautySource = false) => {
   const cleanTitle = String(title || '').trim();
   const cleanCategory = String(categoryName || '').trim();
+  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 400);
   if (!cleanTitle) return false;
 
   const combinedTitleAndCat = `${cleanTitle} ${cleanCategory}`;
 
-  // 1. Immediately reject if title or category hits any non-beauty exclusion keyword
+  // 1. Hard exclusion gate: immediately reject if title or category hits any non-beauty exclusion keyword
   if (NON_BEAUTY_EXCLUSION_REGEX.test(combinedTitleAndCat)) {
     return false;
   }
 
-  // 2. If CJ provided a categoryName, require it to be a Health & Beauty category
-  if (cleanCategory && !HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
+  // 2. Reject if CJ explicitly placed the item in a non-beauty category (unless the category also says beauty/health/skincare/personal care)
+  if (cleanCategory && NON_BEAUTY_CATEGORY_REGEX.test(cleanCategory) && !HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
     return false;
   }
 
-  // 3. Require the title or category to contain a specific Health & Beauty product term
-  if (!HEALTH_BEAUTY_PRODUCT_REGEX.test(combinedTitleAndCat)) {
-    return false;
+  // 3. Accept if title or category matches our comprehensive Beauty & Skincare product regex
+  if (HEALTH_BEAUTY_PRODUCT_REGEX.test(combinedTitleAndCat)) {
+    return true;
   }
 
-  return true;
+  // 4. If fetched from a verified CJ Beauty category or beauty search query, also check category + short description
+  if ((fromBeautySource || HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) &&
+      (HEALTH_BEAUTY_CATEGORY_REGEX.test(combinedTitleAndCat) || HEALTH_BEAUTY_PRODUCT_REGEX.test(cleanDesc))) {
+    return true;
+  }
+
+  return false;
 };
 
 const extractCleanTags = (categoryName = '', title = '') => {
@@ -364,7 +490,8 @@ const extractCleanTags = (categoryName = '', title = '') => {
     'toner', 'moisturizer', 'lotion', 'cream', 'mask', 'facial', 'lip', 'eye',
     'nail', 'manicure', 'hair', 'shampoo', 'conditioner', 'scalp', 'fragrance',
     'perfume', 'bath', 'body', 'wellness', 'massage', 'oral', 'hydration',
-    'brightening', 'anti-aging', 'acne', 'sensitive', 'collagen', 'retinol'
+    'brightening', 'anti-aging', 'acne', 'sensitive', 'collagen', 'retinol',
+    'sunscreen', 'hyaluronic', 'niacinamide', 'vitamin', 'exfoliant', 'scrub'
   ]);
 
   const tags = [];
@@ -373,7 +500,7 @@ const extractCleanTags = (categoryName = '', title = '') => {
       tags.push(token);
     }
   }
-  if (tags.length === 0) tags.push('beauty', 'health');
+  if (tags.length === 0) tags.push('beauty', 'skincare');
   return tags;
 };
 
@@ -387,7 +514,7 @@ const purgeNonBeautyCjProducts = async () => {
     for (const prod of cjProducts) {
       const catName = prod.rawCjData?.categoryName || (Array.isArray(prod.tags) ? prod.tags.join(' ') : '');
       const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
-      const isValidBeauty = isStrictHealthAndBeautyProduct(prod.title, catName, prod.description);
+      const isValidBeauty = isStrictHealthAndBeautyProduct(prod.title, catName, prod.description, false);
 
       if (!isValidBeauty || !(price > 0)) {
         idsToDelete.push(prod._id);
@@ -411,6 +538,56 @@ const purgeNonBeautyCjProducts = async () => {
   }
 };
 
+// Discovers CJ's dedicated Health, Beauty & Skincare category IDs from /product/getCategory
+const fetchCjBeautyCategoryIds = async (headers) => {
+  try {
+    const res = await axios.get(`${CJ_BASE_URL}/product/getCategory`, { headers, timeout: 15000 });
+    const firstList = res.data?.data || [];
+    if (!Array.isArray(firstList)) return [];
+
+    const beautyCatIds = [];
+    const seenIds = new Set();
+
+    const addCatId = (id, name) => {
+      const cleanId = String(id || '').trim();
+      const cleanName = String(name || '').trim();
+      if (!cleanId || seenIds.has(cleanId)) return;
+      if (NON_BEAUTY_EXCLUSION_REGEX.test(cleanName)) return;
+      seenIds.add(cleanId);
+      beautyCatIds.push({ id: cleanId, name: cleanName });
+    };
+
+    for (const first of firstList) {
+      const firstName = String(first.categoryFirstName || first.nameEn || first.name || '');
+      const firstIsBeauty = HEALTH_BEAUTY_CATEGORY_REGEX.test(firstName) && !NON_BEAUTY_CATEGORY_REGEX.test(firstName);
+      const children1 = first.categoryFirstChildList || first.children || [];
+
+      for (const second of (Array.isArray(children1) ? children1 : [])) {
+        const secondName = String(second.categorySecondName || second.nameEn || second.name || '');
+        const secondIsBeauty = firstIsBeauty || (HEALTH_BEAUTY_CATEGORY_REGEX.test(secondName) && !NON_BEAUTY_CATEGORY_REGEX.test(secondName));
+        const children2 = second.categorySecondChildList || second.children || [];
+
+        if (secondIsBeauty && second.categorySecondId) {
+          addCatId(second.categorySecondId, `${firstName} > ${secondName}`);
+        }
+
+        for (const third of (Array.isArray(children2) ? children2 : [])) {
+          const thirdName = String(third.categoryName || third.nameEn || third.name || '');
+          const thirdId = third.categoryId || third.id;
+          if ((secondIsBeauty || HEALTH_BEAUTY_CATEGORY_REGEX.test(thirdName)) && thirdId) {
+            addCatId(thirdId, `${firstName} > ${secondName} > ${thirdName}`);
+          }
+        }
+      }
+    }
+
+    return beautyCatIds.slice(0, 15);
+  } catch (err) {
+    console.warn("⚠️ Could not fetch CJ category list (falling back to keyword search):", err.message);
+    return [];
+  }
+};
+
 let isCjSyncRunning = false;
 
 const syncCJCatalog = async (options = {}) => {
@@ -422,9 +599,10 @@ const syncCJCatalog = async (options = {}) => {
   isCjSyncRunning = true;
   const maxPages = Math.max(1, Number(options.maxPages) || CJ_MAX_PAGES);
   const maxProducts = Math.max(1, Number(options.maxProducts) || CJ_MAX_PRODUCTS);
+  const pageSize = CJ_PAGE_SIZE;
 
   try {
-    // Always purge non-beauty CJ items in DB first so the catalog stays strictly Health & Beauty
+    // 1. Always purge non-beauty CJ items in DB first so the catalog stays strictly Health & Beauty
     const purgedCount = await purgeNonBeautyCjProducts();
 
     const headers = getCjHeaders();
@@ -432,43 +610,39 @@ const syncCJCatalog = async (options = {}) => {
       return { status: 'skipped_no_token', purgedCount, syncedCount: 0 };
     }
 
-    console.log(`🔄 Starting CJ Dropshipping Health & Beauty sync (maxPages=${maxPages}, maxProducts=${maxProducts})...`);
+    console.log(`🔄 Starting Deep CJ Beauty & Skincare Sync (maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`);
 
-    let pageNum = 1;
-    const pageSize = 50;
-    let hasMoreProducts = true;
+    let pagesFetched = 0;
     let totalProcessed = 0;
+    const seenKeys = new Set();
+    const retailMarkup = 6.5;
 
-    while (hasMoreProducts && pageNum <= maxPages && totalProcessed < maxProducts) {
-      console.log(`🔍 Fetching CJ products -> Page ${pageNum}/${maxPages}`);
-      
-      const response = await axios.get(
-        `${CJ_BASE_URL}/product/list?pageNum=${pageNum}&pageSize=${pageSize}`,
-        { headers, timeout: 15000 }
-      );
-      const cjProducts = response.data?.data?.list || response.data?.data?.content || [];
-
-      if (!Array.isArray(cjProducts) || cjProducts.length === 0) {
-        hasMoreProducts = false;
-        break;
-      }
+    // Helper to process a batch of CJ products from any endpoint query
+    const processCjBatch = async (cjProducts, fromBeautySource = false, sourceLabel = '') => {
+      if (!Array.isArray(cjProducts) || cjProducts.length === 0) return 0;
+      let batchSaved = 0;
 
       for (const item of cjProducts) {
         if (totalProcessed >= maxProducts) break;
 
         const title = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
         const baseSku = (item.productSku || item.sku || item.pid || '').toString().trim();
-        const category = (item.categoryName || '').toString().trim();
+        const category = (item.categoryName || sourceLabel || '').toString().trim();
         const desc = item.description || item.productDescription || '';
 
         if (!title || !baseSku) continue;
 
-        if (!isStrictHealthAndBeautyProduct(title, category, desc)) {
+        const dedupeTitleKey = title.toLowerCase();
+        const dedupeSkuKey = baseSku.toLowerCase();
+        if (seenKeys.has(dedupeTitleKey) || seenKeys.has(dedupeSkuKey)) {
+          continue;
+        }
+
+        if (!isStrictHealthAndBeautyProduct(title, category, desc, fromBeautySource)) {
           continue;
         }
 
         const img = item.productImage || item.image || '';
-        const retailMarkup = 6.5;
 
         let rawBasePrice = parseFloat(String(item.sellPrice || item.price || '0').split('-')[0].trim()) || 0;
         
@@ -508,22 +682,79 @@ const syncCJCatalog = async (options = {}) => {
             imageUrl: img,
             tags: extractCleanTags(category, title),
             variants: mappedVariants,
-            rawCjData: item
+            rawCjData: { ...item, categoryName: category || item.categoryName }
           },
           { upsert: true, returnDocument: 'after' }
         );
 
+        seenKeys.add(dedupeTitleKey);
+        seenKeys.add(dedupeSkuKey);
         totalProcessed++;
+        batchSaved++;
       }
 
-      pageNum++;
-      if (hasMoreProducts && pageNum <= maxPages && totalProcessed < maxProducts) {
-        await delay(1200);
+      return batchSaved;
+    };
+
+    // Helper to fetch a CJ product list URL with rate-limit retry
+    const fetchCjProductPage = async (url) => {
+      try {
+        const response = await axios.get(url, { headers, timeout: 15000 });
+        return response.data?.data?.list || response.data?.data?.content || [];
+      } catch (err) {
+        if (err?.response?.status === 429) {
+          await delay(1500);
+          const retryRes = await axios.get(url, { headers, timeout: 15000 }).catch(() => null);
+          return retryRes?.data?.data?.list || retryRes?.data?.data?.content || [];
+        }
+        return [];
+      }
+    };
+
+    // Stage A: Pull directly from CJ's Beauty & Skincare Category IDs
+    const beautyCategories = await fetchCjBeautyCategoryIds(headers);
+    for (const cat of beautyCategories) {
+      if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
+      pagesFetched++;
+      const url = `${CJ_BASE_URL}/product/list?categoryId=${encodeURIComponent(cat.id)}&pageNum=1&pageSize=${pageSize}`;
+      const list = await fetchCjProductPage(url);
+      const saved = await processCjBatch(list, true, cat.name);
+      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total: ${totalProcessed}/${maxProducts})`);
+      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
+        await delay(450);
       }
     }
 
-    console.log(`🚀 CJ Health & Beauty sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Health & Beauty items.`);
-    return { status: 'completed', purgedCount, syncedCount: totalProcessed };
+    // Stage B: Sweep targeted Beauty & Skincare keyword queries (?productNameEn=...)
+    for (const query of CJ_BEAUTY_SEARCH_QUERIES) {
+      if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
+      pagesFetched++;
+      const url = `${CJ_BASE_URL}/product/list?productNameEn=${encodeURIComponent(query)}&pageNum=1&pageSize=${pageSize}`;
+      const list = await fetchCjProductPage(url);
+      const saved = await processCjBatch(list, true, `Health & Beauty > ${query}`);
+      console.log(`🔍 CJ Keyword "${query}" -> +${saved} items (Total: ${totalProcessed}/${maxProducts})`);
+      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
+        await delay(450);
+      }
+    }
+
+    // Stage C: General catalog fallback sweep if capacity still remains
+    let generalPage = 1;
+    while (pagesFetched < maxPages && totalProcessed < maxProducts && generalPage <= 5) {
+      pagesFetched++;
+      const url = `${CJ_BASE_URL}/product/list?pageNum=${generalPage}&pageSize=${pageSize}`;
+      const list = await fetchCjProductPage(url);
+      if (!Array.isArray(list) || list.length === 0) break;
+      await processCjBatch(list, false, '');
+      generalPage++;
+      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
+        await delay(450);
+      }
+    }
+
+    const totalInDb = await Product.countDocuments();
+    console.log(`🚀 CJ Beauty & Skincare sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Beauty & Skincare items (${totalInDb} total active in boutique).`);
+    return { status: 'completed', purgedCount, syncedCount: totalProcessed, activeTotal: totalInDb };
   } catch (error) {
     console.error("❌ Error during CJ sync:", error?.response?.data || error.message);
     return { status: 'error', error: error?.response?.data?.message || error.message, purgedCount: 0, syncedCount: 0 };
@@ -642,7 +873,7 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
   }
 });
 
-// ---------------- AI ASSISTANT ROUTE ---------------- //
+// ---------------- AI ASSISTANT ROUTE (7 EXECUTIVE BOUTIQUE TOOLS) ---------------- //
 const GEMINI_MODEL = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.8-flash';
 
 const getGeminiClient = () => {
@@ -670,24 +901,75 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
 
     const { ai, Type } = getGeminiClient();
 
-    const rawCatalog = await Product.find({}).select('_id title variants tags').limit(150).lean();
+    // Gather live boutique context for Susan's Executive Assistant
+    const [rawCatalog, rawUsers, blueprints, rawAppointments] = await Promise.all([
+      Product.find({}).select('_id title variants tags imageUrl').sort({ _id: -1 }).limit(180).lean(),
+      User.find({}).select('_id name email membershipTier role').sort({ createdAt: -1 }).limit(100).lean(),
+      Consultation.find({})
+        .populate('userId', '_id name email membershipTier')
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean(),
+      Appointment.find({ status: { $ne: 'cancelled' } })
+        .populate('clientId', '_id name email membershipTier')
+        .sort({ startTime: 1 })
+        .limit(60)
+        .lean()
+    ]);
+
     const catalog = rawCatalog.map(prod => ({
-      _id: prod._id,
+      _id: String(prod._id),
       title: prod.title,
       price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
       tags: prod.tags || []
     }));
-    const blueprints = await Consultation.find({})
-      .populate('userId', 'name email')
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .lean();
 
-    const systemInstruction = `You are Susan's elite AI Assistant for her boutique.
-Your job is to help Susan draft elegant emails to clients, evaluate skin profiles, and manage the boutique inventory.
-Here is the current boutique inventory (use the _id field if you need to delete a product): ${JSON.stringify(catalog)}.
-Here are the recent client blueprints: ${JSON.stringify(blueprints)}.
-Maintain a graceful, sophisticated, and helpful tone.`;
+    const members = rawUsers.map(u => ({
+      _id: String(u._id),
+      name: u.name,
+      email: u.email,
+      membershipTier: u.membershipTier || 'luminary'
+    }));
+
+    const upcomingAppointments = rawAppointments.map(appt => ({
+      _id: String(appt._id),
+      clientId: appt.clientId?._id ? String(appt.clientId._id) : '',
+      clientName: appt.clientId?.name || 'Member',
+      clientEmail: appt.clientId?.email || '',
+      startTimeISO: appt.startTime ? new Date(appt.startTime).toISOString() : '',
+      startTimeCT: formatCentralDateTime(appt.startTime),
+      notes: appt.notes || '',
+      meetingLink: appt.meetingLink || '',
+      reminderSent: Boolean(appt.reminderSentAt)
+    }));
+
+    const currentCentralTimeStr = formatCentralDateTime(new Date());
+
+    const systemInstruction = `You are Susan's elite Executive AI Assistant for "Susan's Beauty Consulting" boutique.
+Current US Central Time (Kansas — America/Chicago): ${currentCentralTimeStr}.
+
+You have direct executive tools to manage the boutique on Susan's behalf:
+1. addProduct: Add a new custom beauty or skincare product to the boutique catalog.
+2. updateProduct: Edit an existing product's title, price, description, imageUrl, or tags by its _id.
+3. deleteProduct: Permanently remove a product from the boutique catalog by its _id.
+4. sendCustomerEmail: Dispatch a real formatted email to any client or address via Susan's IONOS SMTP server and log it in Sent Messages.
+5. curateProductForMember: Push a recommended product directly to a member's personal Inbox and Beauty Blueprint with a custom note from Susan.
+6. scheduleConsultation: Book a 1-on-1 consultation on Susan's Central Time calendar, generate a private Jitsi video sanctuary link, and email the client.
+7. sendAppointmentReminder: Immediately send a 1-on-1 consultation reminder email (with video room link) to both the client and Susan.
+
+Live Boutique Inventory (${catalog.length} items — use _id for updateProduct, deleteProduct, or curateProductForMember):
+${JSON.stringify(catalog)}
+
+Registered Members (${members.length} accounts — use _id for curateProductForMember or scheduleConsultation):
+${JSON.stringify(members)}
+
+Client Beauty Blueprints (${blueprints.length} profiles):
+${JSON.stringify(blueprints)}
+
+Scheduled Consultations (${upcomingAppointments.length} active — use _id for sendAppointmentReminder):
+${JSON.stringify(upcomingAppointments)}
+
+Always execute the appropriate tool when Susan asks you to add/edit/remove a product, send an email, curate a product for a member, schedule a consultation, or send a consultation reminder. Maintain a graceful, warm, and executive tone.`;
 
     // Build a clean, alternating multi-turn contents array that ignores error bubbles
     const contents = [];
@@ -713,21 +995,105 @@ Maintain a graceful, sophisticated, and helpful tone.`;
       contents.push({ role: 'user', parts: [{ text: cleanMessage }] });
     }
 
-    const deleteProductTool = {
-      functionDeclarations: [{
-        name: 'deleteProduct',
-        description: 'Deletes a product from the MongoDB database. Call this tool ONLY when Susan explicitly asks to remove or delete a specific product.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            productId: {
-              type: Type.STRING,
-              description: 'The exact MongoDB _id string of the product to delete. Find this in the inventory catalog provided.'
-            }
-          },
-          required: ['productId']
+    const executiveBoutiqueTools = {
+      functionDeclarations: [
+        {
+          name: 'addProduct',
+          description: 'Creates and saves a new custom beauty or skincare product in the boutique inventory.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING, description: 'Product title (e.g., "Rosewater Luminous Mist")' },
+              price: { type: Type.NUMBER, description: 'Retail price in USD (e.g., 48.00)' },
+              description: { type: Type.STRING, description: 'Elegant product description' },
+              imageUrl: { type: Type.STRING, description: 'Optional HTTPS image URL' },
+              tags: { type: Type.STRING, description: 'Comma-separated tags (e.g., "skincare, hydration, mist")' }
+            },
+            required: ['title', 'price']
+          }
+        },
+        {
+          name: 'updateProduct',
+          description: 'Updates an existing product in the boutique inventory by its MongoDB _id.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              productId: { type: Type.STRING, description: 'Exact MongoDB _id of the product to update' },
+              title: { type: Type.STRING, description: 'Updated product title (optional)' },
+              price: { type: Type.NUMBER, description: 'Updated retail price in USD (optional)' },
+              description: { type: Type.STRING, description: 'Updated product description (optional)' },
+              imageUrl: { type: Type.STRING, description: 'Updated HTTPS image URL (optional)' },
+              tags: { type: Type.STRING, description: 'Updated comma-separated tags (optional)' }
+            },
+            required: ['productId']
+          }
+        },
+        {
+          name: 'deleteProduct',
+          description: 'Deletes a product from the MongoDB database. Call this tool ONLY when Susan explicitly asks to remove or delete a specific product.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              productId: {
+                type: Type.STRING,
+                description: 'The exact MongoDB _id string of the product to delete. Find this in the inventory catalog provided.'
+              }
+            },
+            required: ['productId']
+          }
+        },
+        {
+          name: 'sendCustomerEmail',
+          description: 'Sends a real formatted email from Susan to a client or recipient via IONOS SMTP and records it in Sent Messages.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              to: { type: Type.STRING, description: 'Recipient email address' },
+              subject: { type: Type.STRING, description: 'Email subject line' },
+              body: { type: Type.STRING, description: 'Plain-text body of the email (greeting and message)' }
+            },
+            required: ['to', 'subject', 'body']
+          }
+        },
+        {
+          name: 'curateProductForMember',
+          description: 'Pushes a product recommendation directly to a member Inbox and Beauty Blueprint with a personal note from Susan.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              userId: { type: Type.STRING, description: 'Exact MongoDB _id of the member/user' },
+              productId: { type: Type.STRING, description: 'Exact MongoDB _id of the boutique product' },
+              message: { type: Type.STRING, description: 'Personal note from Susan explaining why this product fits their ritual' }
+            },
+            required: ['userId', 'productId']
+          }
+        },
+        {
+          name: 'scheduleConsultation',
+          description: 'Schedules a 1-on-1 beauty consultation on Susan calendar in US Central Time (America/Chicago) and emails the client.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              clientId: { type: Type.STRING, description: 'Exact MongoDB _id of the member/client' },
+              startTime: { type: Type.STRING, description: 'Start date/time in US Central Time formatted as YYYY-MM-DDTHH:mm (e.g., "2026-10-20T14:00")' },
+              durationInMinutes: { type: Type.NUMBER, description: 'Duration in minutes (default 60)' },
+              notes: { type: Type.STRING, description: 'Consultation focus or notes' }
+            },
+            required: ['clientId', 'startTime']
+          }
+        },
+        {
+          name: 'sendAppointmentReminder',
+          description: 'Dispatches an immediate 1-on-1 consultation reminder email (with video room link) to both the client and Susan.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              appointmentId: { type: Type.STRING, description: 'Exact MongoDB _id of the scheduled appointment' }
+            },
+            required: ['appointmentId']
+          }
         }
-      }]
+      ]
     };
 
     const response = await ai.models.generateContent({
@@ -735,25 +1101,242 @@ Maintain a graceful, sophisticated, and helpful tone.`;
       contents,
       config: {
         systemInstruction,
-        tools: [deleteProductTool],
+        tools: [executiveBoutiqueTools],
         temperature: 0.2,
       }
     });
 
     if (response.functionCalls && response.functionCalls.length > 0) {
-      const call = response.functionCalls[0];
-      
-      if (call.name === 'deleteProduct') {
-        const pid = call.args?.productId;
-        const deleted = pid ? await Product.findByIdAndDelete(pid) : null;
-        console.log(`🤖 AI triggered deletion of product ID: ${pid}`);
-        return res.status(200).json({ 
-          response: deleted
-            ? `✧ Done. I have permanently removed "${deleted.title}" from the boutique's database, Susan.`
-            : `✧ I couldn't find a product with ID ${pid} in the database, Susan.`,
-          deletedProductId: deleted ? pid : null
-        });
+      const summaries = [];
+      const payload = { actionsTaken: [] };
+
+      for (const call of response.functionCalls) {
+        const args = call.args || {};
+
+        if (call.name === 'addProduct') {
+          const cleanTitle = String(args.title || '').trim();
+          const cleanPrice = parseFloat(args.price) || 0;
+          const cleanDesc = String(args.description || '').trim();
+          const cleanImg = String(args.imageUrl || '').trim();
+          const tagList = args.tags
+            ? String(args.tags).split(',').map(t => t.trim()).filter(Boolean)
+            : ['beauty', 'skincare'];
+
+          const created = new Product({
+            title: cleanTitle || 'Susan Bespoke Essential',
+            description: cleanDesc,
+            imageUrl: cleanImg,
+            tags: tagList,
+            variants: [{
+              sku: `CUSTOM-${Date.now()}`,
+              variantName: 'Standard',
+              price: cleanPrice,
+              imageUrl: cleanImg
+            }]
+          });
+          await created.save();
+          payload.addedProduct = created;
+          payload.actionsTaken.push('addProduct');
+          summaries.push(`✧ Added "${created.title}" ($${cleanPrice.toFixed(2)}) to the boutique inventory.`);
+        }
+
+        else if (call.name === 'updateProduct') {
+          const pid = args.productId;
+          const prod = pid && mongoose.Types.ObjectId.isValid(String(pid))
+            ? await Product.findById(pid)
+            : null;
+          if (!prod) {
+            summaries.push(`✧ Could not find a product with ID "${pid}" to update.`);
+          } else {
+            if (args.title !== undefined && String(args.title).trim()) {
+              prod.title = String(args.title).trim();
+            }
+            if (args.description !== undefined) {
+              prod.description = String(args.description).trim();
+            }
+            if (args.imageUrl !== undefined) {
+              prod.imageUrl = String(args.imageUrl).trim();
+            }
+            if (args.tags !== undefined) {
+              prod.tags = Array.isArray(args.tags)
+                ? args.tags
+                : String(args.tags).split(',').map(t => t.trim()).filter(Boolean);
+            }
+            const parsedPrice = args.price !== undefined ? parseFloat(args.price) : NaN;
+            if (prod.variants && prod.variants.length > 0) {
+              if (!isNaN(parsedPrice) && parsedPrice >= 0) {
+                prod.variants[0].price = parsedPrice;
+              }
+              if (args.imageUrl !== undefined && String(args.imageUrl).trim()) {
+                prod.variants[0].imageUrl = String(args.imageUrl).trim();
+              }
+            } else {
+              prod.variants = [{
+                sku: `CUSTOM-${Date.now()}`,
+                variantName: 'Standard',
+                price: !isNaN(parsedPrice) ? parsedPrice : 0,
+                imageUrl: prod.imageUrl || ''
+              }];
+            }
+            await prod.save();
+            payload.updatedProduct = prod;
+            payload.actionsTaken.push('updateProduct');
+            const updatedPrice = Number(prod.variants?.[0]?.price ?? 0).toFixed(2);
+            summaries.push(`✧ Updated "${prod.title}" ($${updatedPrice}) in the boutique catalog.`);
+          }
+        }
+
+        else if (call.name === 'deleteProduct') {
+          const pid = args.productId;
+          const deleted = pid && mongoose.Types.ObjectId.isValid(String(pid))
+            ? await Product.findByIdAndDelete(pid)
+            : null;
+          if (deleted) {
+            payload.deletedProductId = String(pid);
+            payload.actionsTaken.push('deleteProduct');
+            summaries.push(`✧ Permanently removed "${deleted.title}" from the boutique database.`);
+          } else {
+            summaries.push(`✧ Could not find a product with ID "${pid}" in the database.`);
+          }
+        }
+
+        else if (call.name === 'sendCustomerEmail') {
+          const cleanTo = normalizeEmail(args.to);
+          const cleanSubject = String(args.subject || '').trim();
+          const cleanBody = String(args.body || '').trim();
+          if (!cleanTo || !cleanSubject || !cleanBody) {
+            summaries.push(`✧ Could not send email because recipient, subject, or body was missing.`);
+          } else {
+            const safeHtmlBody = escapeHtml(cleanBody);
+            const htmlContent = `
+              <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+                <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
+                <div style="font-size: 1.1rem; line-height: 1.6; white-space: pre-wrap;">${safeHtmlBody}</div>
+                <p style="font-size: 0.9rem; color: #8A797A; margin-top: 40px; text-align: center;">Warmly,<br>Susan</p>
+              </div>
+            `;
+            const textContent = `${cleanBody}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+            await sendEmail(cleanTo, cleanSubject, htmlContent, textContent);
+            const newLog = await new EmailLog({ to: cleanTo, subject: cleanSubject, body: cleanBody }).save();
+            payload.sentEmailLog = newLog;
+            payload.actionsTaken.push('sendCustomerEmail');
+            summaries.push(`✧ Dispatched email "${cleanSubject}" to ${cleanTo} and logged it in Sent Messages.`);
+          }
+        }
+
+        else if (call.name === 'curateProductForMember') {
+          const uid = args.userId;
+          const pid = args.productId;
+          const customNote = (args.message && String(args.message).trim())
+            ? String(args.message).trim()
+            : "Susan has hand-selected this specifically for your custom beauty profile ✧";
+
+          const [product, member] = await Promise.all([
+            pid && mongoose.Types.ObjectId.isValid(String(pid)) ? Product.findById(pid) : null,
+            uid && mongoose.Types.ObjectId.isValid(String(uid)) ? User.findById(uid) : null
+          ]);
+
+          if (!product || !member) {
+            summaries.push(`✧ Could not curate product: verify both the member ID and product ID exist.`);
+          } else {
+            await User.findByIdAndUpdate(
+              member._id,
+              { $addToSet: { recommendedProducts: product._id } },
+              { returnDocument: 'after' }
+            );
+            const inboxItem = await new InboxItem({
+              userId: member._id,
+              productId: product._id,
+              message: customNote
+            }).save();
+            payload.curatedRecommendation = {
+              userId: String(member._id),
+              productId: String(product._id),
+              inboxItemId: String(inboxItem._id)
+            };
+            payload.actionsTaken.push('curateProductForMember');
+            summaries.push(`✧ Pushed "${product.title}" to ${member.name}'s Sanctuary Inbox & Beauty Blueprint with your note.`);
+          }
+        }
+
+        else if (call.name === 'scheduleConsultation') {
+          const cid = args.clientId;
+          const start = parseCentralDateTime(args.startTime);
+          const duration = Number(args.durationInMinutes) || 60;
+          const notes = args.notes ? String(args.notes).trim() : '';
+
+          const clientUser = cid && mongoose.Types.ObjectId.isValid(String(cid))
+            ? await User.findById(cid).select('_id name email membershipTier')
+            : null;
+
+          if (!clientUser || isNaN(start.getTime())) {
+            summaries.push(`✧ Could not schedule consultation: please verify the member and start time.`);
+          } else {
+            const end = new Date(start.getTime() + duration * 60000);
+            const conflict = await Appointment.findOne({
+              status: { $ne: 'cancelled' },
+              startTime: { $lt: end },
+              endTime: { $gt: start }
+            });
+            if (conflict) {
+              summaries.push(`✧ That time slot (${formatCentralDateTime(start)}) overlaps with an existing consultation on your calendar.`);
+            } else {
+              const newAppt = await new Appointment({
+                clientId: clientUser._id,
+                staffId: req.user._id,
+                startTime: start,
+                endTime: end,
+                status: 'confirmed',
+                notes,
+                meetingLink: buildDefaultMeetingLink()
+              }).save();
+
+              const populatedAppt = await Appointment.findById(newAppt._id)
+                .populate('clientId', 'name email membershipTier')
+                .populate('serviceId', 'name');
+
+              if (clientUser.email) {
+                const formattedTime = formatCentralDateTime(start);
+                const html = `
+                  <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+                    <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your 1-on-1 Consultation is Scheduled ✧</h2>
+                    <p style="font-size: 1.05rem; line-height: 1.6;">Dear ${escapeHtml(clientUser.name || 'Member')},</p>
+                    <p style="font-size: 1.05rem; line-height: 1.6;">Susan has scheduled a private consultation with you:</p>
+                    <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                      <p style="margin: 5px 0;"><strong>Date & Time:</strong> ${escapeHtml(formattedTime)}</p>
+                      ${notes ? `<p style="margin: 5px 0;"><strong>Notes:</strong> ${escapeHtml(notes)}</p>` : ''}
+                      <p style="margin: 5px 0;"><strong>Video Sanctuary Link:</strong> <a href="${escapeHtml(newAppt.meetingLink)}" style="color: #B38B8F;">${escapeHtml(newAppt.meetingLink)}</a></p>
+                    </div>
+                  </div>
+                `;
+                const text = `Your 1-on-1 Consultation with Susan is scheduled for ${formattedTime}. Video link: ${newAppt.meetingLink}`;
+                sendEmail(clientUser.email, "✧ New Consultation Scheduled with Susan", html, text).catch(() => {});
+              }
+
+              payload.scheduledAppointment = populatedAppt;
+              payload.actionsTaken.push('scheduleConsultation');
+              summaries.push(`✧ Scheduled a 1-on-1 consultation with ${clientUser.name} for ${formatCentralDateTime(start)} and emailed their Video Sanctuary link.`);
+            }
+          }
+        }
+
+        else if (call.name === 'sendAppointmentReminder') {
+          const aid = args.appointmentId;
+          if (!aid || !mongoose.Types.ObjectId.isValid(String(aid))) {
+            summaries.push(`✧ Could not send reminder: invalid appointment ID "${aid}".`);
+          } else {
+            const reminderResult = await dispatchAppointmentReminder(aid, 'ai');
+            payload.remindedAppointmentId = String(aid);
+            payload.actionsTaken.push('sendAppointmentReminder');
+            summaries.push(`✧ Sent 1-on-1 consultation reminder email to ${reminderResult.clientEmail || 'client'} and to your inbox for ${reminderResult.formattedTime}.`);
+          }
+        }
       }
+
+      return res.status(200).json({
+        response: summaries.join('\n\n') || '✧ Completed your request, Susan.',
+        ...payload
+      });
     }
 
     const replyText = (response && typeof response.text === 'string' && response.text.trim())
@@ -844,6 +1427,145 @@ const formatCentralDateTime = (dateVal) => {
 const buildDefaultMeetingLink = () => {
   const roomCode = crypto.randomBytes(4).toString('hex');
   return `https://meet.jit.si/SusansBoutique_Consultation_${roomCode}`;
+};
+
+// Dispatches a 1-on-1 consultation reminder email to both the client and Susan,
+// marks reminderSentAt on the appointment, and records an EmailLog entry.
+const dispatchAppointmentReminder = async (appointmentOrId, triggeredBy = 'auto') => {
+  const apptId = appointmentOrId?._id ? appointmentOrId._id : appointmentOrId;
+  const appt = await Appointment.findById(apptId)
+    .populate('clientId', 'name email membershipTier')
+    .populate('serviceId', 'name');
+
+  if (!appt) {
+    throw new Error('Appointment not found.');
+  }
+  if (appt.status === 'cancelled') {
+    throw new Error('Cannot send a reminder for a cancelled consultation.');
+  }
+
+  if (!appt.meetingLink || !String(appt.meetingLink).trim()) {
+    appt.meetingLink = buildDefaultMeetingLink();
+  }
+
+  const clientName = appt.clientId?.name || 'Valued Member';
+  const clientEmail = normalizeEmail(appt.clientId?.email || '');
+  const formattedTime = formatCentralDateTime(appt.startTime);
+  const safeNotes = escapeHtml(appt.notes || 'Personal Skincare & Beauty Consultation');
+  const safeLink = escapeHtml(appt.meetingLink);
+
+  let clientEmailSent = false;
+  let adminEmailSent = false;
+
+  if (clientEmail) {
+    const clientSubject = `✧ Consultation Reminder: Your Session with Susan (${formattedTime})`;
+    const clientHtml = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Upcoming Consultation Reminder ✧</h2>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Dear ${escapeHtml(clientName)},</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">This is a friendly reminder of your upcoming 1-on-1 consultation with Susan:</p>
+        <div style="background-color: #FFF0F2; padding: 18px; border-radius: 10px; margin: 20px 0;">
+          <p style="margin: 6px 0;"><strong>Date & Time:</strong> ${escapeHtml(formattedTime)}</p>
+          <p style="margin: 6px 0;"><strong>Session Focus:</strong> ${safeNotes}</p>
+          <p style="margin: 6px 0;"><strong>Video Sanctuary Link:</strong> <a href="${safeLink}" style="color: #B38B8F; font-weight: bold;">${safeLink}</a></p>
+        </div>
+        <p style="font-size: 0.95rem; color: #8A797A;">You can join directly from your Member Sanctuary under the Consultations tab or by clicking your private Video Sanctuary link above.</p>
+        <p style="font-size: 0.95rem; color: #8A797A; margin-top: 25px; text-align: center;">Warmly,<br>Susan's Beauty Consulting</p>
+      </div>
+    `;
+    const clientText = `Upcoming Consultation Reminder ✧
+
+Dear ${clientName},
+
+This is a reminder of your 1-on-1 consultation with Susan scheduled for ${formattedTime}.
+Focus: ${appt.notes || 'Personal Skincare & Beauty Consultation'}
+Video Sanctuary Link: ${appt.meetingLink}
+
+Warmly,
+Susan's Beauty Consulting`;
+
+    await sendEmail(clientEmail, clientSubject, clientHtml, clientText);
+    clientEmailSent = true;
+
+    await new EmailLog({
+      to: clientEmail,
+      subject: clientSubject,
+      body: clientText
+    }).save().catch(() => {});
+  }
+
+  // Also send a schedule reminder to Susan so she has the client details & room link at her fingertips
+  const susanEmail = normalizeEmail(smtpUser || 'susan.coke@susansbeautyconsulting.com');
+  if (susanEmail) {
+    const susanSubject = `⏰ Schedule Reminder: Consultation with ${clientName} (${formattedTime})`;
+    const susanHtml = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Consultation Reminder ✧</h2>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Hello Susan,</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Here is your upcoming consultation reminder (${triggeredBy === 'auto' ? '24-hour automated check' : 'manual/AI dispatch'}):</p>
+        <div style="background-color: #FFF0F2; padding: 18px; border-radius: 10px; margin: 20px 0;">
+          <p style="margin: 6px 0;"><strong>Client:</strong> ${escapeHtml(clientName)} (${escapeHtml(clientEmail || 'No email')})</p>
+          <p style="margin: 6px 0;"><strong>Date & Time:</strong> ${escapeHtml(formattedTime)}</p>
+          <p style="margin: 6px 0;"><strong>Notes:</strong> ${safeNotes}</p>
+          <p style="margin: 6px 0;"><strong>Video Sanctuary Link:</strong> <a href="${safeLink}" style="color: #B38B8F; font-weight: bold;">${safeLink}</a></p>
+        </div>
+      </div>
+    `;
+    const susanText = `Susan's Consultation Reminder ✧
+Client: ${clientName} (${clientEmail})
+Date & Time: ${formattedTime}
+Notes: ${appt.notes || 'None'}
+Video Link: ${appt.meetingLink}`;
+
+    await sendEmail(susanEmail, susanSubject, susanHtml, susanText).catch((err) => {
+      console.warn('⚠️ Could not send copy of reminder to Susan:', err.message);
+    });
+    adminEmailSent = true;
+  }
+
+  appt.reminderSentAt = new Date();
+  await appt.save();
+
+  return {
+    appointment: appt,
+    clientEmail,
+    formattedTime,
+    clientEmailSent,
+    adminEmailSent
+  };
+};
+
+// Scans for confirmed consultations starting within the next 24 hours that have not yet received a reminder
+const runUpcomingAppointmentReminders = async () => {
+  try {
+    if (mongoose.connection.readyState !== 1) return { checked: 0, sent: 0 };
+    const now = new Date();
+    const in24Hours = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+    const upcoming = await Appointment.find({
+      status: { $in: ['confirmed', 'pending'] },
+      reminderSentAt: null,
+      startTime: { $gt: now, $lte: in24Hours }
+    }).populate('clientId', 'name email membershipTier');
+
+    let sentCount = 0;
+    for (const appt of upcoming) {
+      try {
+        await dispatchAppointmentReminder(appt, 'auto');
+        sentCount++;
+      } catch (remErr) {
+        console.warn(`⚠️ Failed to send 24h reminder for appointment ${appt._id}:`, remErr.message);
+      }
+    }
+
+    if (sentCount > 0) {
+      console.log(`⏰ Dispatched ${sentCount} automated 24-hour consultation reminder(s).`);
+    }
+    return { checked: upcoming.length, sent: sentCount };
+  } catch (err) {
+    console.error('⚠️ Error in runUpcomingAppointmentReminders:', err.message);
+    return { checked: 0, sent: 0, error: err.message };
+  }
 };
 
 app.get('/api/admin/appointments', authenticateToken, requireAdmin, async (req, res) => {
@@ -957,6 +1679,7 @@ app.put('/api/admin/appointments/:id', authenticateToken, requireAdmin, async (r
       if (newStart.getTime() !== new Date(appointment.startTime).getTime()) {
         appointment.previousStartTime = appointment.startTime;
         appointment.rescheduledBy = 'admin';
+        appointment.reminderSentAt = null;
         timeChanged = true;
       }
       appointment.startTime = newStart;
@@ -1006,6 +1729,19 @@ app.delete('/api/admin/appointments/:id', authenticateToken, requireAdmin, async
     res.status(200).json({ message: 'Consultation removed successfully.' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete appointment' });
+  }
+});
+
+app.post('/api/admin/appointments/:id/remind', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await dispatchAppointmentReminder(req.params.id, 'manual');
+    res.status(200).json({
+      message: `Reminder email dispatched to ${result.clientEmail || 'client'} and Susan for ${result.formattedTime} ✧`,
+      appointment: result.appointment
+    });
+  } catch (error) {
+    console.error('Appointment Reminder Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send consultation reminder.' });
   }
 });
 
@@ -1153,6 +1889,7 @@ app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) =>
       if (newStart.getTime() !== new Date(appointment.startTime).getTime()) {
         appointment.previousStartTime = appointment.startTime;
         appointment.rescheduledBy = 'client';
+        appointment.reminderSentAt = null;
       }
       appointment.startTime = newStart;
       appointment.endTime = newEnd;
@@ -2156,6 +2893,60 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
   }
 });
 
+app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const targetEmail = normalizeEmail(req.body?.to || req.user?.email || smtpUser || 'susan.coke@susansbeautyconsulting.com');
+    const verifyReport = await verifySmtpConnection();
+
+    if (!verifyReport.verified) {
+      return res.status(500).json({
+        error: `SMTP verification failed on ${smtpHost} (ports ${configuredPort} & ${fallbackPort}): ${verifyReport.error}`,
+        verifyReport
+      });
+    }
+
+    const timestampCT = formatCentralDateTime(new Date());
+    const subject = `✧ IONOS SMTP Live Diagnostic Test (${timestampCT})`;
+    const html = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">IONOS Email Diagnostic Passed ✧</h2>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Hello Susan,</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Your boutique email system is online and verified with dual-port IPv4 auto-fallback.</p>
+        <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+          <p style="margin: 5px 0;"><strong>SMTP Host:</strong> ${escapeHtml(smtpHost)}</p>
+          <p style="margin: 5px 0;"><strong>Active Port:</strong> ${activeSmtpPort} (${activeSmtpPort === 465 ? 'Implicit SSL/TLS' : 'STARTTLS'})</p>
+          <p style="margin: 5px 0;"><strong>Dispatched At:</strong> ${escapeHtml(timestampCT)}</p>
+        </div>
+      </div>
+    `;
+    const text = `IONOS Email Diagnostic Passed ✧
+Host: ${smtpHost}:${activeSmtpPort}
+Time: ${timestampCT}`;
+
+    const sendResult = await sendEmail(targetEmail, subject, html, text);
+
+    await new EmailLog({
+      to: targetEmail,
+      subject,
+      body: text
+    }).save().catch(() => {});
+
+    res.status(200).json({
+      message: `Test email successfully delivered to ${targetEmail} via ${smtpHost}:${sendResult.portUsed} ✧`,
+      recipient: targetEmail,
+      host: smtpHost,
+      portUsed: sendResult.portUsed,
+      secureUsed: sendResult.secureUsed,
+      messageId: sendResult.info?.messageId || null
+    });
+  } catch (err) {
+    console.error('SMTP Diagnostic Test Error:', err);
+    res.status(500).json({
+      error: err.message || 'SMTP test email failed.'
+    });
+  }
+});
+
 // ---------------- SERVER INITIALIZATION ---------------- //
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/beauty_app';
@@ -2167,15 +2958,7 @@ mongoose.connect(MONGO_URI)
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
     } else {
-      try {
-        await transporter.verify();
-        console.log(`✧ IONOS SMTP Server (${smtpHost}:${smtpPort}, secure=${smtpSecure}) verified for ${smtpUser}`);
-      } catch (smtpError) {
-        console.error(
-          `⚠️ SMTP Verification failed on startup (${smtpHost}:${smtpPort}, secure=${smtpSecure}):`,
-          smtpError.message
-        );
-      }
+      await verifySmtpConnection();
     }
 
     app.listen(PORT, () => {
@@ -2183,6 +2966,17 @@ mongoose.connect(MONGO_URI)
       
       syncCJCatalog().catch((error) => {
         console.error('❌ Unexpected CJ catalog sync failure:', error?.response?.data || error.message);
+      });
+
+      // Check for upcoming 24-hour consultation reminders shortly after boot and every 15 minutes
+      setTimeout(() => {
+        runUpcomingAppointmentReminders().catch(() => {});
+      }, 10000);
+
+      cron.schedule('*/15 * * * *', () => {
+        runUpcomingAppointmentReminders().catch((err) => {
+          console.error('❌ Scheduled consultation reminder check failed:', err.message);
+        });
       });
 
       cron.schedule('0 3 * * *', () => {
