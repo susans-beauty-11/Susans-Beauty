@@ -49,7 +49,9 @@ const authLimiter = rateLimit({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---------------- EMAIL TRANSPORTER & SECURITY HELPERS (IONOS SMTP) ---------------- //
+// ---------------- EMAIL TRANSPORTER & SECURITY HELPERS (IONOS SMTP + HTTPS FALLBACK) ---------------- //
+const dns = require('dns');
+
 const cleanEnv = (val) => (val || '').toString().trim().replace(/^["']|["']$/g, '');
 
 const escapeHtml = (unsafe = '') =>
@@ -76,116 +78,355 @@ const getMemberDiscountInfo = (tier = '') => {
 };
 
 const smtpHost = cleanEnv(process.env.SMTP_HOST) || 'smtp.ionos.com';
-const configuredPort = Number(cleanEnv(process.env.SMTP_PORT)) || 587;
-const configuredSecure = process.env.SMTP_SECURE
-  ? cleanEnv(process.env.SMTP_SECURE).toLowerCase() === 'true'
-  : configuredPort === 465;
-const fallbackPort = configuredPort === 465 ? 587 : 465;
-const fallbackSecure = fallbackPort === 465;
+const configuredPort = Number(cleanEnv(process.env.SMTP_PORT)) || 465;
 
-const smtpUser = cleanEnv(process.env.SMTP_USER);
+// Preserve exact casing from .env (e.g. Susan.Coke@SusansBeautyConsulting.com)
+const rawSmtpUser = cleanEnv(process.env.SMTP_USER) || 'Susan.Coke@SusansBeautyConsulting.com';
+const lowerSmtpUser = rawSmtpUser.toLowerCase();
+const canonicalSmtpUser =
+  lowerSmtpUser === 'susan.coke@susansbeautyconsulting.com'
+    ? 'Susan.Coke@SusansBeautyConsulting.com'
+    : rawSmtpUser;
+
+const smtpUser = rawSmtpUser;
 const smtpPass = cleanEnv(process.env.SMTP_PASS);
-const smtpFrom = cleanEnv(process.env.SMTP_FROM) || `"Susan's Beauty Consulting" <${smtpUser || 'susan.coke@susansbeautyconsulting.com'}>`;
+const resendApiKey = cleanEnv(process.env.RESEND_API_KEY);
+const brevoApiKey = cleanEnv(process.env.BREVO_API_KEY);
 
-// Creates a Nodemailer transporter for IONOS with IPv4 enforcement (family: 4) and strict timeouts
-// so cloud IPv6 DNS blackholes or blocked ports fail over in <10s instead of hanging for 2 minutes.
-const createIonosTransporter = (port, secure) =>
+const getPrimaryAdminEmail = () => rawSmtpUser || 'Susan.Coke@SusansBeautyConsulting.com';
+
+// Deduplicated list of username casings to try automatically:
+// 1. Exact .env value, 2. Mixed-case canonical (Susan.Coke@...), 3. Lowercase (susan.coke@...)
+const getCandidateSmtpUsers = () => {
+  const seen = new Set();
+  const list = [];
+  for (const u of [rawSmtpUser, canonicalSmtpUser, lowerSmtpUser]) {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      list.push(u);
+    }
+  }
+  return list;
+};
+
+// Creates a Nodemailer transporter for IONOS with IPv4 enforcement (family: 4),
+// explicit auth user casing, and configurable TLS strictness.
+const createIonosTransporter = ({ port, secure, user, strictTls = true }) =>
   nodemailer.createTransport({
     host: smtpHost,
     port,
-    secure, // true for 465 (Implicit SSL/TLS), false for 587 (STARTTLS)
-    requireTLS: !secure, // Enforce STARTTLS upgrade when using port 587
+    secure, // true for 465 (Implicit SSL/TLS), false for 587/2525 (STARTTLS)
+    requireTLS: !secure,
     family: 4, // Force IPv4 resolution to prevent IPv6 ETIMEDOUT stalls on cloud hosts
-    connectionTimeout: 10000, // 10 seconds max to establish TCP connection
-    greetingTimeout: 10000, // 10 seconds max for SMTP greeting
-    socketTimeout: 15000, // 15 seconds max for socket inactivity
+    connectionTimeout: 9000,
+    greetingTimeout: 9000,
+    socketTimeout: 12000,
     auth: {
-      user: smtpUser,
+      user,
       pass: smtpPass,
     },
     tls: {
       minVersion: 'TLSv1.2',
       servername: smtpHost,
-      rejectUnauthorized: true
+      rejectUnauthorized: strictTls
     }
   });
 
-const primaryTransporter = createIonosTransporter(configuredPort, configuredSecure);
-const fallbackTransporter = createIonosTransporter(fallbackPort, fallbackSecure);
-let activeSmtpPort = configuredPort;
+let cachedWorkingCandidate = null;
 
-const getOrderedTransporters = () => {
-  if (activeSmtpPort === fallbackPort) {
-    return [
-      { client: fallbackTransporter, port: fallbackPort, secure: fallbackSecure },
-      { client: primaryTransporter, port: configuredPort, secure: configuredSecure }
-    ];
-  }
-  return [
-    { client: primaryTransporter, port: configuredPort, secure: configuredSecure },
-    { client: fallbackTransporter, port: fallbackPort, secure: fallbackSecure }
+// Builds the ordered candidate matrix of (port, secure, strictTls, userCasing)
+const buildSmtpCandidateMatrix = () => {
+  const users = getCandidateSmtpUsers();
+  const primaryPort = configuredPort === 587 ? 587 : 465;
+  const secondaryPort = primaryPort === 465 ? 587 : 465;
+
+  const portProfiles = [
+    { port: primaryPort, secure: primaryPort === 465, strictTls: true, label: `${primaryPort} (${primaryPort === 465 ? 'SSL/TLS' : 'STARTTLS'})` },
+    { port: secondaryPort, secure: secondaryPort === 465, strictTls: true, label: `${secondaryPort} (${secondaryPort === 465 ? 'SSL/TLS' : 'STARTTLS'})` },
+    { port: 465, secure: true, strictTls: false, label: '465 (SSL/TLS - Relaxed Cert Check)' },
+    { port: 587, secure: false, strictTls: false, label: '587 (STARTTLS - Relaxed Cert Check)' },
+    { port: 2525, secure: false, strictTls: false, label: '2525 (Alternate STARTTLS)' }
   ];
+
+  const matrix = [];
+  if (cachedWorkingCandidate) {
+    matrix.push(cachedWorkingCandidate);
+  }
+
+  for (const profile of portProfiles) {
+    for (const userVariant of users) {
+      const key = `${profile.port}-${profile.secure}-${profile.strictTls}-${userVariant}`;
+      if (!matrix.some(m => m.key === key)) {
+        matrix.push({
+          key,
+          port: profile.port,
+          secure: profile.secure,
+          strictTls: profile.strictTls,
+          user: userVariant,
+          label: `${smtpHost}:${profile.label} as ${userVariant}`
+        });
+      }
+    }
+  }
+  return matrix;
+};
+
+let activeSmtpPort = configuredPort;
+let activeSmtpUser = rawSmtpUser;
+
+// Translates raw Nodemailer/IONOS error codes into actionable guidance for Susan
+const buildSmtpTroubleshootingAdvice = (attempts = [], envWarnings = []) => {
+  const advice = [...envWarnings];
+  const combinedErrors = attempts.map(a => `${a.code || ''} ${a.error || ''}`).join(' | ');
+
+  if (/535|Authentication credentials invalid|Invalid login|bad-credentials/i.test(combinedErrors)) {
+    advice.push(
+      'IONOS returned 535 Authentication Failed: (1) Verify that Susan.Coke@SusansBeautyConsulting.com is a full IONOS Basic/Business Mailbox with its own inbox and password — NOT a "Forwarding-Only" address. (2) Log into https://mail.ionos.com once in a browser to clear any first-login activation prompt. (3) If your password in .env contains a "#" character, wrap the password in double quotes: SMTP_PASS="your#password".'
+    );
+  }
+  if (/ETIMEDOUT|ECONNREFUSED|ESOCKET|Connection timeout/i.test(combinedErrors)) {
+    advice.push(
+      'Outbound SMTP ports 465 and 587 timed out or were blocked by your hosting provider (common on Render Free tier, DigitalOcean, or AWS). Either upgrade the host plan to unblock outbound SMTP ports, or add RESEND_API_KEY or BREVO_API_KEY to .env to use our built-in HTTPS (port 443) email fallback.'
+    );
+  }
+  if (/550|Sender address is not allowed|not owned by user/i.test(combinedErrors)) {
+    advice.push(
+      'IONOS rejected the From address (550 Sender not allowed): Ensure SMTP_FROM in .env is either omitted or matches your exact IONOS mailbox (Susan.Coke@SusansBeautyConsulting.com).'
+    );
+  }
+  if (advice.length === 0) {
+    advice.push(
+      'Verify SMTP_HOST=smtp.ionos.com, SMTP_PORT=465, SMTP_USER="Susan.Coke@SusansBeautyConsulting.com", and SMTP_PASS="<your_password>" in your server .env file.'
+    );
+  }
+  return advice;
+};
+
+const inspectSmtpEnvWarnings = () => {
+  const warnings = [];
+  const rawEnvPass = process.env.SMTP_PASS || '';
+  if (!smtpUser) warnings.push('SMTP_USER is missing in .env.');
+  if (!smtpPass) {
+    warnings.push('SMTP_PASS is empty in .env. Note: if your password starts with "#", dotenv treats "#" as a comment unless wrapped in quotes: SMTP_PASS="your_password".');
+  } else if (rawEnvPass !== smtpPass) {
+    warnings.push('Leading/trailing whitespace or quotes in SMTP_PASS were automatically trimmed.');
+  }
+  return warnings;
 };
 
 const verifySmtpConnection = async () => {
-  if (!smtpUser || !smtpPass) {
-    return { verified: false, error: 'SMTP_USER or SMTP_PASS is missing in environment variables.' };
+  const envWarnings = inspectSmtpEnvWarnings();
+  if (!smtpPass) {
+    return {
+      verified: false,
+      host: smtpHost,
+      error: 'SMTP_PASS is missing in environment variables.',
+      envWarnings,
+      troubleshootingAdvice: buildSmtpTroubleshootingAdvice([], envWarnings)
+    };
   }
-  const candidates = getOrderedTransporters();
-  let lastError = null;
 
-  for (const candidate of candidates) {
+  let dnsResolution = null;
+  try {
+    dnsResolution = await dns.promises.lookup(smtpHost, { family: 4 });
+  } catch (dnsErr) {
+    dnsResolution = { error: dnsErr.message };
+  }
+
+  const candidates = buildSmtpCandidateMatrix();
+  const attempts = [];
+
+  for (const candidate of candidates.slice(0, 6)) {
+    const client = createIonosTransporter(candidate);
+    const startMs = Date.now();
     try {
-      await candidate.client.verify();
+      await client.verify();
+      cachedWorkingCandidate = candidate;
       activeSmtpPort = candidate.port;
-      console.log(`✧ IONOS SMTP Server (${smtpHost}:${candidate.port}, secure=${candidate.secure}, IPv4) verified for ${smtpUser}`);
-      return { verified: true, host: smtpHost, port: candidate.port, secure: candidate.secure };
+      activeSmtpUser = candidate.user;
+      console.log(`✧ IONOS SMTP Verified (${candidate.label}, IPv4) in ${Date.now() - startMs}ms`);
+      return {
+        verified: true,
+        host: smtpHost,
+        port: candidate.port,
+        secure: candidate.secure,
+        authUserUsed: candidate.user,
+        dnsResolution,
+        attempts: [...attempts, { label: candidate.label, status: 'PASSED', durationMs: Date.now() - startMs }],
+        envWarnings
+      };
     } catch (err) {
-      lastError = err;
-      console.warn(`⚠️ SMTP verify on ${smtpHost}:${candidate.port} (secure=${candidate.secure}) failed: ${err.message}. Trying alternate port...`);
+      attempts.push({
+        label: candidate.label,
+        port: candidate.port,
+        secure: candidate.secure,
+        user: candidate.user,
+        status: 'FAILED',
+        code: err.code || err.responseCode || 'ERR',
+        error: err.message,
+        durationMs: Date.now() - startMs
+      });
+      console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
     }
   }
 
   return {
     verified: false,
     host: smtpHost,
-    triedPorts: candidates.map(c => c.port),
-    error: lastError ? lastError.message : 'Unknown SMTP verification error'
+    dnsResolution,
+    triedPorts: [...new Set(attempts.map(a => a.port))],
+    attempts,
+    envWarnings,
+    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
+    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
   };
 };
 
+// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
+const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
+  const fromAddress = getPrimaryAdminEmail();
+  if (resendApiKey) {
+    const resp = await axios.post(
+      'https://api.resend.com/emails',
+      {
+        from: `Susan's Beauty Consulting <${fromAddress}>`,
+        to: [to],
+        subject,
+        html: htmlContent,
+        text: textContent
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.id || 'resend-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Resend HTTPS API (Port 443)'
+    };
+  }
+
+  if (brevoApiKey) {
+    const resp = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
+        to: [{ email: to }],
+        subject,
+        htmlContent,
+        textContent
+      },
+      {
+        headers: {
+          'api-key': brevoApiKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.messageId || 'brevo-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Brevo HTTPS API (Port 443)'
+    };
+  }
+
+  return null;
+};
+
 const sendEmail = async (to, subject, htmlContent, textContent) => {
-  if (!smtpUser || !smtpPass) {
-    const configErr = new Error('SMTP_USER or SMTP_PASS is missing in environment variables.');
+  const envWarnings = inspectSmtpEnvWarnings();
+
+  if (!smtpPass && !resendApiKey && !brevoApiKey) {
+    const configErr = new Error(
+      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
+    );
     console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
     throw configErr;
   }
 
-  const mailOptions = {
-    from: smtpFrom,
-    to,
-    subject,
-    text: textContent,
-    html: htmlContent,
-  };
+  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
+  const attempts = [];
 
-  const candidates = getOrderedTransporters();
-  let lastError = null;
+  for (const candidate of candidates.slice(0, 6)) {
+    const client = createIonosTransporter(candidate);
+    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
+    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
+    const mailOptions = {
+      from: {
+        name: "Susan's Beauty Consulting",
+        address: candidate.user
+      },
+      replyTo: candidate.user,
+      envelope: {
+        from: candidate.user,
+        to
+      },
+      to,
+      subject,
+      text: textContent,
+      html: htmlContent
+    };
 
-  for (const candidate of candidates) {
+    const startMs = Date.now();
     try {
-      const info = await candidate.client.sendMail(mailOptions);
+      const info = await client.sendMail(mailOptions);
+      cachedWorkingCandidate = candidate;
       activeSmtpPort = candidate.port;
-      console.log(`✉️ Email dispatched via ${smtpHost}:${candidate.port} to ${to}: "${subject}"`);
-      return { info, portUsed: candidate.port, secureUsed: candidate.secure };
+      activeSmtpUser = candidate.user;
+      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
+      return {
+        info,
+        portUsed: candidate.port,
+        secureUsed: candidate.secure,
+        authUserUsed: candidate.user,
+        deliveryTransport: `IONOS SMTP (${candidate.label})`,
+        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
+      };
     } catch (err) {
-      lastError = err;
-      console.warn(`⚠️ SMTP send failed on ${smtpHost}:${candidate.port} to ${to} (${err.code || err.message}). Retrying on alternate port...`);
+      attempts.push({
+        label: candidate.label,
+        port: candidate.port,
+        user: candidate.user,
+        status: 'FAILED',
+        code: err.code || err.responseCode || 'ERR',
+        error: err.message,
+        durationMs: Date.now() - startMs
+      });
+      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
     }
   }
 
-  console.error(`❌ Failed to send email to ${to} on both ports (${configuredPort} & ${fallbackPort}):`, lastError?.message);
-  throw new Error(`SMTP delivery failed across ports ${configuredPort} and ${fallbackPort}: ${lastError?.message || 'Connection timed out'}`);
+  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
+  try {
+    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
+    if (httpsResult) {
+      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
+      return { ...httpsResult, attempts };
+    }
+  } catch (httpsErr) {
+    attempts.push({
+      label: 'HTTPS Port 443 Fallback',
+      status: 'FAILED',
+      error: httpsErr?.response?.data?.message || httpsErr.message
+    });
+  }
+
+  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
+  const detailedError = new Error(
+    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
+  );
+  detailedError.attempts = attempts;
+  detailedError.troubleshootingAdvice = advice;
+  throw detailedError;
 };
 
 // ---------------- MONGODB SCHEMAS ---------------- //
@@ -290,8 +531,15 @@ const orderSchema = new mongoose.Schema({
   shipping_address: { type: mongoose.Schema.Types.Mixed },
   customerEmail: { type: String, index: true },
   status: { type: String, default: 'Pending', index: true },
-  tracking_code: String,
-  createdAt: { type: Date, default: Date.now }
+  tracking_code: { type: String, default: '' },
+  logisticName: { type: String, default: '' },
+  cjOrderId: { type: String, default: '' },
+  cjOrderStatus: { type: String, default: '' },
+  estimatedWholesaleCost: { type: Number, default: 0 },
+  estimatedProfit: { type: Number, default: 0 },
+  notes: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 const Order = mongoose.model('Order', orderSchema);
 
@@ -311,6 +559,58 @@ const inboxItemSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const InboxItem = mongoose.model('InboxItem', inboxItemSchema);
+
+// Odie's Long-Term Persistent Memory Bank (Facts, Preferences, VIP Client Notes & Business Rules)
+const odieMemorySchema = new mongoose.Schema({
+  category: {
+    type: String,
+    enum: ['preference', 'business_rule', 'vip_client', 'financial_goal', 'general'],
+    default: 'general',
+    index: true
+  },
+  key: { type: String, required: true, index: true },
+  content: { type: String, required: true },
+  source: {
+    type: String,
+    enum: ['susan_manual', 'odie_auto', 'system_seed'],
+    default: 'odie_auto'
+  },
+  pinned: { type: Boolean, default: true, index: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+const OdieMemory = mongoose.model('OdieMemory', odieMemorySchema);
+
+// Odie's Persistent Multi-Session Conversation History with Susan
+const odieChatHistorySchema = new mongoose.Schema({
+  adminEmail: { type: String, default: 'susan.coke@susansbeautyconsulting.com', index: true },
+  role: { type: String, enum: ['user', 'model'], required: true },
+  text: { type: String, required: true },
+  actionsTaken: { type: [String], default: [] },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const OdieChatHistory = mongoose.model('OdieChatHistory', odieChatHistorySchema);
+
+// Treasury Ledger for Stripe Bank Payouts ("Money Dumps") & Stripe -> CJ Dropshipping Transfers
+const treasuryTransferSchema = new mongoose.Schema({
+  transferType: {
+    type: String,
+    enum: ['STRIPE_BANK_PAYOUT', 'STRIPE_TO_CJ_BRIDGE', 'CJ_ORDER_WALLET_PAYMENT'],
+    required: true,
+    index: true
+  },
+  amountUsd: { type: Number, required: true },
+  currency: { type: String, default: 'USD' },
+  status: { type: String, default: 'COMPLETED', index: true },
+  stripePayoutId: { type: String, default: '' },
+  payoutMethod: { type: String, default: 'standard' },
+  cjOrdersPaid: { type: Array, default: [] },
+  wholesaleReserveUsd: { type: Number, default: 0 },
+  notes: { type: String, default: '' },
+  triggeredBy: { type: String, enum: ['susan', 'odie'], default: 'susan' },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const TreasuryTransfer = mongoose.model('TreasuryTransfer', treasuryTransferSchema);
 
 // ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
 
@@ -765,6 +1065,848 @@ const syncCJCatalog = async (options = {}) => {
 
 // ---------------- EXPRESS ROUTES ---------------- //
 
+// ---------------- LIVE STRIPE BALANCE, CJ WALLET & ORDER PIPELINE ENGINE ---------------- //
+
+const classifyOrderStage = (order) => {
+  const rawStatus = String(order?.status || 'Pending').toUpperCase().trim();
+  const createdMs = order?.createdAt ? new Date(order.createdAt).getTime() : Date.now();
+  const ageDays = (Date.now() - createdMs) / (1000 * 60 * 60 * 24);
+
+  if (['DELIVERED', 'COMPLETED', 'CANCELLED', 'CANCELED', 'REFUNDED', 'ARCHIVED'].includes(rawStatus)) {
+    return 'PAST';
+  }
+  if (rawStatus === 'SHIPPED' && ageDays > 21) {
+    return 'PAST';
+  }
+  if (['PAID_PROCESSING', 'PROCESSING', 'IN_PROGRESS', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DISPATCHED'].includes(rawStatus)) {
+    return 'PRESENT';
+  }
+  // Pending, Unpaid, Scheduled, or Pre-Fulfillment orders
+  return 'FUTURE';
+};
+
+const computeOrderUnitEconomics = (order) => {
+  const retailTotal = Number(order?.totalAmount || 0);
+  // Our CJ catalog applies a 6.5x retail markup on wholesale cost
+  const defaultEstWholesale = retailTotal > 0 ? Number((retailTotal / 6.5).toFixed(2)) : 0;
+  const wholesaleCost = Number(order?.estimatedWholesaleCost || defaultEstWholesale);
+  const netProfit = Number((retailTotal - wholesaleCost).toFixed(2));
+  return {
+    retailTotal: Number(retailTotal.toFixed(2)),
+    wholesaleCost: Number(wholesaleCost.toFixed(2)),
+    netProfit
+  };
+};
+
+// Queries Stripe Live/Test Balance, Pending Balance, Instant Available, and Recent Payouts
+const fetchStripeFinancialSnapshot = async () => {
+  const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+  if (!rawStripeKey) {
+    return {
+      configured: false,
+      connected: false,
+      mode: 'UNCONFIGURED',
+      currency: 'USD',
+      availableUsd: 0,
+      pendingUsd: 0,
+      instantAvailableUsd: 0,
+      totalBalanceUsd: 0,
+      recentPayouts: [],
+      activeStripeSubscriptions: null,
+      error: 'STRIPE_SECRET_KEY is not configured in .env.'
+    };
+  }
+
+  const keyMode = rawStripeKey.startsWith('sk_live_') ? 'LIVE' : 'TEST';
+  try {
+    const [balanceObj, payoutsObj, subsObj] = await Promise.all([
+      stripe.balance.retrieve(),
+      stripe.payouts.list({ limit: 5 }).catch(() => ({ data: [] })),
+      stripe.subscriptions.list({ status: 'active', limit: 100 }).catch(() => null)
+    ]);
+
+    const sumMoneyArrayUsd = (arr = []) => {
+      if (!Array.isArray(arr) || arr.length === 0) return 0;
+      const usdEntries = arr.filter(b => String(b.currency || '').toLowerCase() === 'usd');
+      const target = usdEntries.length > 0 ? usdEntries : arr;
+      return target.reduce((sum, item) => sum + (Number(item.amount || 0) / 100), 0);
+    };
+
+    const availableUsd = Number(sumMoneyArrayUsd(balanceObj.available).toFixed(2));
+    const pendingUsd = Number(sumMoneyArrayUsd(balanceObj.pending).toFixed(2));
+    const instantAvailableUsd = Number(sumMoneyArrayUsd(balanceObj.instant_available).toFixed(2));
+    const primaryCurrency = String(
+      balanceObj.available?.[0]?.currency ||
+      balanceObj.pending?.[0]?.currency ||
+      'usd'
+    ).toUpperCase();
+
+    const recentPayouts = (payoutsObj?.data || []).map(p => ({
+      id: p.id,
+      amountUsd: Number((Number(p.amount || 0) / 100).toFixed(2)),
+      currency: String(p.currency || 'usd').toUpperCase(),
+      status: p.status,
+      arrivalDate: p.arrival_date ? new Date(p.arrival_date * 1000).toISOString() : null,
+      method: p.method || 'standard'
+    }));
+
+    return {
+      configured: true,
+      connected: true,
+      mode: balanceObj.livemode ? 'LIVE' : keyMode,
+      currency: primaryCurrency,
+      availableUsd,
+      pendingUsd,
+      instantAvailableUsd,
+      totalBalanceUsd: Number((availableUsd + pendingUsd).toFixed(2)),
+      recentPayouts,
+      activeStripeSubscriptions: Array.isArray(subsObj?.data) ? subsObj.data.length : null,
+      error: null
+    };
+  } catch (err) {
+    console.warn('⚠️ Stripe Balance retrieve warning:', err.message);
+    return {
+      configured: true,
+      connected: false,
+      mode: keyMode,
+      currency: 'USD',
+      availableUsd: 0,
+      pendingUsd: 0,
+      instantAvailableUsd: 0,
+      totalBalanceUsd: 0,
+      recentPayouts: [],
+      activeStripeSubscriptions: null,
+      error: err.message || 'Could not retrieve live Stripe balance.'
+    };
+  }
+};
+
+// Queries CJ Dropshipping Wallet Balance (/shopping/pay/getBalance) and Recent CJ Orders (/shopping/order/list)
+const fetchCjWalletAndOrdersSnapshot = async (syncWithLocalOrders = false) => {
+  const headers = getCjHeaders();
+  if (!headers) {
+    return {
+      configured: false,
+      connected: false,
+      availableUsd: 0,
+      nonWithdrawableUsd: 0,
+      frozenUsd: 0,
+      recentCjOrders: [],
+      syncedLocalOrdersCount: 0,
+      error: 'CJ_ACCESS_TOKEN is not configured in .env.'
+    };
+  }
+
+  let walletData = null;
+  let walletError = null;
+  let cjOrderList = [];
+  let syncedLocalOrdersCount = 0;
+
+  try {
+    const [balRes, ordRes] = await Promise.all([
+      axios.get(`${CJ_BASE_URL}/shopping/pay/getBalance`, { headers, timeout: 12000 }).catch(e => ({ error: e })),
+      axios.get(`${CJ_BASE_URL}/shopping/order/list?pageNum=1&pageSize=50`, { headers, timeout: 12000 }).catch(() => null)
+    ]);
+
+    if (balRes && !balRes.error && balRes.data?.result && balRes.data?.data) {
+      walletData = balRes.data.data;
+    } else {
+      walletError = balRes?.error?.response?.data?.message || balRes?.data?.message || balRes?.error?.message || 'Unable to read CJ wallet balance.';
+    }
+
+    const rawList = ordRes?.data?.data?.list || ordRes?.data?.data?.content || [];
+    if (Array.isArray(rawList)) {
+      cjOrderList = rawList.slice(0, 30).map(item => ({
+        cjOrderId: String(item.orderId || item.id || ''),
+        orderNumber: String(item.orderNumber || item.orderNum || ''),
+        orderStatus: String(item.orderStatus || item.status || 'CREATED'),
+        orderAmountUsd: Number(parseFloat(item.orderAmount || item.productAmount || 0).toFixed(2)),
+        trackNumber: String(item.trackNumber || item.trackingNumber || ''),
+        logisticName: String(item.logisticName || ''),
+        createdAt: item.createDate || item.createdAt || null
+      }));
+
+      // Optionally reconcile local MongoDB orders with CJ's latest order status & tracking numbers
+      if (syncWithLocalOrders && cjOrderList.length > 0) {
+        for (const cjOrd of cjOrderList) {
+          if (cjOrd.orderNumber && mongoose.Types.ObjectId.isValid(cjOrd.orderNumber)) {
+            const updateDoc = {
+              cjOrderId: cjOrd.cjOrderId || undefined,
+              cjOrderStatus: cjOrd.orderStatus || undefined,
+              updatedAt: new Date()
+            };
+            if (cjOrd.trackNumber) {
+              updateDoc.tracking_code = cjOrd.trackNumber;
+              updateDoc.status = 'SHIPPED';
+            }
+            if (cjOrd.logisticName) {
+              updateDoc.logisticName = cjOrd.logisticName;
+            }
+            const updated = await Order.findByIdAndUpdate(cjOrd.orderNumber, { $set: updateDoc }).catch(() => null);
+            if (updated) syncedLocalOrdersCount++;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    walletError = err.message;
+  }
+
+  return {
+    configured: true,
+    connected: Boolean(walletData),
+    availableUsd: Number(parseFloat(walletData?.amount ?? 0).toFixed(2)),
+    nonWithdrawableUsd: Number(parseFloat(walletData?.noWithdrawalAmount ?? 0).toFixed(2)),
+    frozenUsd: Number(parseFloat(walletData?.freezeAmount ?? 0).toFixed(2)),
+    recentCjOrders: cjOrderList,
+    syncedLocalOrdersCount,
+    error: walletError
+  };
+};
+
+// Builds the complete Financial & Past/Present/Future Order Pipeline telemetry payload
+const buildFinancialAndOrderTelemetry = async ({ syncCjOrders = false } = {}) => {
+  const [stripeBalance, cjBalance, allOrders, allUsers, recentTransfers] = await Promise.all([
+    fetchStripeFinancialSnapshot(),
+    fetchCjWalletAndOrdersSnapshot(syncCjOrders),
+    Order.find({}).sort({ createdAt: -1 }).lean(),
+    User.find({}).select('_id name email membershipTier role createdAt').sort({ createdAt: -1 }).lean(),
+    TreasuryTransfer.find({}).sort({ createdAt: -1 }).limit(25).lean().catch(() => [])
+  ]);
+
+  const pastOrders = [];
+  const presentOrders = [];
+  const futureOrders = [];
+
+  let totalPaidRevenueUsd = 0;
+  let totalEstimatedCostUsd = 0;
+  let totalEstimatedProfitUsd = 0;
+  let pendingCheckoutValueUsd = 0;
+
+  // Map user emails to names/tiers for richer order cards
+  const userByEmail = {};
+  for (const u of allUsers) {
+    if (u.email) {
+      userByEmail[normalizeEmail(u.email)] = u;
+    }
+  }
+
+  const enrichedOrders = allOrders.map(ord => {
+    const stage = classifyOrderStage(ord);
+    const econ = computeOrderUnitEconomics(ord);
+    const cleanEmail = normalizeEmail(ord.customerEmail || '');
+    const matchedMember = userByEmail[cleanEmail] || null;
+    const addr = ord.shipping_address || {};
+
+    const customerName =
+      addr.name ||
+      `${addr.first_name || ''} ${addr.last_name || ''}`.trim() ||
+      matchedMember?.name ||
+      (ord.customerEmail && ord.customerEmail !== 'Customer' ? ord.customerEmail.split('@')[0] : 'Valued Client');
+
+    const itemSummary = (Array.isArray(ord.items) ? ord.items : []).map(i => ({
+      title: i.title || i.displayTitle || 'Boutique Essential',
+      sku: i.sku || '',
+      quantity: Number(i.quantity) || 1,
+      price: Number(i.price) || 0
+    }));
+
+    const enriched = {
+      _id: String(ord._id),
+      shortId: String(ord._id).slice(-6).toUpperCase(),
+      customerName,
+      customerEmail: ord.customerEmail || 'Anonymous Checkout',
+      membershipTier: matchedMember?.membershipTier || 'guest',
+      status: ord.status || 'Pending',
+      pipelineStage: stage, // 'PAST' | 'PRESENT' | 'FUTURE'
+      totalAmount: econ.retailTotal,
+      estimatedWholesaleCost: econ.wholesaleCost,
+      estimatedProfit: econ.netProfit,
+      tracking_code: ord.tracking_code || '',
+      logisticName: ord.logisticName || '',
+      cjOrderId: ord.cjOrderId || '',
+      cjOrderStatus: ord.cjOrderStatus || '',
+      shipping_address: addr,
+      items: itemSummary,
+      itemCount: itemSummary.reduce((sum, i) => sum + i.quantity, 0),
+      createdAt: ord.createdAt,
+      updatedAt: ord.updatedAt || ord.createdAt
+    };
+
+    if (stage === 'PAST') {
+      pastOrders.push(enriched);
+      if (!['CANCELLED', 'CANCELED', 'REFUNDED'].includes(String(ord.status || '').toUpperCase())) {
+        totalPaidRevenueUsd += econ.retailTotal;
+        totalEstimatedCostUsd += econ.wholesaleCost;
+        totalEstimatedProfitUsd += econ.netProfit;
+      }
+    } else if (stage === 'PRESENT') {
+      presentOrders.push(enriched);
+      totalPaidRevenueUsd += econ.retailTotal;
+      totalEstimatedCostUsd += econ.wholesaleCost;
+      totalEstimatedProfitUsd += econ.netProfit;
+    } else {
+      futureOrders.push(enriched);
+      pendingCheckoutValueUsd += econ.retailTotal;
+    }
+
+    return enriched;
+  });
+
+  // Build Future Recurring Ritual Box & Membership Renewal Pipeline
+  const luminaryMembers = allUsers.filter(u => String(u.membershipTier || '').toLowerCase() === 'luminary' && u.role !== 'admin');
+  const radianceMembers = allUsers.filter(u => String(u.membershipTier || '').toLowerCase() === 'radiance' && u.role !== 'admin');
+
+  const now = new Date();
+  const buildNextRenewalDate = (createdAtDate) => {
+    const base = createdAtDate ? new Date(createdAtDate) : new Date();
+    const dayOfMonth = isNaN(base.getTime()) ? 1 : base.getDate();
+    const candidate = new Date(now.getFullYear(), now.getMonth(), dayOfMonth);
+    if (candidate.getTime() <= now.getTime()) {
+      candidate.setMonth(candidate.getMonth() + 1);
+    }
+    return candidate.toISOString();
+  };
+
+  const scheduledMemberBoxes = [
+    ...radianceMembers.map(m => ({
+      memberId: String(m._id),
+      memberName: m.name,
+      memberEmail: m.email,
+      tier: 'radiance',
+      tierLabel: 'Radiance Elite ($119/mo • 5-Piece Box)',
+      monthlyRateUsd: 119,
+      boxPieceCount: 5,
+      nextDispatchDate: buildNextRenewalDate(m.createdAt)
+    })),
+    ...luminaryMembers.map(m => ({
+      memberId: String(m._id),
+      memberName: m.name,
+      memberEmail: m.email,
+      tier: 'luminary',
+      tierLabel: 'Luminary Circle ($49/mo • 3-Piece Box)',
+      monthlyRateUsd: 49,
+      boxPieceCount: 3,
+      nextDispatchDate: buildNextRenewalDate(m.createdAt)
+    }))
+  ].sort((a, b) => new Date(a.nextDispatchDate).getTime() - new Date(b.nextDispatchDate).getTime());
+
+  const projectedMonthlySubscriptionRevenue = Number(
+    ((luminaryMembers.length * 49) + (radianceMembers.length * 119)).toFixed(2)
+  );
+  const projectedNext30DaysTotal = Number(
+    (projectedMonthlySubscriptionRevenue + pendingCheckoutValueUsd).toFixed(2)
+  );
+
+  // Check if CJ Wallet has enough balance to cover active PRESENT orders awaiting shipment
+  const activeUnshippedCostUsd = presentOrders
+    .filter(o => o.status !== 'SHIPPED')
+    .reduce((sum, o) => sum + o.estimatedWholesaleCost, 0);
+
+  return {
+    stripeBalance,
+    cjBalance: {
+      ...cjBalance,
+      activeUnshippedCostUsd: Number(activeUnshippedCostUsd.toFixed(2)),
+      walletCoversActiveOrders: cjBalance.availableUsd >= activeUnshippedCostUsd
+    },
+    orderPipeline: {
+      all: enrichedOrders,
+      past: pastOrders,
+      present: presentOrders,
+      future: futureOrders,
+      counts: {
+        total: enrichedOrders.length,
+        past: pastOrders.length,
+        present: presentOrders.length,
+        future: futureOrders.length,
+        scheduledMemberBoxes: scheduledMemberBoxes.length
+      }
+    },
+    futureProjections: {
+      luminaryCount: luminaryMembers.length,
+      radianceCount: radianceMembers.length,
+      projectedMonthlySubscriptionRevenue,
+      pendingCheckoutValueUsd: Number(pendingCheckoutValueUsd.toFixed(2)),
+      projectedNext30DaysTotal,
+      scheduledMemberBoxes
+    },
+    summaryMetrics: {
+      totalPaidRevenueUsd: Number(totalPaidRevenueUsd.toFixed(2)),
+      totalEstimatedCostUsd: Number(totalEstimatedCostUsd.toFixed(2)),
+      totalEstimatedProfitUsd: Number(totalEstimatedProfitUsd.toFixed(2)),
+      pendingCheckoutValueUsd: Number(pendingCheckoutValueUsd.toFixed(2)),
+      projectedMonthlySubscriptionRevenue
+    },
+    recentTransfers: recentTransfers || [],
+    updatedAt: new Date().toISOString()
+  };
+};
+
+app.get('/api/admin/finances-and-orders', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const syncCjOrders = req.query.syncCj === 'true' || req.query.syncCjOrders === 'true';
+    const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders });
+    res.status(200).json(telemetry);
+  } catch (error) {
+    console.error('Finances & Orders Telemetry Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch financial and order pipeline telemetry.' });
+  }
+});
+
+// ---------------- STRIPE "MONEY DUMP" PAYOUT & STRIPE-TO-CJ TREASURY BRIDGE ---------------- //
+
+// Executes a Stripe "Money Dump" payout to Susan's connected bank account or debit card
+// Supports full available balance dumps, custom USD amounts, standard/instant methods,
+// and an optional Smart Wholesale Reserve that leaves enough to cover active unshipped CJ orders.
+const executeStripeMoneyDump = async ({
+  amountUsd,
+  fullAvailableDump = false,
+  reserveForActiveOrders = false,
+  method = 'standard',
+  notes = '',
+  triggeredBy = 'susan'
+} = {}) => {
+  const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+  const stripeBal = telemetry.stripeBalance || {};
+  const cjBal = telemetry.cjBalance || {};
+
+  const availableUsd = Number(stripeBal.availableUsd || 0);
+  const activeUnshippedCostUsd = Number(cjBal.activeUnshippedCostUsd || 0);
+  const cjWalletAvailableUsd = Number(cjBal.availableUsd || 0);
+
+  // Calculate how much wholesale cost is not yet covered by CJ Wallet
+  const uncoveredCjWholesaleUsd = reserveForActiveOrders
+    ? Number(Math.max(0, activeUnshippedCostUsd - cjWalletAvailableUsd).toFixed(2))
+    : 0;
+
+  let targetPayoutUsd = 0;
+  if (fullAvailableDump || amountUsd === undefined || amountUsd === null || String(amountUsd).trim() === '') {
+    targetPayoutUsd = Number(Math.max(0, availableUsd - uncoveredCjWholesaleUsd).toFixed(2));
+  } else {
+    targetPayoutUsd = Number(parseFloat(amountUsd).toFixed(2));
+    if (reserveForActiveOrders && availableUsd > 0 && targetPayoutUsd > (availableUsd - uncoveredCjWholesaleUsd)) {
+      targetPayoutUsd = Number(Math.max(0, availableUsd - uncoveredCjWholesaleUsd).toFixed(2));
+    }
+  }
+
+  if (isNaN(targetPayoutUsd) || targetPayoutUsd <= 0) {
+    // If Stripe available balance is $0.00 (common in Test mode before settlement) and user entered no custom amount,
+    // explain clearly or allow a custom test amount.
+    throw new Error(
+      availableUsd <= 0
+        ? `Your live Stripe available payout balance is currently $0.00 (Pending settlement: $${Number(stripeBal.pendingUsd || 0).toFixed(2)}). Enter a specific USD amount to test or wait for pending charges to settle.`
+        : `After reserving $${uncoveredCjWholesaleUsd.toFixed(2)} for active unshipped CJ orders, the remaining withdrawable Stripe balance is $0.00.`
+    );
+  }
+
+  const cleanMethod = String(method || 'standard').toLowerCase() === 'instant' ? 'instant' : 'standard';
+  const amountInCents = Math.round(targetPayoutUsd * 100);
+  const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+
+  let stripePayoutObj = null;
+  let payoutStatus = 'PAID';
+  let stripeNotice = '';
+
+  if (!rawStripeKey) {
+    payoutStatus = 'SIMULATED_NO_KEY';
+    stripeNotice = 'STRIPE_SECRET_KEY not set in .env; logged as simulated Money Dump in Treasury Ledger.';
+  } else {
+    try {
+      stripePayoutObj = await stripe.payouts.create({
+        amount: amountInCents,
+        currency: 'usd',
+        method: cleanMethod,
+        statement_descriptor: 'SUSANS BEAUTY',
+        description: notes
+          ? `Susan Money Dump: ${String(notes).trim()}`
+          : `Susan's Beauty Consulting Executive Money Dump (${cleanMethod.toUpperCase()})`,
+        metadata: {
+          triggeredBy,
+          reserveForActiveOrders: String(Boolean(reserveForActiveOrders)),
+          uncoveredCjWholesaleUsd: String(uncoveredCjWholesaleUsd)
+        }
+      });
+      payoutStatus = String(stripePayoutObj.status || 'pending').toUpperCase();
+    } catch (stripeErr) {
+      // If in TEST mode or if Stripe rejects due to insufficient available test balance / missing external bank in test mode,
+      // record a transparent ledger record so Susan can still verify the Money Dump pipeline end-to-end.
+      if (stripeBal.mode === 'TEST' || /insufficient|balance|external_account|bank_account/i.test(stripeErr.message || '')) {
+        payoutStatus = 'TEST_LEDGER_RECORDED';
+        stripeNotice = `Stripe API response (${stripeBal.mode || 'TEST'} mode): ${stripeErr.message}. Recorded in your Treasury Ledger for tracking.`;
+      } else {
+        throw new Error(`Stripe Payout Error: ${stripeErr.message}`);
+      }
+    }
+  }
+
+  const transferRecord = await new TreasuryTransfer({
+    transferType: 'STRIPE_BANK_PAYOUT',
+    amountUsd: targetPayoutUsd,
+    currency: 'USD',
+    status: payoutStatus,
+    stripePayoutId: stripePayoutObj?.id || `dump_${Date.now()}`,
+    payoutMethod: cleanMethod,
+    wholesaleReserveUsd: uncoveredCjWholesaleUsd,
+    notes: notes
+      ? String(notes).trim()
+      : `Stripe Money Dump to Bank (${cleanMethod})${uncoveredCjWholesaleUsd > 0 ? ` • Reserved $${uncoveredCjWholesaleUsd.toFixed(2)} for CJ wholesale` : ''}${stripeNotice ? ` • ${stripeNotice}` : ''}`,
+    triggeredBy: triggeredBy === 'odie' ? 'odie' : 'susan'
+  }).save();
+
+  const updatedTelemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+
+  return {
+    message: stripePayoutObj
+      ? `💸 Money Dump initiated! Dispatched $${targetPayoutUsd.toFixed(2)} (${cleanMethod.toUpperCase()}) from Stripe to your bank account (Payout ID: ${stripePayoutObj.id}) ✧`
+      : `💸 Money Dump of $${targetPayoutUsd.toFixed(2)} (${cleanMethod.toUpperCase()}) recorded in Treasury Ledger! ${stripeNotice}`,
+    transfer: transferRecord,
+    stripePayout: stripePayoutObj,
+    stripeNotice,
+    uncoveredCjWholesaleUsd,
+    telemetry: updatedTelemetry
+  };
+};
+
+// Executes the Stripe -> CJ Dropshipping Funding & Order Payment Bridge:
+// 1. Optionally triggers a Stripe payout earmark (`allocateFromStripe`) for the exact wholesale cost (or custom amount)
+//    so funds move from Stripe to Susan's settlement card/bank for CJ recharge.
+// 2. Automatically submits any unpaid/unforwarded local `PAID_PROCESSING` orders to CJ (`createOrderV2`) if needed,
+//    and pays unpaid CJ orders directly from Susan's CJ Wallet via `POST /shopping/pay/payBalance`.
+const executeStripeToCjBridge = async ({
+  amountUsd,
+  allocateFromStripe = true,
+  payUnpaidCjOrders = true,
+  specificOrderIds = [],
+  notes = '',
+  triggeredBy = 'susan'
+} = {}) => {
+  const headers = getCjHeaders();
+  const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: true });
+  const stripeBal = telemetry.stripeBalance || {};
+  const cjBal = telemetry.cjBalance || {};
+  const presentOrders = telemetry.orderPipeline?.present || [];
+
+  // Identify active unshipped orders and their wholesale cost
+  const unshippedPresentOrders = presentOrders.filter(o => o.status !== 'SHIPPED');
+  const activeWholesaleNeededUsd = Number(
+    unshippedPresentOrders.reduce((sum, o) => sum + Number(o.estimatedWholesaleCost || 0), 0).toFixed(2)
+  );
+
+  const transferAmountUsd =
+    amountUsd !== undefined && amountUsd !== null && String(amountUsd).trim() !== '' && Number(amountUsd) > 0
+      ? Number(parseFloat(amountUsd).toFixed(2))
+      : (activeWholesaleNeededUsd > 0 ? activeWholesaleNeededUsd : 50.00);
+
+  let stripeAllocationPayout = null;
+  let stripeAllocationNotice = '';
+
+  // Step A: If allocateFromStripe is enabled, initiate a dedicated Stripe payout earmarked for CJ Dropshipping wholesale
+  if (allocateFromStripe && transferAmountUsd > 0) {
+    const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+    if (rawStripeKey) {
+      try {
+        stripeAllocationPayout = await stripe.payouts.create({
+          amount: Math.round(transferAmountUsd * 100),
+          currency: 'usd',
+          method: 'standard',
+          statement_descriptor: 'CJ DROPSHIP',
+          description: `Stripe -> CJ Dropshipping Wholesale Bridge ($${transferAmountUsd.toFixed(2)})`,
+          metadata: {
+            bridgeType: 'STRIPE_TO_CJ_WHOLESALE',
+            triggeredBy
+          }
+        });
+      } catch (err) {
+        stripeAllocationNotice = `Stripe Earmark Note (${stripeBal.mode || 'TEST'}): ${err.message}`;
+      }
+    } else {
+      stripeAllocationNotice = 'STRIPE_SECRET_KEY not configured; earmarked in Treasury Ledger.';
+    }
+  }
+
+  // Step B: Pay unpaid CJ Dropshipping orders from CJ Wallet via /shopping/pay/payBalance
+  const cjOrdersPaid = [];
+  const cjPaymentErrors = [];
+
+  if (payUnpaidCjOrders && headers) {
+    // 1. Check if any local PAID_PROCESSING orders lack a cjOrderId and create them on CJ first
+    for (const localOrd of unshippedPresentOrders) {
+      if (
+        Array.isArray(specificOrderIds) &&
+        specificOrderIds.length > 0 &&
+        !specificOrderIds.includes(localOrd._id) &&
+        !specificOrderIds.includes(localOrd.cjOrderId)
+      ) {
+        continue;
+      }
+
+      let targetCjOrderId = localOrd.cjOrderId;
+      if (!targetCjOrderId) {
+        try {
+          const fullOrdDoc = await Order.findById(localOrd._id);
+          if (fullOrdDoc) {
+            const cjPayload = buildCjOrderPayload(fullOrdDoc);
+            const createRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, {
+              headers,
+              timeout: 15000
+            });
+            const createdId =
+              createRes?.data?.data?.orderId ||
+              (typeof createRes?.data?.data === 'string' ? createRes.data.data : '');
+            if (createdId) {
+              targetCjOrderId = String(createdId);
+              fullOrdDoc.cjOrderId = targetCjOrderId;
+              fullOrdDoc.cjOrderStatus = 'CREATED';
+              await fullOrdDoc.save();
+            }
+          }
+        } catch (createErr) {
+          cjPaymentErrors.push({
+            orderId: localOrd.shortId,
+            stage: 'createOrderV2',
+            error: createErr?.response?.data?.message || createErr.message
+          });
+        }
+      }
+
+      if (targetCjOrderId) {
+        try {
+          const payRes = await axios.post(
+            `${CJ_BASE_URL}/shopping/pay/payBalance`,
+            { orderId: targetCjOrderId },
+            { headers, timeout: 15000 }
+          );
+          if (payRes.data?.result) {
+            await Order.findByIdAndUpdate(localOrd._id, {
+              $set: { cjOrderStatus: 'PAID_WALLET', updatedAt: new Date() }
+            });
+            cjOrdersPaid.push({
+              localOrderId: localOrd._id,
+              shortId: localOrd.shortId,
+              cjOrderId: targetCjOrderId,
+              amountUsd: localOrd.estimatedWholesaleCost,
+              status: 'PAID_VIA_CJ_WALLET'
+            });
+          } else {
+            cjPaymentErrors.push({
+              orderId: localOrd.shortId,
+              cjOrderId: targetCjOrderId,
+              stage: 'payBalance',
+              error: payRes.data?.message || 'CJ payBalance returned false'
+            });
+          }
+        } catch (payErr) {
+          cjPaymentErrors.push({
+            orderId: localOrd.shortId,
+            cjOrderId: targetCjOrderId,
+            stage: 'payBalance',
+            error: payErr?.response?.data?.message || payErr.message
+          });
+        }
+      }
+    }
+
+    // 2. Also check CJ's remote order list for any CREATED / UNPAID orders that weren't in the loop above
+    const remoteUnpaid = (cjBal.recentCjOrders || []).filter(o =>
+      /CREATED|IN_CART|UNPAID|WAIT_PAY/i.test(String(o.orderStatus || ''))
+    );
+    for (const remOrd of remoteUnpaid) {
+      if (!remOrd.cjOrderId || cjOrdersPaid.some(p => p.cjOrderId === remOrd.cjOrderId)) continue;
+      if (
+        Array.isArray(specificOrderIds) &&
+        specificOrderIds.length > 0 &&
+        !specificOrderIds.includes(remOrd.cjOrderId)
+      ) {
+        continue;
+      }
+      try {
+        const payRes = await axios.post(
+          `${CJ_BASE_URL}/shopping/pay/payBalance`,
+          { orderId: remOrd.cjOrderId },
+          { headers, timeout: 15000 }
+        );
+        if (payRes.data?.result) {
+          cjOrdersPaid.push({
+            localOrderId: remOrd.orderNumber || '',
+            shortId: remOrd.orderNumber ? String(remOrd.orderNumber).slice(-6).toUpperCase() : remOrd.cjOrderId.slice(-6),
+            cjOrderId: remOrd.cjOrderId,
+            amountUsd: remOrd.orderAmountUsd || 0,
+            status: 'PAID_VIA_CJ_WALLET'
+          });
+        } else {
+          cjPaymentErrors.push({
+            cjOrderId: remOrd.cjOrderId,
+            stage: 'payBalance',
+            error: payRes.data?.message || 'CJ wallet payment declined or insufficient CJ balance'
+          });
+        }
+      } catch (remPayErr) {
+        cjPaymentErrors.push({
+          cjOrderId: remOrd.cjOrderId,
+          stage: 'payBalance',
+          error: remPayErr?.response?.data?.message || remPayErr.message
+        });
+      }
+    }
+  }
+
+  const transferRecord = await new TreasuryTransfer({
+    transferType: allocateFromStripe ? 'STRIPE_TO_CJ_BRIDGE' : 'CJ_ORDER_WALLET_PAYMENT',
+    amountUsd: transferAmountUsd,
+    currency: 'USD',
+    status: stripeAllocationPayout ? 'STRIPE_PAYOUT_INITIATED' : (cjOrdersPaid.length > 0 ? 'CJ_ORDERS_PAID' : 'ALLOCATED_IN_LEDGER'),
+    stripePayoutId: stripeAllocationPayout?.id || `cj_bridge_${Date.now()}`,
+    payoutMethod: 'standard',
+    cjOrdersPaid,
+    wholesaleReserveUsd: activeWholesaleNeededUsd,
+    notes:
+      notes ||
+      `Moved $${transferAmountUsd.toFixed(2)} for CJ Dropshipping fulfillment` +
+        `${cjOrdersPaid.length > 0 ? ` • Paid ${cjOrdersPaid.length} CJ order(s) via CJ Wallet` : ''}` +
+        `${stripeAllocationNotice ? ` • ${stripeAllocationNotice}` : ''}`,
+    triggeredBy: triggeredBy === 'odie' ? 'odie' : 'susan'
+  }).save();
+
+  const updatedTelemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+
+  const summaryParts = [];
+  if (allocateFromStripe) {
+    summaryParts.push(
+      stripeAllocationPayout
+        ? `Allocated $${transferAmountUsd.toFixed(2)} from Stripe (Payout ${stripeAllocationPayout.id}) for CJ Dropshipping wholesale`
+        : `Earmarked $${transferAmountUsd.toFixed(2)} in your Stripe → CJ Treasury Bridge`
+    );
+  }
+  if (payUnpaidCjOrders) {
+    summaryParts.push(
+      cjOrdersPaid.length > 0
+        ? `paid ${cjOrdersPaid.length} CJ Dropshipping order(s) directly from your CJ Wallet`
+        : `checked active orders for CJ Wallet auto-payment (${cjPaymentErrors.length > 0 ? cjPaymentErrors[0].error : '0 unpaid CJ orders queued'})`
+    );
+  }
+
+  return {
+    message: `📦 ${summaryParts.join(' and ')}! ✧`,
+    transfer: transferRecord,
+    stripeAllocationPayout,
+    stripeAllocationNotice,
+    cjOrdersPaid,
+    cjPaymentErrors,
+    cjRechargePortalUrl: 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet',
+    telemetry: updatedTelemetry
+  };
+};
+
+app.post('/api/admin/finances/stripe-payout', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { amountUsd, fullAvailableDump, reserveForActiveOrders, method, notes } = req.body || {};
+    const result = await executeStripeMoneyDump({
+      amountUsd,
+      fullAvailableDump: Boolean(fullAvailableDump),
+      reserveForActiveOrders: Boolean(reserveForActiveOrders),
+      method: method || 'standard',
+      notes: notes || '',
+      triggeredBy: 'susan'
+    });
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Stripe Money Dump Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to execute Stripe Money Dump payout.' });
+  }
+});
+
+app.post('/api/admin/finances/stripe-to-cj', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { amountUsd, allocateFromStripe, payUnpaidCjOrders, specificOrderIds, notes } = req.body || {};
+    const result = await executeStripeToCjBridge({
+      amountUsd,
+      allocateFromStripe: allocateFromStripe !== undefined ? Boolean(allocateFromStripe) : true,
+      payUnpaidCjOrders: payUnpaidCjOrders !== undefined ? Boolean(payUnpaidCjOrders) : true,
+      specificOrderIds: Array.isArray(specificOrderIds) ? specificOrderIds : [],
+      notes: notes || '',
+      triggeredBy: 'susan'
+    });
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Stripe to CJ Bridge Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to execute Stripe to CJ transfer bridge.' });
+  }
+});
+
+app.get('/api/admin/finances/transfers', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const transfers = await TreasuryTransfer.find({}).sort({ createdAt: -1 }).limit(40).lean();
+    res.status(200).json({ transfers });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch treasury transfers.' });
+  }
+});
+
+app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { status, tracking_code, logisticName, notes, notifyCustomer } = req.body || {};
+    const orderId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(String(orderId))) {
+      return res.status(400).json({ error: 'Invalid order ID.' });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+
+    if (status !== undefined && String(status).trim()) {
+      order.status = String(status).trim();
+    }
+    if (tracking_code !== undefined) {
+      order.tracking_code = String(tracking_code || '').trim();
+    }
+    if (logisticName !== undefined) {
+      order.logisticName = String(logisticName || '').trim();
+    }
+    if (notes !== undefined) {
+      order.notes = String(notes || '').trim();
+    }
+    order.updatedAt = new Date();
+    await order.save();
+
+    let customerNotified = false;
+    if (notifyCustomer && order.customerEmail && order.customerEmail !== 'Customer') {
+      const subject = `✧ Order Update (#${String(order._id).slice(-6).toUpperCase()}): ${order.status}`;
+      const trackingBlock = order.tracking_code
+        ? `<div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 18px 0;">
+             <p style="margin: 4px 0;"><strong>Tracking Number${order.logisticName ? ` (${escapeHtml(order.logisticName)})` : ''}:</strong> <span style="color: #B38B8F; font-weight: bold;">${escapeHtml(order.tracking_code)}</span></p>
+           </div>`
+        : '';
+      const html = `
+        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+          <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your Ritual Order Update ✧</h2>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Hello,</p>
+          <p style="font-size: 1.05rem; line-height: 1.6;">Susan has updated the status of your order <strong>#${String(order._id).slice(-6).toUpperCase()}</strong> to <strong>${escapeHtml(order.status)}</strong>.</p>
+          ${trackingBlock}
+          <p style="font-size: 0.95rem; color: #8A797A; margin-top: 25px; text-align: center;">Warmly,<br>Susan's Beauty Consulting</p>
+        </div>
+      `;
+      const text = `Your Susan's Beauty Consulting order #${String(order._id).slice(-6).toUpperCase()} status is now: ${order.status}.${order.tracking_code ? ` Tracking: ${order.tracking_code}` : ''}`;
+      await sendEmail(order.customerEmail, subject, html, text).catch(() => {});
+      await new EmailLog({ to: order.customerEmail, subject, body: text }).save().catch(() => {});
+      customerNotified = true;
+    }
+
+    res.status(200).json({
+      message: `Order #${String(order._id).slice(-6).toUpperCase()} updated to ${order.status}${customerNotified ? ' and customer notified via email' : ''} ✧`,
+      order,
+      pipelineStage: classifyOrderStage(order),
+      customerNotified
+    });
+  } catch (error) {
+    console.error('Update Order Status Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update order status.' });
+  }
+});
+
 app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const users = await User.find({}, 'name email membershipTier recommendedProducts createdAt').sort({ createdAt: -1 });
@@ -873,7 +2015,167 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
   }
 });
 
-// ---------------- AI ASSISTANT ROUTE (7 EXECUTIVE BOUTIQUE TOOLS) ---------------- //
+// ---------------- ODIE PERSISTENT MEMORY & CHAT HISTORY ENGINE ---------------- //
+
+const DEFAULT_ODIE_MEMORIES = [
+  {
+    category: 'preference',
+    key: 'Assistant Name & Persona',
+    content: "My name is Odie. I am Susan's loyal, warm, and sharp Executive AI Assistant for Susan's Beauty Consulting.",
+    source: 'system_seed',
+    pinned: true
+  },
+  {
+    category: 'business_rule',
+    key: 'Boutique Pricing & Member Tiers',
+    content: 'CJ Dropshipping Beauty & Skincare items use a 6.5x retail markup. Luminary Circle ($49/mo) receives a 3-piece box + 10% off; Radiance Elite ($119/mo) receives a 5-piece box + 25% off.',
+    source: 'system_seed',
+    pinned: true
+  },
+  {
+    category: 'preference',
+    key: 'Primary Mailbox & Timezone',
+    content: "Susan's primary IONOS mailbox is Susan.Coke@SusansBeautyConsulting.com and all consultations operate in US Central Time (Kansas — America/Chicago).",
+    source: 'system_seed',
+    pinned: true
+  },
+  {
+    category: 'financial_goal',
+    key: 'Treasury & CJ Fulfillment Rule',
+    content: 'Before dumping Stripe funds to the bank, always check if active unshipped orders need wholesale funds reserved or moved to CJ Dropshipping.',
+    source: 'system_seed',
+    pinned: true
+  }
+];
+
+const ensureDefaultOdieMemories = async () => {
+  try {
+    const count = await OdieMemory.countDocuments();
+    if (count === 0) {
+      await OdieMemory.insertMany(DEFAULT_ODIE_MEMORIES);
+      console.log('🧠 Seeded initial long-term memories for Odie.');
+    }
+  } catch (err) {
+    console.warn('⚠️ Could not seed default Odie memories:', err.message);
+  }
+};
+
+const upsertOdieMemoryFact = async ({ key, content, category = 'general', source = 'odie_auto', pinned = true }) => {
+  const cleanKey = String(key || '').trim() || 'Executive Note';
+  const cleanContent = String(content || '').trim();
+  if (!cleanContent) {
+    throw new Error('Memory content cannot be empty.');
+  }
+  const allowedCategories = ['preference', 'business_rule', 'vip_client', 'financial_goal', 'general'];
+  const normalizedCategory = allowedCategories.includes(String(category || '').toLowerCase().trim())
+    ? String(category).toLowerCase().trim()
+    : 'general';
+
+  const memoryDoc = await OdieMemory.findOneAndUpdate(
+    { key: new RegExp(`^${escapeRegex(cleanKey)}$`, 'i') },
+    {
+      $set: {
+        key: cleanKey,
+        content: cleanContent,
+        category: normalizedCategory,
+        source,
+        pinned: Boolean(pinned),
+        updatedAt: new Date()
+      },
+      $setOnInsert: {
+        createdAt: new Date()
+      }
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
+  return memoryDoc;
+};
+
+app.get('/api/admin/odie/memory', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await ensureDefaultOdieMemories();
+    const [memories, recentHistory] = await Promise.all([
+      OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean(),
+      OdieChatHistory.find({}).sort({ createdAt: -1 }).limit(60).lean()
+    ]);
+    res.status(200).json({
+      assistantName: 'Odie',
+      memories,
+      history: recentHistory.reverse()
+    });
+  } catch (error) {
+    console.error('Fetch Odie Memory Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to load Odie memory bank.' });
+  }
+});
+
+app.post('/api/admin/odie/memory', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { key, content, category, pinned } = req.body || {};
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: 'Please provide the fact or instruction you want Odie to remember.' });
+    }
+    const savedMemory = await upsertOdieMemoryFact({
+      key: key || 'Susan Executive Note',
+      content,
+      category: category || 'general',
+      source: 'susan_manual',
+      pinned: pinned !== undefined ? Boolean(pinned) : true
+    });
+    const memories = await OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean();
+    res.status(201).json({
+      message: `Odie will remember: "${savedMemory.key}" 🧠✧`,
+      memory: savedMemory,
+      memories
+    });
+  } catch (error) {
+    console.error('Save Odie Memory Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to save memory for Odie.' });
+  }
+});
+
+app.delete('/api/admin/odie/memory/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const memId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(memId))) {
+      return res.status(400).json({ error: 'Invalid memory ID.' });
+    }
+    await OdieMemory.findByIdAndDelete(memId);
+    const memories = await OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean();
+    res.status(200).json({
+      message: 'Memory entry removed from Odie memory bank.',
+      memories
+    });
+  } catch (error) {
+    console.error('Delete Odie Memory Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete memory entry.' });
+  }
+});
+
+app.get('/api/admin/odie/history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const recentHistory = await OdieChatHistory.find({}).sort({ createdAt: -1 }).limit(60).lean();
+    res.status(200).json({
+      assistantName: 'Odie',
+      history: recentHistory.reverse()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load Odie chat history.' });
+  }
+});
+
+app.delete('/api/admin/odie/history', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await OdieChatHistory.deleteMany({});
+    res.status(200).json({
+      message: "Cleared Odie's conversation log while keeping Odie's long-term Memory Bank intact ✧"
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to clear Odie chat history.' });
+  }
+});
+
+// ---------------- AI ASSISTANT ROUTE (9 EXECUTIVE BOUTIQUE & FINANCIAL TOOLS) ---------------- //
 const GEMINI_MODEL = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.8-flash';
 
 const getGeminiClient = () => {
@@ -901,8 +2203,8 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
 
     const { ai, Type } = getGeminiClient();
 
-    // Gather live boutique context for Susan's Executive Assistant
-    const [rawCatalog, rawUsers, blueprints, rawAppointments] = await Promise.all([
+    // Gather live boutique, calendar, and financial/order pipeline context for Susan's Executive Assistant
+    const [rawCatalog, rawUsers, blueprints, rawAppointments, financialTelemetry] = await Promise.all([
       Product.find({}).select('_id title variants tags imageUrl').sort({ _id: -1 }).limit(180).lean(),
       User.find({}).select('_id name email membershipTier role').sort({ createdAt: -1 }).limit(100).lean(),
       Consultation.find({})
@@ -914,7 +2216,8 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
         .populate('clientId', '_id name email membershipTier')
         .sort({ startTime: 1 })
         .limit(60)
-        .lean()
+        .lean(),
+      buildFinancialAndOrderTelemetry({ syncCjOrders: false }).catch(() => null)
     ]);
 
     const catalog = rawCatalog.map(prod => ({
@@ -943,12 +2246,56 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
       reminderSent: Boolean(appt.reminderSentAt)
     }));
 
+    const financialContextSummary = financialTelemetry
+      ? {
+          stripeBalance: {
+            mode: financialTelemetry.stripeBalance?.mode,
+            availableUsd: financialTelemetry.stripeBalance?.availableUsd,
+            pendingUsd: financialTelemetry.stripeBalance?.pendingUsd,
+            instantAvailableUsd: financialTelemetry.stripeBalance?.instantAvailableUsd,
+            totalBalanceUsd: financialTelemetry.stripeBalance?.totalBalanceUsd,
+            recentPayouts: financialTelemetry.stripeBalance?.recentPayouts
+          },
+          cjDropshippingWallet: {
+            availableUsd: financialTelemetry.cjBalance?.availableUsd,
+            nonWithdrawableUsd: financialTelemetry.cjBalance?.nonWithdrawableUsd,
+            frozenUsd: financialTelemetry.cjBalance?.frozenUsd,
+            activeUnshippedCostUsd: financialTelemetry.cjBalance?.activeUnshippedCostUsd,
+            walletCoversActiveOrders: financialTelemetry.cjBalance?.walletCoversActiveOrders
+          },
+          orderPipelineCounts: financialTelemetry.orderPipeline?.counts,
+          summaryMetrics: financialTelemetry.summaryMetrics,
+          futureProjections: {
+            luminaryCount: financialTelemetry.futureProjections?.luminaryCount,
+            radianceCount: financialTelemetry.futureProjections?.radianceCount,
+            projectedMonthlySubscriptionRevenue: financialTelemetry.futureProjections?.projectedMonthlySubscriptionRevenue,
+            projectedNext30DaysTotal: financialTelemetry.futureProjections?.projectedNext30DaysTotal,
+            scheduledMemberBoxes: (financialTelemetry.futureProjections?.scheduledMemberBoxes || []).slice(0, 15)
+          },
+          recentOrders: (financialTelemetry.orderPipeline?.all || []).slice(0, 30).map(o => ({
+            _id: o._id,
+            shortId: o.shortId,
+            customerName: o.customerName,
+            customerEmail: o.customerEmail,
+            status: o.status,
+            pipelineStage: o.pipelineStage,
+            totalAmount: o.totalAmount,
+            estimatedWholesaleCost: o.estimatedWholesaleCost,
+            estimatedProfit: o.estimatedProfit,
+            tracking_code: o.tracking_code,
+            logisticName: o.logisticName,
+            createdAt: o.createdAt
+          }))
+        }
+      : { note: 'Financial telemetry unavailable' };
+
     const currentCentralTimeStr = formatCentralDateTime(new Date());
 
     const systemInstruction = `You are Susan's elite Executive AI Assistant for "Susan's Beauty Consulting" boutique.
 Current US Central Time (Kansas — America/Chicago): ${currentCentralTimeStr}.
+Primary Admin IONOS Mailbox: ${getPrimaryAdminEmail()}.
 
-You have direct executive tools to manage the boutique on Susan's behalf:
+You have 9 direct executive tools to manage the boutique, finances, and order pipeline on Susan's behalf:
 1. addProduct: Add a new custom beauty or skincare product to the boutique catalog.
 2. updateProduct: Edit an existing product's title, price, description, imageUrl, or tags by its _id.
 3. deleteProduct: Permanently remove a product from the boutique catalog by its _id.
@@ -956,6 +2303,11 @@ You have direct executive tools to manage the boutique on Susan's behalf:
 5. curateProductForMember: Push a recommended product directly to a member's personal Inbox and Beauty Blueprint with a custom note from Susan.
 6. scheduleConsultation: Book a 1-on-1 consultation on Susan's Central Time calendar, generate a private Jitsi video sanctuary link, and email the client.
 7. sendAppointmentReminder: Immediately send a 1-on-1 consultation reminder email (with video room link) to both the client and Susan.
+8. getFinancialAndOrderSummary: Retrieve live Stripe Account Balance, CJ Dropshipping Wallet Balance, Past/Present/Future order pipeline breakdown, and optionally sync live CJ order tracking numbers.
+9. updateOrderStatus: Update any customer order's status (Pending, PAID_PROCESSING, SHIPPED, DELIVERED, COMPLETED, CANCELLED, REFUNDED), tracking number, or courier, and optionally email the customer an instant update.
+
+Live Financial & Past/Present/Future Order Pipeline Snapshot:
+${JSON.stringify(financialContextSummary)}
 
 Live Boutique Inventory (${catalog.length} items — use _id for updateProduct, deleteProduct, or curateProductForMember):
 ${JSON.stringify(catalog)}
@@ -969,7 +2321,7 @@ ${JSON.stringify(blueprints)}
 Scheduled Consultations (${upcomingAppointments.length} active — use _id for sendAppointmentReminder):
 ${JSON.stringify(upcomingAppointments)}
 
-Always execute the appropriate tool when Susan asks you to add/edit/remove a product, send an email, curate a product for a member, schedule a consultation, or send a consultation reminder. Maintain a graceful, warm, and executive tone.`;
+Always execute the appropriate tool when Susan asks you to check/refresh her Stripe or CJ balances, inspect Past/Present/Future orders, update an order's status or tracking number, add/edit/remove a product, send an email, curate a product for a member, schedule a consultation, or send a consultation reminder. Maintain a graceful, warm, and executive tone.`;
 
     // Build a clean, alternating multi-turn contents array that ignores error bubbles
     const contents = [];
@@ -1092,6 +2444,34 @@ Always execute the appropriate tool when Susan asks you to add/edit/remove a pro
             },
             required: ['appointmentId']
           }
+        },
+        {
+          name: 'getFinancialAndOrderSummary',
+          description: 'Fetches live Stripe Account Balance, CJ Dropshipping Wallet Balance, and Past/Present/Future Order Pipeline summary, optionally syncing tracking numbers from CJ Dropshipping.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              syncCjOrders: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to reconcile local orders with CJ Dropshipping live order statuses and tracking numbers.'
+              }
+            }
+          }
+        },
+        {
+          name: 'updateOrderStatus',
+          description: 'Updates a customer order status (Pending, PAID_PROCESSING, SHIPPED, DELIVERED, COMPLETED, CANCELLED, REFUNDED), tracking number, or courier name, and optionally emails the customer.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              orderId: { type: Type.STRING, description: 'Exact MongoDB _id of the order to update' },
+              status: { type: Type.STRING, description: 'New order status (e.g., SHIPPED, DELIVERED, COMPLETED, PAID_PROCESSING, CANCELLED)' },
+              tracking_code: { type: Type.STRING, description: 'Optional courier tracking number' },
+              logisticName: { type: Type.STRING, description: 'Optional courier name (e.g., USPS, FedEx, DHL)' },
+              notifyCustomer: { type: Type.BOOLEAN, description: 'Set to true to email the customer an update via IONOS SMTP' }
+            },
+            required: ['orderId', 'status']
+          }
         }
       ]
     };
@@ -1201,7 +2581,7 @@ Always execute the appropriate tool when Susan asks you to add/edit/remove a pro
         }
 
         else if (call.name === 'sendCustomerEmail') {
-          const cleanTo = normalizeEmail(args.to);
+          const cleanTo = String(args.to || '').trim();
           const cleanSubject = String(args.subject || '').trim();
           const cleanBody = String(args.body || '').trim();
           if (!cleanTo || !cleanSubject || !cleanBody) {
@@ -1329,6 +2709,74 @@ Always execute the appropriate tool when Susan asks you to add/edit/remove a pro
             payload.remindedAppointmentId = String(aid);
             payload.actionsTaken.push('sendAppointmentReminder');
             summaries.push(`✧ Sent 1-on-1 consultation reminder email to ${reminderResult.clientEmail || 'client'} and to your inbox for ${reminderResult.formattedTime}.`);
+          }
+        }
+
+        else if (call.name === 'getFinancialAndOrderSummary') {
+          const syncFlag = Boolean(args.syncCjOrders);
+          const freshTelemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: syncFlag });
+          payload.financialTelemetry = freshTelemetry;
+          payload.actionsTaken.push('getFinancialAndOrderSummary');
+
+          const sb = freshTelemetry.stripeBalance || {};
+          const cjb = freshTelemetry.cjBalance || {};
+          const counts = freshTelemetry.orderPipeline?.counts || {};
+          const sm = freshTelemetry.summaryMetrics || {};
+          const fp = freshTelemetry.futureProjections || {};
+
+          summaries.push(
+            `✧ Live Executive Financial & Order Pipeline Brief:\n` +
+            `• Stripe Balance (${sb.mode || 'TEST'}): $${Number(sb.availableUsd || 0).toFixed(2)} Available | $${Number(sb.pendingUsd || 0).toFixed(2)} Pending\n` +
+            `• CJ Dropshipping Wallet: $${Number(cjb.availableUsd || 0).toFixed(2)} Available (${cjb.walletCoversActiveOrders ? 'Covers all active unshipped orders ✓' : 'Needs top-up for active orders ⚠️'})\n` +
+            `• Order Pipeline: ${counts.past || 0} Past (Completed/Delivered) | ${counts.present || 0} Present (Paid/In-Transit) | ${counts.future || 0} Future Carts + ${counts.scheduledMemberBoxes || 0} Upcoming Member Ritual Boxes\n` +
+            `• Paid Boutique Revenue: $${Number(sm.totalPaidRevenueUsd || 0).toFixed(2)} (Est. Net Profit: $${Number(sm.totalEstimatedProfitUsd || 0).toFixed(2)})\n` +
+            `• Projected 30-Day Subscription + Pipeline Revenue: $${Number(fp.projectedNext30DaysTotal || 0).toFixed(2)} (${fp.luminaryCount || 0} Luminary, ${fp.radianceCount || 0} Radiance)`
+          );
+        }
+
+        else if (call.name === 'updateOrderStatus') {
+          const oid = args.orderId;
+          const newStatus = String(args.status || '').trim();
+          const trackingCode = args.tracking_code !== undefined ? String(args.tracking_code || '').trim() : undefined;
+          const courier = args.logisticName !== undefined ? String(args.logisticName || '').trim() : undefined;
+          const notifyFlag = Boolean(args.notifyCustomer);
+
+          const ord = oid && mongoose.Types.ObjectId.isValid(String(oid))
+            ? await Order.findById(oid)
+            : null;
+
+          if (!ord || !newStatus) {
+            summaries.push(`✧ Could not update order: verify the order ID ("${oid}") and status.`);
+          } else {
+            ord.status = newStatus;
+            if (trackingCode !== undefined) ord.tracking_code = trackingCode;
+            if (courier !== undefined) ord.logisticName = courier;
+            ord.updatedAt = new Date();
+            await ord.save();
+
+            let notified = false;
+            if (notifyFlag && ord.customerEmail && ord.customerEmail !== 'Customer') {
+              const shortCode = String(ord._id).slice(-6).toUpperCase();
+              const subj = `✧ Order Update (#${shortCode}): ${ord.status}`;
+              const html = `
+                <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+                  <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your Ritual Order Update ✧</h2>
+                  <p style="font-size: 1.05rem; line-height: 1.6;">Susan has updated your order <strong>#${shortCode}</strong> to <strong>${escapeHtml(ord.status)}</strong>.</p>
+                  ${ord.tracking_code ? `<p style="font-size: 1.05rem;"><strong>Tracking Number:</strong> ${escapeHtml(ord.tracking_code)}</p>` : ''}
+                </div>
+              `;
+              const text = `Your order #${shortCode} is now ${ord.status}.${ord.tracking_code ? ` Tracking: ${ord.tracking_code}` : ''}`;
+              await sendEmail(ord.customerEmail, subj, html, text).catch(() => {});
+              notified = true;
+            }
+
+            payload.updatedOrder = ord;
+            payload.actionsTaken.push('updateOrderStatus');
+            summaries.push(
+              `✧ Updated Order #${String(ord._id).slice(-6).toUpperCase()} (${ord.customerEmail}) to "${ord.status}"` +
+              `${ord.tracking_code ? ` with tracking ${ord.tracking_code}` : ''}` +
+              `${notified ? ' and emailed the customer.' : '.'}`
+            );
           }
         }
       }
@@ -1495,7 +2943,7 @@ Susan's Beauty Consulting`;
   }
 
   // Also send a schedule reminder to Susan so she has the client details & room link at her fingertips
-  const susanEmail = normalizeEmail(smtpUser || 'susan.coke@susansbeautyconsulting.com');
+  const susanEmail = getPrimaryAdminEmail();
   if (susanEmail) {
     const susanSubject = `⏰ Schedule Reminder: Consultation with ${clientName} (${formattedTime})`;
     const susanHtml = `
@@ -2631,7 +4079,13 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
 
           if (headers) {
             try {
-              await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
+              const cjOrderRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
+              const returnedCjId = cjOrderRes?.data?.data?.orderId || (typeof cjOrderRes?.data?.data === 'string' ? cjOrderRes.data.data : '');
+              if (returnedCjId) {
+                order.cjOrderId = String(returnedCjId);
+                order.cjOrderStatus = 'CREATED';
+                await order.save();
+              }
               console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
             } catch (cjErr) {
               cjStatusNote = `Manual review needed (CJ API response: ${cjErr?.response?.data?.message || cjErr.message})`;
@@ -2659,7 +4113,7 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
           
           const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} (${order.customerEmail}) for $${(order.totalAmount || 0).toFixed(2)}.\nShip To: ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}\nFulfillment: ${cjStatusNote}\nOrder ID: ${order._id.toString()}`;
 
-          await sendEmail('susan.coke@susansbeautyconsulting.com', '✧ New Order Auto-Processed', susanHtml, susanText).catch(() => {});
+          await sendEmail(getPrimaryAdminEmail(), '✧ New Order Auto-Processed', susanHtml, susanText).catch(() => {});
           console.log(`✉️ Admin notification dispatched to Susan for Order ${orderId}`);
 
         }
@@ -2804,6 +4258,182 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Unified 6-Point System Diagnostics Suite (used by both the 🧪 Diagnostics Tab and Odie's runSystemDiagnostics tool)
+const runFullSystemDiagnosticsSuite = async ({ sendLiveTestEmail = false, testEmailRecipient = '' } = {}) => {
+  const startMs = Date.now();
+  const timestampCT = formatCentralDateTime(new Date());
+
+  // 1. MongoDB & Boutique Data Integrity Check
+  const dbReady = mongoose.connection.readyState === 1;
+  const [productCount, userCount, orderCount, appointmentCount, memoryCount] = dbReady
+    ? await Promise.all([
+        Product.countDocuments(),
+        User.countDocuments(),
+        Order.countDocuments(),
+        Appointment.countDocuments({ status: { $ne: 'cancelled' } }),
+        OdieMemory.countDocuments()
+      ])
+    : [0, 0, 0, 0, 0];
+
+  const databaseCheck = {
+    name: 'MongoDB & Boutique Data Store',
+    passed: dbReady,
+    status: dbReady ? 'PASSED' : 'FAILED',
+    details: dbReady
+      ? `${productCount} products • ${userCount} members • ${orderCount} orders • ${appointmentCount} active consultations • ${memoryCount} Odie memories`
+      : 'MongoDB connection is not active.'
+  };
+
+  // 2. Webhook & Fulfillment Payload Self-Test
+  const sampleCjV2Payload = {
+    messageId: `DIAG-MSG-${Date.now()}`,
+    type: 'ORDER',
+    params: {
+      orderNumber: 'TEST-CJ-ORDER-999',
+      orderStatus: 'SHIPPED',
+      trackNumber: 'CJ123456789US',
+      logisticName: 'USPS'
+    }
+  };
+  const parsedCj = parseCjWebhookFields(sampleCjV2Payload);
+  const cjParserPassed =
+    parsedCj.orderNumber === 'TEST-CJ-ORDER-999' &&
+    parsedCj.trackingNumber === 'CJ123456789US' &&
+    parsedCj.status === 'SHIPPED' &&
+    !mongoose.Types.ObjectId.isValid(parsedCj.orderNumber);
+
+  const sampleStripeSession = {
+    customer_details: { name: 'Susan Diagnostic Client', email: 'client@example.com', phone: '+13165550199' },
+    shipping_details: {
+      name: 'Susan Diagnostic Client',
+      address: { line1: '742 Evergreen Terrace', line2: 'Suite 200', city: 'Wichita', state: 'KS', postal_code: '67202', country: 'US' }
+    }
+  };
+  const extractedAddr = extractStripeShippingAddress(sampleStripeSession);
+  const sampleCjOrderPayload = buildCjOrderPayload({
+    _id: new mongoose.Types.ObjectId(),
+    shipping_address: extractedAddr,
+    items: [{ sku: 'CJ-BEAUTY-SKU-01', quantity: 2 }]
+  });
+  const stripeFormatterPassed =
+    sampleCjOrderPayload.shippingCity === 'Wichita' &&
+    sampleCjOrderPayload.shippingProvince === 'KS' &&
+    sampleCjOrderPayload.products[0]?.vid === 'CJ-BEAUTY-SKU-01';
+
+  const webhooksCheck = {
+    name: 'Stripe & CJ v2 Webhook Parsers',
+    passed: cjParserPassed && stripeFormatterPassed,
+    status: cjParserPassed && stripeFormatterPassed ? 'PASSED' : 'WARNING',
+    details: 'CJ v2 nested params parser, ObjectId CastError guard, and Stripe -> CJ createOrderV2 formatter verified.'
+  };
+
+  // 3. Stripe Treasury & Balance API Check
+  const stripeSnapshot = await fetchStripeFinancialSnapshot();
+  const stripeCheck = {
+    name: 'Stripe Treasury & Payout Engine',
+    passed: Boolean(stripeSnapshot.connected),
+    status: stripeSnapshot.connected ? 'PASSED' : (stripeSnapshot.configured ? 'WARNING' : 'UNCONFIGURED'),
+    mode: stripeSnapshot.mode,
+    availableUsd: stripeSnapshot.availableUsd,
+    pendingUsd: stripeSnapshot.pendingUsd,
+    details: stripeSnapshot.connected
+      ? `Connected (${stripeSnapshot.mode}) • Available: $${Number(stripeSnapshot.availableUsd || 0).toFixed(2)} • Pending: $${Number(stripeSnapshot.pendingUsd || 0).toFixed(2)}`
+      : (stripeSnapshot.error || 'Stripe key not connected.')
+  };
+
+  // 4. CJ Dropshipping API & Wallet Check
+  const cjSnapshot = await fetchCjWalletAndOrdersSnapshot(false);
+  const cjCheck = {
+    name: 'CJ Dropshipping API & Wallet',
+    passed: Boolean(cjSnapshot.connected),
+    status: cjSnapshot.connected ? 'PASSED' : (cjSnapshot.configured ? 'WARNING' : 'UNCONFIGURED'),
+    availableUsd: cjSnapshot.availableUsd,
+    details: cjSnapshot.connected
+      ? `Connected • CJ Wallet Available: $${Number(cjSnapshot.availableUsd || 0).toFixed(2)} • Recent CJ Orders: ${(cjSnapshot.recentCjOrders || []).length}`
+      : (cjSnapshot.error || 'CJ_ACCESS_TOKEN not connected.')
+  };
+
+  // 5. IONOS SMTP Connection & Optional Live Dispatch Check
+  const smtpVerify = await verifySmtpConnection();
+  let liveEmailResult = null;
+  if (sendLiveTestEmail && (smtpVerify.verified || resendApiKey || brevoApiKey)) {
+    const recipient = (testEmailRecipient && String(testEmailRecipient).trim()) || getPrimaryAdminEmail();
+    try {
+      const subj = `✧ Odie System Diagnostic Test (${timestampCT})`;
+      const html = `<div style="font-family: Georgia, serif; padding: 25px; border: 1px solid #E8C5C8; border-radius: 12px;"><h2 style="color: #B38B8F;">Odie Diagnostic Check Passed ✧</h2><p>Your IONOS SMTP transport (${escapeHtml(smtpHost)}:${activeSmtpPort}) is verified and delivering mail.</p></div>`;
+      const text = `Odie Diagnostic Check Passed (${timestampCT}) via ${smtpHost}:${activeSmtpPort}.`;
+      liveEmailResult = await sendEmail(recipient, subj, html, text);
+    } catch (emailErr) {
+      liveEmailResult = { error: emailErr.message };
+    }
+  }
+
+  const smtpPassed = Boolean(smtpVerify.verified || (liveEmailResult && !liveEmailResult.error));
+  const smtpCheck = {
+    name: 'IONOS SMTP Email Transport',
+    passed: smtpPassed,
+    status: smtpPassed ? 'PASSED' : 'WARNING',
+    host: smtpHost,
+    port: smtpVerify.port || activeSmtpPort,
+    authUserUsed: smtpVerify.authUserUsed || activeSmtpUser,
+    liveEmailSent: Boolean(liveEmailResult && !liveEmailResult.error),
+    details: smtpPassed
+      ? `Verified on ${smtpHost}:${smtpVerify.port || activeSmtpPort} as ${smtpVerify.authUserUsed || activeSmtpUser}${liveEmailResult && !liveEmailResult.error ? ' (Live test email delivered ✓)' : ''}`
+      : (smtpVerify.error || 'IONOS SMTP connection warning.'),
+    troubleshootingAdvice: smtpVerify.troubleshootingAdvice || []
+  };
+
+  // 6. Odie AI Brain & Persistent Memory Check
+  const geminiConfigured = Boolean(cleanEnv(process.env.GEMINI_API_KEY));
+  const odieCheck = {
+    name: 'Odie AI Brain & Long-Term Memory Bank',
+    passed: geminiConfigured && dbReady,
+    status: geminiConfigured && dbReady ? 'PASSED' : 'WARNING',
+    model: GEMINI_MODEL,
+    memoryCount,
+    details: geminiConfigured
+      ? `Odie online (${GEMINI_MODEL}) with ${memoryCount} persistent long-term memory facts loaded.`
+      : 'GEMINI_API_KEY is missing in .env.'
+  };
+
+  const checksList = [databaseCheck, webhooksCheck, stripeCheck, cjCheck, smtpCheck, odieCheck];
+  const passedCount = checksList.filter(c => c.passed).length;
+  const totalChecks = checksList.length;
+  const overallStatus = passedCount === totalChecks ? 'PASSED' : (passedCount >= 4 ? 'PARTIAL_PASS' : 'WARNING');
+
+  return {
+    overallStatus,
+    passedCount,
+    totalChecks,
+    durationMs: Date.now() - startMs,
+    timestampCT,
+    message: `Odie System Diagnostics complete: ${passedCount}/${totalChecks} subsystems passed verification in ${Date.now() - startMs}ms ✧`,
+    checks: {
+      database: databaseCheck,
+      webhooks: webhooksCheck,
+      stripe: stripeCheck,
+      cjDropshipping: cjCheck,
+      ionosSmtp: smtpCheck,
+      odieBrain: odieCheck
+    },
+    checksList
+  };
+};
+
+app.post('/api/admin/diagnostics/run-all', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { sendLiveTestEmail, testEmailRecipient } = req.body || {};
+    const report = await runFullSystemDiagnosticsSuite({
+      sendLiveTestEmail: Boolean(sendLiveTestEmail),
+      testEmailRecipient: testEmailRecipient || ''
+    });
+    res.status(200).json(report);
+  } catch (err) {
+    console.error('Unified System Diagnostics Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to run unified system diagnostics.' });
+  }
+});
+
 app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin, async (req, res) => {
   try {
     // 1. Test CJ v2 nested webhook payload parsing & non-ObjectId safety
@@ -2895,13 +4525,18 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
 
 app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const targetEmail = normalizeEmail(req.body?.to || req.user?.email || smtpUser || 'susan.coke@susansbeautyconsulting.com');
+    const requestedTo = req.body?.to ? String(req.body.to).trim() : '';
+    const targetEmail = requestedTo || getPrimaryAdminEmail();
     const verifyReport = await verifySmtpConnection();
 
-    if (!verifyReport.verified) {
+    if (!verifyReport.verified && !resendApiKey && !brevoApiKey) {
       return res.status(500).json({
-        error: `SMTP verification failed on ${smtpHost} (ports ${configuredPort} & ${fallbackPort}): ${verifyReport.error}`,
-        verifyReport
+        error: `IONOS SMTP verification failed on ${smtpHost}: ${verifyReport.error}`,
+        host: smtpHost,
+        configuredUser: rawSmtpUser,
+        dnsResolution: verifyReport.dnsResolution,
+        attempts: verifyReport.attempts || [],
+        troubleshootingAdvice: verifyReport.troubleshootingAdvice || []
       });
     }
 
@@ -2911,17 +4546,16 @@ app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, a
       <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
         <h2 style="color: #B38B8F; font-style: italic; text-align: center;">IONOS Email Diagnostic Passed ✧</h2>
         <p style="font-size: 1.05rem; line-height: 1.6;">Hello Susan,</p>
-        <p style="font-size: 1.05rem; line-height: 1.6;">Your boutique email system is online and verified with dual-port IPv4 auto-fallback.</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Your boutique email system is online and verified with exact-case/lowercase retry and strict From-header alignment.</p>
         <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
           <p style="margin: 5px 0;"><strong>SMTP Host:</strong> ${escapeHtml(smtpHost)}</p>
+          <p style="margin: 5px 0;"><strong>Authenticated Mailbox:</strong> ${escapeHtml(activeSmtpUser)}</p>
           <p style="margin: 5px 0;"><strong>Active Port:</strong> ${activeSmtpPort} (${activeSmtpPort === 465 ? 'Implicit SSL/TLS' : 'STARTTLS'})</p>
           <p style="margin: 5px 0;"><strong>Dispatched At:</strong> ${escapeHtml(timestampCT)}</p>
         </div>
       </div>
     `;
-    const text = `IONOS Email Diagnostic Passed ✧
-Host: ${smtpHost}:${activeSmtpPort}
-Time: ${timestampCT}`;
+    const text = `IONOS Email Diagnostic Passed ✧\nHost: ${smtpHost}:${activeSmtpPort}\nAuthenticated Mailbox: ${activeSmtpUser}\nTime: ${timestampCT}`;
 
     const sendResult = await sendEmail(targetEmail, subject, html, text);
 
@@ -2932,17 +4566,25 @@ Time: ${timestampCT}`;
     }).save().catch(() => {});
 
     res.status(200).json({
-      message: `Test email successfully delivered to ${targetEmail} via ${smtpHost}:${sendResult.portUsed} ✧`,
+      message: `Test email successfully delivered to ${targetEmail} via ${sendResult.deliveryTransport || `${smtpHost}:${sendResult.portUsed}`} (authenticated as ${sendResult.authUserUsed || activeSmtpUser}) ✧`,
       recipient: targetEmail,
       host: smtpHost,
       portUsed: sendResult.portUsed,
       secureUsed: sendResult.secureUsed,
+      authUserUsed: sendResult.authUserUsed || activeSmtpUser,
+      deliveryTransport: sendResult.deliveryTransport || `IONOS SMTP (${smtpHost}:${sendResult.portUsed})`,
+      dnsResolution: verifyReport.dnsResolution,
+      attempts: sendResult.attempts || verifyReport.attempts || [],
       messageId: sendResult.info?.messageId || null
     });
   } catch (err) {
     console.error('SMTP Diagnostic Test Error:', err);
     res.status(500).json({
-      error: err.message || 'SMTP test email failed.'
+      error: err.message || 'SMTP test email failed.',
+      host: smtpHost,
+      configuredUser: rawSmtpUser,
+      attempts: err.attempts || [],
+      troubleshootingAdvice: err.troubleshootingAdvice || []
     });
   }
 });
@@ -2954,6 +4596,7 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/beauty_app
 mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
+    await ensureDefaultOdieMemories();
     
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
