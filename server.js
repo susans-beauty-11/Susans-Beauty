@@ -113,22 +113,22 @@ const getCandidateSmtpUsers = () => {
 // explicit auth user casing, and configurable TLS strictness.
 const createIonosTransporter = ({ port, secure, user, strictTls = true }) =>
   nodemailer.createTransport({
-    host: smtpHost,
-    port,
+    host: 'smtp.ionos.com',
+    port: 587, // Often more reliable on cloud hosts than 465
     secure, // true for 465 (Implicit SSL/TLS), false for 587/2525 (STARTTLS)
     requireTLS: !secure,
     family: 4, // Force IPv4 resolution to prevent IPv6 ETIMEDOUT stalls on cloud hosts
-    connectionTimeout: 9000,
-    greetingTimeout: 9000,
+    connectionTimeout: 10000,
+    greetingTimeout: 1000,
     socketTimeout: 12000,
     auth: {
-      user,
-      pass: smtpPass,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
     },
     tls: {
       minVersion: 'TLSv1.2',
-      servername: smtpHost,
-      rejectUnauthorized: strictTls
+      servername: 'smtp.ionos.com',
+      rejectUnauthorized: false
     }
   });
 
