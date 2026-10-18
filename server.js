@@ -49,8 +49,31 @@ const authLimiter = rateLimit({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---------------- EMAIL TRANSPORTER (IONOS SMTP) ---------------- //
+// ---------------- EMAIL TRANSPORTER & SECURITY HELPERS (IONOS SMTP) ---------------- //
 const cleanEnv = (val) => (val || '').toString().trim().replace(/^["']|["']$/g, '');
+
+const escapeHtml = (unsafe = '') =>
+  String(unsafe || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const normalizeEmail = (rawEmail = '') => String(rawEmail || '').toLowerCase().trim();
+
+const escapeRegex = (str = '') => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getMemberDiscountInfo = (tier = '') => {
+  const cleanTier = String(tier || '').toLowerCase().trim();
+  if (cleanTier === 'radiance') {
+    return { rate: 0.25, label: '25% Radiance Elite Member Discount' };
+  }
+  if (cleanTier === 'luminary') {
+    return { rate: 0.10, label: '10% Luminary Circle Member Discount' };
+  }
+  return { rate: 0, label: '' };
+};
 
 const smtpHost = cleanEnv(process.env.SMTP_HOST) || 'smtp.ionos.com';
 const smtpPort = Number(cleanEnv(process.env.SMTP_PORT)) || 465;
@@ -277,115 +300,235 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (STRICT HEALTH & BEAUTY) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
+const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 5);
+const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 60);
 
 const getCjHeaders = () => {
-  const token = process.env.CJ_ACCESS_TOKEN;
+  const token = cleanEnv(process.env.CJ_ACCESS_TOKEN);
   if (!token) {
     console.warn("⚠ CJ_ACCESS_TOKEN is missing in environment.");
     return null;
   }
   return {
-    'CJ-Access-Token': token.trim(),
+    'CJ-Access-Token': token,
     'Content-Type': 'application/json'
   };
 };
 
-const syncCJCatalog = async () => {
-  const headers = getCjHeaders();
-  if (!headers) return;
+// Word-boundary exclusion list to reject non-beauty items that previously matched substrings
+// like "chair" (matched "hair"), "phone skin" (matched "skin"), "clock face" (matched "face"), or "ice cream" (matched "cream").
+const NON_BEAUTY_EXCLUSION_REGEX = /\b(chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|Crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton| tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
 
-  console.log("🔄 Starting CJ Dropshipping catalog sync (Filtered for Beauty & Cosmetics)...");
+// Legitimate Health & Beauty category indicators in CJ's category tree
+const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(health|beauty|cosmetic|cosmetics|skincare|skin care|makeup|make-up|make up|personal care|fragrance|perfume|nail|manicure|pedicure|hair care|haircare|hair styling|wig|extensions|salon|spa|hygiene|oral care|dental|body care|bath|shower|facial|massage|relaxation|wellness|shaving|epilator|grooming|eyelash|brow)\b/i;
 
-  let pageNum = 1;
-  const pageSize = 50;
-  let hasMoreProducts = true;
-  let totalProcessed = 0;
+// Specific Health & Beauty product terms (matched on word boundaries)
+const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|cosmetic|cosmetics|makeup|make-up|serum|cleanser|cleansing|toner|moisturizer|moisturizing|lotion|face cream|night cream|day cream|eye cream|hand cream|foot cream|body cream|BB cream|CC cream|balm|ointment|essence|ampoule|emulsion|exfoliant|exfoliating|scrub|peel|peeling|facial mask|face mask|sheet mask|clay mask|mud mask|eye mask|eye patch|sleeping mask|lip mask|lip balm|lip gloss|lipgloss|lipstick|lip liner|lip oil|lip tint|lip plumper|foundation|concealer|primer|blush|bronzer|highlighter|contour|setting powder|loose powder|pressed powder|setting spray|makeup fixer|eyeshadow|eyeliner|mascara|eyebrow|brow gel|brow pencil|false lashes|eyelash|lash extension|lash curler|makeup brush|kabuki|beauty sponge|powder puff|makeup remover|micellar|cotton pad|nail polish|gel nail|nail art|nail file|nail drill|nail lamp|UV lamp|cuticle|manicure|pedicure|press on nails|poly gel|acrylic nail|shampoo|conditioner|hair mask|hair oil|hair serum|hair treatment|scalp|keratin|argan|biotin|edge control|hair growth|beard oil|beard balm|curl cream|detangler|comb|hairbrush|flat iron|curling iron|hair dryer|diffuser|epilator|trimmer|shaver|razor|waxing|depilatory|collagen|retinol|hyaluronic|vitamin c|vitamin e|niacinamide|nicotinamide|salicylic|glycolic|lactic acid|azelaic|ceramide|peptide|squalane|centella|snail mucin|tea tree|aloe vera|rosehip|spf|sunscreen|sunblock|self tanner|aftersun|fragrance|perfume|parfum|cologne|eau de|body mist|deodorant|antiperspirant|body wash|shower gel|bath bomb|bath salt|body butter|body scrub|body oil|essential oil|aromatherapy|gua sha|jade roller|ice roller|derma roller|microneedle|led mask|facial steamer|blackhead|pore vacuum|ultrasonic scrubber|acne patch|pimple patch|blemish|anti-aging|anti aging|wrinkle|whitening|brightening|hydrating|firming|lifting|massager|cupping|posture corrector|heating pad|sleep mask|teeth whitening|toothbrush|water flosser|oral irrigator|tongue scraper)\b/i;
 
-  const beautyKeywords = ['beauty', 'skin', 'cosmetic', 'makeup', 'health', 'hair', 'face', 'care', 'lotion', 'serum', 'cream', 'cleanser'];
+const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '') => {
+  const cleanTitle = String(title || '').trim();
+  const cleanCategory = String(categoryName || '').trim();
+  if (!cleanTitle) return false;
+
+  const combinedTitleAndCat = `${cleanTitle} ${cleanCategory}`;
+
+  // 1. Immediately reject if title or category hits any non-beauty exclusion keyword
+  if (NON_BEAUTY_EXCLUSION_REGEX.test(combinedTitleAndCat)) {
+    return false;
+  }
+
+  // 2. If CJ provided a categoryName, require it to be a Health & Beauty category
+  if (cleanCategory && !HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
+    return false;
+  }
+
+  // 3. Require the title or category to contain a specific Health & Beauty product term
+  if (!HEALTH_BEAUTY_PRODUCT_REGEX.test(combinedTitleAndCat)) {
+    return false;
+  }
+
+  return true;
+};
+
+const extractCleanTags = (categoryName = '', title = '') => {
+  const rawTokens = `${categoryName} ${title}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const allowedTagSet = new Set([
+    'health', 'beauty', 'skincare', 'cosmetics', 'makeup', 'serum', 'cleanser',
+    'toner', 'moisturizer', 'lotion', 'cream', 'mask', 'facial', 'lip', 'eye',
+    'nail', 'manicure', 'hair', 'shampoo', 'conditioner', 'scalp', 'fragrance',
+    'perfume', 'bath', 'body', 'wellness', 'massage', 'oral', 'hydration',
+    'brightening', 'anti-aging', 'acne', 'sensitive', 'collagen', 'retinol'
+  ]);
+
+  const tags = [];
+  for (const token of rawTokens) {
+    if (allowedTagSet.has(token) && !tags.includes(token)) {
+      tags.push(token);
+    }
+  }
+  if (tags.length === 0) tags.push('beauty', 'health');
+  return tags;
+};
+
+// Purges any previously synced CJ products in MongoDB that fail the strict Health & Beauty filter,
+// while preserving Susan's manually added custom boutique products.
+const purgeNonBeautyCjProducts = async () => {
+  try {
+    const cjProducts = await Product.find({ rawCjData: { $exists: true, $ne: null } }).lean();
+    const idsToDelete = [];
+
+    for (const prod of cjProducts) {
+      const catName = prod.rawCjData?.categoryName || (Array.isArray(prod.tags) ? prod.tags.join(' ') : '');
+      const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
+      const isValidBeauty = isStrictHealthAndBeautyProduct(prod.title, catName, prod.description);
+
+      if (!isValidBeauty || !(price > 0)) {
+        idsToDelete.push(prod._id);
+      }
+    }
+
+    if (idsToDelete.length > 0) {
+      await Product.deleteMany({ _id: { $in: idsToDelete } });
+      await User.updateMany(
+        { recommendedProducts: { $in: idsToDelete } },
+        { $pull: { recommendedProducts: { $in: idsToDelete } } }
+      );
+      await InboxItem.deleteMany({ productId: { $in: idsToDelete } });
+      console.log(`🧹 Purged ${idsToDelete.length} non-Health/Beauty or invalid CJ products from MongoDB.`);
+    }
+
+    return idsToDelete.length;
+  } catch (err) {
+    console.error("⚠️ Error purging non-beauty CJ products:", err.message);
+    return 0;
+  }
+};
+
+let isCjSyncRunning = false;
+
+const syncCJCatalog = async (options = {}) => {
+  if (isCjSyncRunning) {
+    console.log("⏳ CJ catalog sync is already in progress; skipping duplicate trigger.");
+    return { status: 'already_running', purgedCount: 0, syncedCount: 0 };
+  }
+
+  isCjSyncRunning = true;
+  const maxPages = Math.max(1, Number(options.maxPages) || CJ_MAX_PAGES);
+  const maxProducts = Math.max(1, Number(options.maxProducts) || CJ_MAX_PRODUCTS);
 
   try {
-    while (hasMoreProducts) {
-      console.log(`🔍 Fetching CJ products -> Page ${pageNum}`);
+    // Always purge non-beauty CJ items in DB first so the catalog stays strictly Health & Beauty
+    const purgedCount = await purgeNonBeautyCjProducts();
+
+    const headers = getCjHeaders();
+    if (!headers) {
+      return { status: 'skipped_no_token', purgedCount, syncedCount: 0 };
+    }
+
+    console.log(`🔄 Starting CJ Dropshipping Health & Beauty sync (maxPages=${maxPages}, maxProducts=${maxProducts})...`);
+
+    let pageNum = 1;
+    const pageSize = 50;
+    let hasMoreProducts = true;
+    let totalProcessed = 0;
+
+    while (hasMoreProducts && pageNum <= maxPages && totalProcessed < maxProducts) {
+      console.log(`🔍 Fetching CJ products -> Page ${pageNum}/${maxPages}`);
       
-      const response = await axios.get(`${CJ_BASE_URL}/product/list?pageNum=${pageNum}&pageSize=${pageSize}`, { headers });
+      const response = await axios.get(
+        `${CJ_BASE_URL}/product/list?pageNum=${pageNum}&pageSize=${pageSize}`,
+        { headers, timeout: 15000 }
+      );
       const cjProducts = response.data?.data?.list || response.data?.data?.content || [];
 
-      if (cjProducts.length === 0) {
+      if (!Array.isArray(cjProducts) || cjProducts.length === 0) {
         hasMoreProducts = false;
         break;
       }
 
       for (const item of cjProducts) {
-        const title = item.nameEn || item.productNameEn || item.productName;
-        const baseSku = item.productSku || item.sku;
-        const category = (item.categoryName || '').toLowerCase();
-        
+        if (totalProcessed >= maxProducts) break;
+
+        const title = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
+        const baseSku = (item.productSku || item.sku || item.pid || '').toString().trim();
+        const category = (item.categoryName || '').toString().trim();
+        const desc = item.description || item.productDescription || '';
+
         if (!title || !baseSku) continue;
 
-        const isBeautyProduct = beautyKeywords.some(kw => category.includes(kw) || title.toLowerCase().includes(kw));
-        if (!isBeautyProduct) {
-          continue; 
+        if (!isStrictHealthAndBeautyProduct(title, category, desc)) {
+          continue;
         }
 
-        const desc = item.description || item.productDescription || '';
-        const img = item.productImage || item.image;
-        
+        const img = item.productImage || item.image || '';
         const retailMarkup = 6.5;
 
-        let rawBasePrice = parseFloat(item.sellPrice || item.price || 0);
+        let rawBasePrice = parseFloat(String(item.sellPrice || item.price || '0').split('-')[0].trim()) || 0;
         
-        if (rawBasePrice === 0 && item.variants && item.variants.length > 0) {
+        if (rawBasePrice === 0 && Array.isArray(item.variants) && item.variants.length > 0) {
           const validVariant = item.variants.find(v => parseFloat(v.sellPrice || v.price || 0) > 0);
           if (validVariant) {
             rawBasePrice = parseFloat(validVariant.sellPrice || validVariant.price);
           }
         }
 
-        if (rawBasePrice === 0) {
-          console.warn(`⚠️ Skipping ${title} (SKU: ${baseSku}) - No valid price found.`);
+        if (!(rawBasePrice > 0)) {
           continue;
         }
 
-        const mappedVariants = item.variants && item.variants.length > 0 ? item.variants.map(v => {
-          const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice);
-          return {
-            sku: v.vid || v.variantSku || baseSku, 
-            variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
-            price: variantRawPrice * retailMarkup, 
-            imageUrl: v.variantImage || img
-          };
-        }) : [{
-          sku: baseSku,
-          variantName: title,
-          price: rawBasePrice * retailMarkup,
-          imageUrl: img
-        }];
+        const mappedVariants = Array.isArray(item.variants) && item.variants.length > 0
+          ? item.variants.map(v => {
+              const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice) || rawBasePrice;
+              return {
+                sku: v.vid || v.variantSku || baseSku,
+                variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
+                price: Number((variantRawPrice * retailMarkup).toFixed(2)),
+                imageUrl: v.variantImage || img
+              };
+            })
+          : [{
+              sku: item.vid || baseSku,
+              variantName: 'Standard',
+              price: Number((rawBasePrice * retailMarkup).toFixed(2)),
+              imageUrl: img
+            }];
 
         await Product.findOneAndUpdate(
-          { title: title },
+          { title },
           {
-            title: title,
+            title,
             description: desc,
             imageUrl: img,
-            tags: category.split(' '),
+            tags: extractCleanTags(category, title),
             variants: mappedVariants,
-            rawCjData: item 
+            rawCjData: item
           },
-          { upsert: true, returnDocument: 'after' } 
+          { upsert: true, returnDocument: 'after' }
         );
-        
+
         totalProcessed++;
       }
-      
+
       pageNum++;
-      await delay(1500); 
+      if (hasMoreProducts && pageNum <= maxPages && totalProcessed < maxProducts) {
+        await delay(1200);
+      }
     }
-    
-    console.log(`🚀 CJ catalog sync complete! Processed ${totalProcessed} Beauty/Skincare items.`);
+
+    console.log(`🚀 CJ Health & Beauty sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Health & Beauty items.`);
+    return { status: 'completed', purgedCount, syncedCount: totalProcessed };
   } catch (error) {
     console.error("❌ Error during CJ sync:", error?.response?.data || error.message);
+    return { status: 'error', error: error?.response?.data?.message || error.message, purgedCount: 0, syncedCount: 0 };
+  } finally {
+    isCjSyncRunning = false;
   }
 };
 
@@ -413,26 +556,28 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
 app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { to, subject, body } = req.body;
+    const cleanTo = normalizeEmail(to);
+    const cleanSubject = String(subject || '').trim();
+    const cleanBody = String(body || '').trim();
     
-    if (!to || !subject || !body) {
+    if (!cleanTo || !cleanSubject || !cleanBody) {
       return res.status(400).json({ error: 'Missing required email fields (to, subject, body).' });
     }
 
+    const safeHtmlBody = escapeHtml(cleanBody);
     const htmlContent = `
       <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
         <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
-        <div style="font-size: 1.1rem; line-height: 1.6; white-space: pre-wrap;">
-          ${body}
-        </div>
+        <div style="font-size: 1.1rem; line-height: 1.6; white-space: pre-wrap;">${safeHtmlBody}</div>
         <p style="font-size: 0.9rem; color: #8A797A; margin-top: 40px; text-align: center;">Warmly,<br>Susan</p>
       </div>
     `;
 
-    const textContent = `${body}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+    const textContent = `${cleanBody}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
-    await sendEmail(to, subject, htmlContent, textContent);
+    await sendEmail(cleanTo, cleanSubject, htmlContent, textContent);
     
-    const newLog = new EmailLog({ to, subject, body });
+    const newLog = new EmailLog({ to: cleanTo, subject: cleanSubject, body: cleanBody });
     await newLog.save();
 
     res.status(200).json({ message: 'Email dispatched successfully.' });
@@ -1042,6 +1187,37 @@ app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res)
   }
 });
 
+// ---------------- ADMIN CJ SYNC & CLEANUP ROUTE ---------------- //
+
+app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { purgeOnly, maxPages, maxProducts } = req.body || {};
+    if (purgeOnly) {
+      const purgedCount = await purgeNonBeautyCjProducts();
+      const products = await Product.find({}).sort({ _id: -1 });
+      return res.status(200).json({
+        message: `Cleaned catalog: removed ${purgedCount} non-Health/Beauty CJ items.`,
+        purgedCount,
+        syncedCount: 0,
+        activeTotal: products.length,
+        products
+      });
+    }
+
+    const result = await syncCJCatalog({ maxPages, maxProducts });
+    const products = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: `Health & Beauty sync complete! Removed ${result.purgedCount || 0} non-beauty items and synced ${result.syncedCount || 0} verified Health & Beauty products.`,
+      ...result,
+      activeTotal: products.length,
+      products
+    });
+  } catch (error) {
+    console.error('Admin CJ Sync Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to run CJ Health & Beauty sync.' });
+  }
+});
+
 // ---------------- MANUAL INVENTORY ROUTES ---------------- //
 
 app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res) => {
@@ -1122,13 +1298,16 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// ---------------- PASSWORD RESET ROUTES ---------------- //
+// ---------------- PASSWORD RESET & AUTH ROUTES ---------------- //
 
 app.post('/api/users/forgot-password', authLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
-    const user = await User.findOne({ email });
-    
+    const cleanEmail = normalizeEmail(req.body?.email);
+    if (!cleanEmail) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const user = await User.findOne({ email: new RegExp(`^${escapeRegex(cleanEmail)}$`, 'i') });
     if (!user) return res.status(200).json({ message: 'If that email exists, a reset link has been sent.' });
 
     const token = crypto.randomBytes(20).toString('hex');
@@ -1168,12 +1347,12 @@ app.post('/api/users/reset-password/:token', authLimiter, async (req, res) => {
     if (!user) return res.status(400).json({ error: 'Password reset token is invalid or has expired.' });
 
     const { password } = req.body;
-    if (!password || password.length < 6) {
+    if (!password || String(password).length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
     }
 
     const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(password, salt);
+    user.password = await bcrypt.hash(String(password), salt);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     
@@ -1187,25 +1366,48 @@ app.post('/api/users/reset-password/:token', authLimiter, async (req, res) => {
 
 app.post('/api/users/register', authLimiter, async (req, res) => {
   try {
-    const { name, email, password, membershipTier } = req.body;
-    
-    const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ error: 'Email already in use.' });
+    const { name, email, password, membershipTier } = req.body || {};
+    const cleanName = String(name || '').trim();
+    const cleanEmail = normalizeEmail(email);
+
+    if (!cleanName || !cleanEmail || !password) {
+      return res.status(400).json({ error: 'Please provide your name, email address, and password.' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const existingUser = await User.findOne({ email: new RegExp(`^${escapeRegex(cleanEmail)}$`, 'i') });
+    if (existingUser) return res.status(400).json({ error: 'Email already in use. Please sign in instead.' });
 
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(String(password), salt);
+
+    const isSusanAdmin = cleanEmail === 'susan.coke@susansbeautyconsulting.com';
+    const assignedTier = isSusanAdmin ? 'admin' : (membershipTier || 'luminary');
+    const assignedRole = isSusanAdmin ? 'admin' : 'client';
 
     const newUser = new User({
-      name,
-      email,
+      name: cleanName,
+      email: cleanEmail,
       password: hashedPassword,
-      membershipTier: membershipTier || 'luminary'
+      membershipTier: assignedTier,
+      role: assignedRole
     });
 
     const savedUser = await newUser.save();
     const token = jwt.sign({ _id: savedUser._id }, process.env.JWT_SECRET || 'fallback_secret_key', { expiresIn: '24h' });
 
-    res.status(201).json({ user: { id: savedUser._id, name: savedUser.name, email: savedUser.email, membershipTier: savedUser.membershipTier }, token });
+    res.status(201).json({
+      user: {
+        id: savedUser._id,
+        name: savedUser.name,
+        email: savedUser.email,
+        membershipTier: savedUser.membershipTier,
+        role: savedUser.role
+      },
+      token
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1213,24 +1415,40 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
 
 app.post('/api/users/login', authLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
+    const cleanEmail = normalizeEmail(email);
 
-    const user = await User.findOne({ email });
+    if (!cleanEmail || !password) {
+      return res.status(400).json({ error: 'Please enter both your email address and password.' });
+    }
+
+    const user = await User.findOne({ email: new RegExp(`^${escapeRegex(cleanEmail)}$`, 'i') });
     if (!user) return res.status(400).json({ error: 'Invalid email or password.' });
 
-    let validPassword = await bcrypt.compare(password, user.password);
-
-    if (!validPassword && password === user.password) {
+    let validPassword = false;
+    if (String(user.password).startsWith('$2')) {
+      validPassword = await bcrypt.compare(String(password), user.password);
+    } else if (String(password) === user.password) {
+      // One-time automatic migration for legacy non-bcrypt passwords
       validPassword = true;
       const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(password, salt);
+      user.password = await bcrypt.hash(String(password), salt);
       await user.save();
     }
 
     if (!validPassword) return res.status(400).json({ error: 'Invalid email or password.' });
 
-    if (user.email.toLowerCase() === 'susan.coke@susansbeautyconsulting.com' && user.membershipTier !== 'admin') {
+    let userModified = false;
+    if (user.email !== cleanEmail) {
+      user.email = cleanEmail;
+      userModified = true;
+    }
+    if (cleanEmail === 'susan.coke@susansbeautyconsulting.com' && (user.membershipTier !== 'admin' || user.role !== 'admin')) {
       user.membershipTier = 'admin';
+      user.role = 'admin';
+      userModified = true;
+    }
+    if (userModified) {
       await user.save();
     }
 
@@ -1276,7 +1494,8 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const orders = await Order.find({ customerEmail: user.email }).sort({ createdAt: -1 });
+    const emailRegex = new RegExp(`^${escapeRegex(normalizeEmail(user.email))}$`, 'i');
+    const orders = await Order.find({ customerEmail: emailRegex }).sort({ createdAt: -1 });
     res.status(200).json(orders);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch order history' });
@@ -1423,31 +1642,172 @@ app.post('/api/create-checkout-session', authenticateToken, async (req, res) => 
   }
 });
 
+// ---------------- WEBHOOK & FULFILLMENT HELPERS ---------------- //
+
+// Extracts a normalized shipping address object from a Stripe checkout.session.completed event
+const extractStripeShippingAddress = (session = {}, fallbackAddress = {}) => {
+  const shippingDetails = session.shipping_details || session.collected_information?.shipping_details || {};
+  const customerDetails = session.customer_details || {};
+  const addr = shippingDetails.address || customerDetails.address || {};
+
+  const fullName = String(
+    shippingDetails.name ||
+    customerDetails.name ||
+    `${fallbackAddress.first_name || ''} ${fallbackAddress.last_name || ''}`.trim() ||
+    'Valued Customer'
+  ).trim();
+
+  const nameParts = fullName.split(/\s+/);
+  const firstName = fallbackAddress.first_name || nameParts[0] || 'Valued';
+  const lastName = fallbackAddress.last_name || nameParts.slice(1).join(' ') || 'Customer';
+
+  const line1 = addr.line1 || fallbackAddress.address_1 || '';
+  const line2 = addr.line2 || fallbackAddress.address_2 || '';
+  const fullStreet = [line1, line2].filter(Boolean).join(', ') || 'Address Pending';
+
+  return {
+    name: fullName,
+    first_name: firstName,
+    last_name: lastName,
+    address_1: fullStreet,
+    city: addr.city || fallbackAddress.city || 'Pending',
+    state: addr.state || fallbackAddress.state || 'Pending',
+    postcode: addr.postal_code || fallbackAddress.postcode || '00000',
+    country: addr.country || fallbackAddress.country || 'US',
+    phone: customerDetails.phone || shippingDetails.phone || fallbackAddress.phone || '0000000000'
+  };
+};
+
+// Builds a validated CJ Dropshipping createOrderV2 payload from an Order document
+const buildCjOrderPayload = (order) => {
+  const address = order.shipping_address || {};
+  const customerName = (
+    address.name ||
+    `${address.first_name || 'Valued'} ${address.last_name || 'Customer'}`
+  ).trim();
+
+  return {
+    orderNumber: String(order._id || 'TEST-ORDER'),
+    shippingZip: String(address.postcode || '00000'),
+    shippingCountryCode: String(address.country || 'US'),
+    shippingProvince: String(address.state || 'KS'),
+    shippingCity: String(address.city || 'Wichita'),
+    shippingAddress: String(address.address_1 || 'Pending'),
+    shippingCustomerName: customerName,
+    shippingPhone: String(address.phone || '0000000000'),
+    products: (Array.isArray(order.items) ? order.items : []).map(item => ({
+      vid: String(item.vid || item.sku || ''),
+      sku: String(item.sku || ''),
+      quantity: Math.max(1, Number(item.quantity) || 1)
+    }))
+  };
+};
+
+// Parses both CJ v2 nested (`req.body.params`) and flat webhook payloads safely
+const parseCjWebhookFields = (body = {}) => {
+  const safeBody = (body && typeof body === 'object') ? body : {};
+  const nested = (safeBody.params && typeof safeBody.params === 'object') ? safeBody.params : {};
+
+  const orderNumber =
+    nested.orderNumber ||
+    nested.orderId ||
+    nested.cjOrderId ||
+    safeBody.orderNumber ||
+    safeBody.orderId ||
+    null;
+
+  const trackingNumber =
+    nested.trackNumber ||
+    nested.trackingNumber ||
+    nested.trackingCode ||
+    safeBody.trackingNumber ||
+    safeBody.trackNumber ||
+    '';
+
+  const status =
+    nested.orderStatus ||
+    nested.status ||
+    safeBody.status ||
+    safeBody.orderStatus ||
+    'SHIPPED';
+
+  const logisticName =
+    nested.logisticName ||
+    safeBody.logisticName ||
+    '';
+
+  return {
+    orderNumber: orderNumber ? String(orderNumber).trim() : null,
+    trackingNumber: trackingNumber ? String(trackingNumber).trim() : '',
+    status: status ? String(status).trim() : 'SHIPPED',
+    logisticName: logisticName ? String(logisticName).trim() : '',
+    messageType: safeBody.type || 'ORDER_STATUS'
+  };
+};
+
 app.post('/api/cart-checkout', async (req, res) => {
   try {
-    const { items, shipping_address } = req.body;
+    const { items, shipping_address, customerEmail, membershipTier } = req.body || {};
     
-    if (!items || items.length === 0) {
-        return res.status(400).json({ error: 'Cannot process an empty cart.' });
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Cannot process an empty cart.' });
     }
 
-    const totalAmount = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    // Verify member tier from Authorization token if signed in (fallback to request membershipTier)
+    let verifiedTier = String(membershipTier || '').toLowerCase().trim();
+    let verifiedEmail = normalizeEmail(customerEmail);
+
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+        const dbUser = await User.findById(decoded._id).select('email membershipTier').lean();
+        if (dbUser) {
+          verifiedTier = String(dbUser.membershipTier || verifiedTier).toLowerCase().trim();
+          if (!verifiedEmail && dbUser.email) {
+            verifiedEmail = normalizeEmail(dbUser.email);
+          }
+        }
+      } catch (tokenErr) {
+        // Proceed as guest/fallback tier if token is expired or absent
+      }
+    }
+
+    const discountInfo = getMemberDiscountInfo(verifiedTier);
+    const multiplier = 1 - discountInfo.rate;
+
+    const discountedItems = items.map(item => {
+      const basePrice = Math.max(0, Number(item.price) || 0);
+      const finalUnitPrice = Number((basePrice * multiplier).toFixed(2));
+      return {
+        ...item,
+        originalPrice: basePrice,
+        price: finalUnitPrice,
+        discountRate: discountInfo.rate,
+        quantity: Math.max(1, Number(item.quantity) || 1)
+      };
+    });
+
+    const totalAmount = discountedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     
     const newOrder = new Order({ 
-      items, 
-      totalAmount,
-      shipping_address 
+      items: discountedItems, 
+      totalAmount: Number(totalAmount.toFixed(2)),
+      shipping_address,
+      ...(verifiedEmail ? { customerEmail: verifiedEmail } : {})
     });
     await newOrder.save();
 
-    const line_items = items.map(item => ({
+    const line_items = discountedItems.map(item => ({
       price_data: {
         currency: 'usd',
         product_data: {
-          name: item.displayTitle || item.title,
+          name: item.displayTitle || item.title || 'Boutique Essential',
+          ...(discountInfo.label ? { description: `${discountInfo.label} Applied` } : {}),
           images: item.imageUrl ? [item.imageUrl.startsWith('//') ? `https:${item.imageUrl}` : item.imageUrl] : [],
         },
-        unit_amount: Math.round(item.price * 100), 
+        unit_amount: Math.max(50, Math.round(item.price * 100)), 
       },
       quantity: item.quantity,
     }));
@@ -1456,14 +1816,28 @@ app.post('/api/cart-checkout', async (req, res) => {
       payment_method_types: ['card'],
       mode: 'payment',
       line_items,
+      shipping_address_collection: {
+        allowed_countries: ['US', 'CA', 'GB', 'AU']
+      },
+      phone_number_collection: {
+        enabled: true
+      },
+      ...(verifiedEmail ? { customer_email: verifiedEmail } : {}),
       metadata: {
-        orderId: newOrder._id.toString() 
+        orderId: newOrder._id.toString(),
+        membershipTier: verifiedTier || 'guest',
+        discountRate: String(discountInfo.rate)
       },
       success_url: `${req.headers.origin || 'http://localhost:3000'}/?cart_success=true`,
       cancel_url: `${req.headers.origin || 'http://localhost:3000'}/?cart_canceled=true`,
     });
 
-    res.json({ url: session.url });
+    res.json({
+      url: session.url,
+      discountApplied: discountInfo.rate > 0,
+      discountLabel: discountInfo.label,
+      totalAmount: Number(totalAmount.toFixed(2))
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1471,10 +1845,11 @@ app.post('/api/cart-checkout', async (req, res) => {
 
 app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
+  const webhookSecret = cleanEnv(process.env.STRIPE_WEBHOOK_SECRET);
   let event;
 
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
     console.error(`⚠️ Stripe Webhook Error: ${err.message}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -1487,13 +1862,15 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
     const tier = session.metadata?.tier;
     const userId = session.metadata?.userId;
 
-    if (orderId) {
+    if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
       try {
         const order = await Order.findById(orderId);
         if (order && order.status === 'Pending') {
           
           order.status = 'PAID_PROCESSING';
-          order.customerEmail = session.customer_details?.email || session.customer_email || 'Customer';
+          const rawEmail = session.customer_details?.email || session.customer_email || order.customerEmail || 'Customer';
+          order.customerEmail = rawEmail !== 'Customer' ? String(rawEmail).toLowerCase().trim() : 'Customer';
+          order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || {});
           await order.save();
 
           if (order.customerEmail !== 'Customer') {
@@ -1508,57 +1885,52 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
             
             const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
-            await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText);
+            await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText).catch(() => {});
           }
 
           const headers = getCjHeaders();
-          const address = order.shipping_address || {};
-          
-          const cjPayload = {
-            orderNumber: order._id.toString(),
-            shippingZip: address.postcode || "00000",
-            shippingCountryCode: address.country || "US",
-            shippingProvince: address.state || "Pending",
-            shippingCity: address.city || "Pending",
-            shippingAddress: address.address_1 || "Pending",
-            shippingCustomerName: `${address.first_name || 'Customer'} ${address.last_name || ''}`.trim(),
-            shippingPhone: address.phone || "0000000000",
-            products: order.items.map(item => ({
-              vid: item.sku, 
-              quantity: item.quantity
-            }))
-          };
+          const cjPayload = buildCjOrderPayload(order);
+          let cjStatusNote = 'Routed to CJ Dropshipping';
 
-          const response = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers });
-          console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
+          if (headers) {
+            try {
+              await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
+              console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
+            } catch (cjErr) {
+              cjStatusNote = `Manual review needed (CJ API response: ${cjErr?.response?.data?.message || cjErr.message})`;
+              console.warn(`⚠️ CJ createOrderV2 warning for Order ${orderId}:`, cjStatusNote);
+            }
+          } else {
+            cjStatusNote = 'CJ_ACCESS_TOKEN not configured; ready for manual fulfillment';
+          }
 
-          // --- NEW STEP 4: NOTIFY SUSAN ---
+          // --- NOTIFY SUSAN ---
           const susanHtml = `
             <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
               <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Automated Order Processed ✧</h2>
               <p style="font-size: 1.1rem; line-height: 1.6;">Susan,</p>
-              <p style="font-size: 1.1rem; line-height: 1.6;">A new order has been placed and automatically routed to CJ Dropshipping for fulfillment.</p>
+              <p style="font-size: 1.1rem; line-height: 1.6;">A new order has been paid via Stripe.</p>
               <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                <p style="margin: 5px 0;"><strong>Customer:</strong> ${cjPayload.shippingCustomerName}</p>
+                <p style="margin: 5px 0;"><strong>Customer:</strong> ${cjPayload.shippingCustomerName} (${order.customerEmail})</p>
+                <p style="margin: 5px 0;"><strong>Ship To:</strong> ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}, ${cjPayload.shippingCountryCode}</p>
                 <p style="margin: 5px 0;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
                 <p style="margin: 5px 0;"><strong>Order ID:</strong> ${order._id.toString()}</p>
+                <p style="margin: 5px 0;"><strong>Fulfillment Status:</strong> ${cjStatusNote}</p>
               </div>
-              <p style="font-size: 1.1rem; line-height: 1.6;">No action is required on your part. The funds are processing via Stripe.</p>
             </div>
           `;
           
-          const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} for $${(order.totalAmount || 0).toFixed(2)} and forwarded to CJ Dropshipping.\n\nOrder ID: ${order._id.toString()}`;
+          const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} (${order.customerEmail}) for $${(order.totalAmount || 0).toFixed(2)}.\nShip To: ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}\nFulfillment: ${cjStatusNote}\nOrder ID: ${order._id.toString()}`;
 
-          await sendEmail('susan.coke@susansbeautyconsulting.com', '✧ New Order Auto-Processed', susanHtml, susanText);
+          await sendEmail('susan.coke@susansbeautyconsulting.com', '✧ New Order Auto-Processed', susanHtml, susanText).catch(() => {});
           console.log(`✉️ Admin notification dispatched to Susan for Order ${orderId}`);
-          // --------------------------------
 
         }
       } catch (err) {
         console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
       }
     } 
-    else if (tier && userId) {
+    else if (tier && userId && mongoose.Types.ObjectId.isValid(String(userId))) {
       try {
         const user = await User.findById(userId);
         if (user) {
@@ -1574,7 +1946,7 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
           `;
           const welcomeText = `Welcome to the ${tier} tier! Your membership is now active. \n\nWarmly,\nSusan's Beauty Consulting`;
           
-          await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText);
+          await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText).catch(() => {});
         }
       } catch (err) {
         console.error(`⚠️ Failed to upgrade user ${userId} to ${tier}:`, err.message);
@@ -1587,33 +1959,63 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
 
 app.post('/webhook/cj', express.json(), async (req, res) => {
   try {
-    const providedToken = req.query.token;
-    const expectedToken = process.env.CJ_WEBHOOK_SECRET;
+    const providedToken = cleanEnv(
+      req.query.token ||
+      req.headers['x-cj-webhook-token'] ||
+      (req.headers['authorization'] && req.headers['authorization'].startsWith('Bearer ')
+        ? req.headers['authorization'].split(' ')[1]
+        : '')
+    );
+    const expectedToken = cleanEnv(process.env.CJ_WEBHOOK_SECRET);
 
-    if (!expectedToken || providedToken !== expectedToken) {
+    // If CJ_WEBHOOK_SECRET is configured, enforce token match whenever ?token= or header is supplied,
+    // while allowing CJ's initial unauthenticated URL verification ping (which sends no orderNumber) to return 200 OK.
+    const parsed = parseCjWebhookFields(req.body);
+
+    if (!parsed.orderNumber) {
+      console.log(`📡 CJ Webhook Verification Ping received from IP: ${req.ip}`);
+      return res.status(200).json({
+        received: true,
+        ping: true,
+        message: 'CJ webhook endpoint is online and ready.'
+      });
+    }
+
+    if (expectedToken && providedToken !== expectedToken) {
       console.warn(`⚠️ Unauthorized CJ webhook attempt from IP: ${req.ip}`);
       return res.status(403).json({ error: 'Forbidden: Invalid webhook authentication.' });
     }
 
-    const { orderNumber, trackingNumber, status } = req.body;
+    const { orderNumber, trackingNumber, status, logisticName } = parsed;
     console.log(`📦 CJ Webhook Received - Order: ${orderNumber}, Status: ${status}, Tracking: ${trackingNumber}`);
 
-    if (!orderNumber) {
-      return res.status(400).json({ error: "Missing orderNumber" });
+    // Prevent Mongoose CastError 500 if CJ sends a test/non-ObjectId orderNumber (e.g. "TEST-12345")
+    if (!mongoose.Types.ObjectId.isValid(orderNumber)) {
+      console.log(`🧪 CJ Webhook Test Mode - Non-ObjectId orderNumber "${orderNumber}" acknowledged safely.`);
+      return res.status(200).json({
+        received: true,
+        testMode: true,
+        orderNumber,
+        status,
+        trackingNumber,
+        logisticName
+      });
+    }
+
+    const updateFields = { status: status || 'SHIPPED' };
+    if (trackingNumber) {
+      updateFields.tracking_code = trackingNumber;
     }
 
     const updatedOrder = await Order.findByIdAndUpdate(
       orderNumber, 
-      { 
-        status: status || 'SHIPPED', 
-        tracking_code: trackingNumber 
-      },
+      updateFields,
       { returnDocument: 'after' } 
     );
 
     if (!updatedOrder) {
-      console.warn(`⚠️ CJ webhook failed: Order ${orderNumber} not found in DB.`);
-      return res.status(200).json({ received: true });
+      console.warn(`⚠️ CJ webhook notice: Order ${orderNumber} not found in DB.`);
+      return res.status(200).json({ received: true, orderFound: false, orderNumber });
     }
 
     if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
@@ -1622,7 +2024,7 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
           <h1 style="color: #B38B8F; font-style: italic;">Your Ritual has Shipped ✈️</h1>
           <p style="font-size: 1.2rem; line-height: 1.6;">Your bespoke beauty products have left our facility and are on their way to you!</p>
           <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; display: inline-block; margin: 20px 0;">
-            <p style="margin: 0; font-size: 1.1rem;">Tracking Number:</p>
+            <p style="margin: 0; font-size: 1.1rem;">Tracking Number${logisticName ? ` (${logisticName})` : ''}:</p>
             <strong style="font-size: 1.3rem; color: #B38B8F;">${trackingNumber}</strong>
           </div>
           <p style="font-size: 0.9rem; color: #8A797A;">Please allow up to 24-48 hours for the tracking link to activate with the courier.</p>
@@ -1631,13 +2033,126 @@ app.post('/webhook/cj', express.json(), async (req, res) => {
 
       const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
-      await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText);
+      await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText).catch(() => {});
     }
 
-    res.status(200).json({ received: true });
+    res.status(200).json({
+      received: true,
+      orderFound: true,
+      orderId: updatedOrder._id.toString(),
+      status: updatedOrder.status,
+      trackingNumber: updatedOrder.tracking_code || ''
+    });
   } catch (err) {
     console.error(`⚠️ Error handling CJ webhook:`, err.message);
     res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ---------------- PUBLIC HEALTH & ADMIN WEBHOOK DIAGNOSTICS ROUTES ---------------- //
+
+app.get('/api/health', async (req, res) => {
+  try {
+    const dbReady = mongoose.connection.readyState === 1;
+    const productCount = dbReady ? await Product.countDocuments() : 0;
+    res.status(200).json({
+      status: 'ok',
+      timezone: CENTRAL_TIMEZONE,
+      dbConnected: dbReady,
+      productCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    // 1. Test CJ v2 nested webhook payload parsing & non-ObjectId safety
+    const sampleCjV2Payload = {
+      messageId: `TEST-MSG-${Date.now()}`,
+      type: 'ORDER',
+      params: {
+        orderNumber: 'TEST-CJ-ORDER-999',
+        orderStatus: 'SHIPPED',
+        trackNumber: 'CJ123456789US',
+        logisticName: 'USPS'
+      }
+    };
+    const parsedCj = parseCjWebhookFields(sampleCjV2Payload);
+    const cjTestPassed =
+      parsedCj.orderNumber === 'TEST-CJ-ORDER-999' &&
+      parsedCj.trackingNumber === 'CJ123456789US' &&
+      parsedCj.status === 'SHIPPED' &&
+      !mongoose.Types.ObjectId.isValid(parsedCj.orderNumber);
+
+    // 2. Test Stripe shipping_details extraction & CJ createOrderV2 payload formatting
+    const sampleStripeSession = {
+      customer_details: {
+        name: 'Susan Test Client',
+        email: 'client@example.com',
+        phone: '+13165550199'
+      },
+      shipping_details: {
+        name: 'Susan Test Client',
+        address: {
+          line1: '742 Evergreen Terrace',
+          line2: 'Suite 200',
+          city: 'Wichita',
+          state: 'KS',
+          postal_code: '67202',
+          country: 'US'
+        }
+      }
+    };
+    const extractedAddr = extractStripeShippingAddress(sampleStripeSession);
+    const sampleCjOrderPayload = buildCjOrderPayload({
+      _id: new mongoose.Types.ObjectId(),
+      shipping_address: extractedAddr,
+      items: [{ sku: 'CJ-BEAUTY-SKU-01', quantity: 2 }]
+    });
+
+    const stripeTestPassed =
+      sampleCjOrderPayload.shippingCity === 'Wichita' &&
+      sampleCjOrderPayload.shippingProvince === 'KS' &&
+      sampleCjOrderPayload.shippingZip === '67202' &&
+      sampleCjOrderPayload.shippingPhone === '+13165550199' &&
+      sampleCjOrderPayload.products[0]?.vid === 'CJ-BEAUTY-SKU-01';
+
+    // 3. Check environment configuration readiness
+    const envStatus = {
+      stripeSecretConfigured: Boolean(cleanEnv(process.env.STRIPE_SECRET_KEY)),
+      stripeWebhookSecretConfigured: Boolean(cleanEnv(process.env.STRIPE_WEBHOOK_SECRET)),
+      cjAccessTokenConfigured: Boolean(cleanEnv(process.env.CJ_ACCESS_TOKEN)),
+      cjWebhookSecretConfigured: Boolean(cleanEnv(process.env.CJ_WEBHOOK_SECRET)),
+      smtpConfigured: Boolean(smtpUser && smtpPass),
+      geminiConfigured: Boolean(cleanEnv(process.env.GEMINI_API_KEY))
+    };
+
+    const allPassed = cjTestPassed && stripeTestPassed;
+
+    res.status(200).json({
+      overallStatus: allPassed ? 'PASSED' : 'WARNING',
+      message: allPassed
+        ? 'All webhook parsers, shipping extractors, and CJ fulfillment formatters passed verification! ✧'
+        : 'One or more webhook checks reported a warning.',
+      checks: {
+        cjWebhookParser: {
+          passed: cjTestPassed,
+          parsedSample: parsedCj
+        },
+        stripeToCjFulfillment: {
+          passed: stripeTestPassed,
+          extractedShipping: extractedAddr,
+          formattedCjPayload: sampleCjOrderPayload
+        },
+        environment: envStatus
+      }
+    });
+  } catch (err) {
+    console.error('Webhook diagnostics error:', err);
+    res.status(500).json({ error: err.message || 'Failed to run webhook diagnostics.' });
   }
 });
 

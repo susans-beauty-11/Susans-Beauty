@@ -52,6 +52,55 @@ const FallingSparkles = () => {
   );
 };
 
+const GlobalPublicLaunchStyles = () => (
+  <style>{`
+    @keyframes fall {
+      0% { transform: translateY(-50px) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+    }
+    @keyframes spinSlow { 100% { transform: rotate(360deg); } }
+    @keyframes pulseSoft { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .calendar-grid-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    @media (max-width: 860px) {
+      .sanctuary-shell {
+        flex-direction: column !important;
+      }
+      .sanctuary-sidebar {
+        width: 100% !important;
+        height: auto !important;
+        max-height: 210px !important;
+        border-right: none !important;
+        border-bottom: 1px solid #E8C5C8 !important;
+        padding: 15px 12px !important;
+      }
+      .sanctuary-nav-list {
+        flex-direction: row !important;
+        overflow-x: auto !important;
+        gap: 8px !important;
+        padding: 0 8px !important;
+      }
+      .sanctuary-nav-list button {
+        white-space: nowrap !important;
+        padding: 8px 14px !important;
+        font-size: 1.05rem !important;
+      }
+      .sanctuary-main {
+        padding: 22px 16px !important;
+      }
+      .ritual-bag-drawer {
+        width: 100vw !important;
+        max-width: 380px !important;
+      }
+    }
+  `}</style>
+);
+
 const EmpowermentContainer = ({ children }) => (
   <div style={{ margin: '0 auto', maxWidth: '1000px', padding: '60px 40px', textAlign: 'center', position: 'relative', transition: 'all 0.5s ease' }}>
     {children}
@@ -631,7 +680,7 @@ const AdminCalendar = ({ users = [] }) => {
         </form>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', textAlign: 'center' }}>
+      <div className="calendar-grid-wrapper"><div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(105px, 1fr))', gap: '10px', textAlign: 'center' }}>
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
           <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
         ))}
@@ -701,7 +750,7 @@ const AdminCalendar = ({ users = [] }) => {
             </div>
           );
         })}
-      </div>
+      </div></div>
     </div>
   );
 };
@@ -984,7 +1033,7 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', textAlign: 'center' }}>
+      <div className="calendar-grid-wrapper"><div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(105px, 1fr))', gap: '10px', textAlign: 'center' }}>
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
           <strong key={day} style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', paddingBottom: '10px' }}>{day}</strong>
         ))}
@@ -1051,20 +1100,29 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
             </div>
           );
         })}
-      </div>
+      </div></div>
     </div>
   );
 };
 
-const AdminInventory = () => {
+const AdminInventory = ({ onCatalogUpdated }) => {
   const [inventory, setInventory] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({ id: '', title: '', price: '', imageUrl: '', description: '', tags: '' });
+  const [isSyncingCj, setIsSyncingCj] = useState(false);
+  const [isCleaningCj, setIsCleaningCj] = useState(false);
+  const [isTestingWebhooks, setIsTestingWebhooks] = useState(false);
+  const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
+  const [webhookReport, setWebhookReport] = useState(null);
 
   const fetchInventory = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/products`);
-      if (res.ok) setInventory(await res.json());
+      if (res.ok) {
+        const list = await res.json();
+        setInventory(list);
+        if (onCatalogUpdated) onCatalogUpdated(list);
+      }
     } catch (err) {
       console.error('Failed to fetch inventory:', err);
     }
@@ -1072,7 +1130,83 @@ const AdminInventory = () => {
 
   useEffect(() => {
     fetchInventory();
+    // eslint-disable-next-line
   }, []);
+
+  const handleCjSyncOrClean = async (purgeOnly = false) => {
+    const token = localStorage.getItem('token');
+    if (purgeOnly) setIsCleaningCj(true);
+    else setIsSyncingCj(true);
+    setOpsBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/cj-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ purgeOnly })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (Array.isArray(data.products)) {
+          setInventory(data.products);
+          if (onCatalogUpdated) onCatalogUpdated(data.products);
+        } else {
+          await fetchInventory();
+        }
+        setOpsBanner({
+          type: 'success',
+          text: data.message || 'CJ Health & Beauty catalog updated! ✧'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'Failed to run CJ Health & Beauty catalog operation.'
+        });
+      }
+    } catch (err) {
+      console.error('CJ Sync Error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while communicating with CJ sync endpoint.' });
+    }
+
+    setIsCleaningCj(false);
+    setIsSyncingCj(false);
+  };
+
+  const handleRunWebhookDiagnostics = async () => {
+    const token = localStorage.getItem('token');
+    setIsTestingWebhooks(true);
+    setOpsBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/diagnostics/test-webhooks`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setWebhookReport(data);
+        setOpsBanner({
+          type: data.overallStatus === 'PASSED' ? 'success' : 'error',
+          text: data.message || 'Webhook diagnostics completed.'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'Webhook self-test failed.'
+        });
+      }
+    } catch (err) {
+      console.error('Webhook test error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while running webhook diagnostics.' });
+    }
+    setIsTestingWebhooks(false);
+  };
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -1090,7 +1224,7 @@ const AdminInventory = () => {
         body: JSON.stringify(formData)
       });
       if (res.ok) {
-        fetchInventory();
+        await fetchInventory();
         resetForm();
       } else {
         const data = await res.json();
@@ -1109,7 +1243,7 @@ const AdminInventory = () => {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) fetchInventory();
+      if (res.ok) await fetchInventory();
     } catch (err) {
       console.error('Delete error:', err);
     }
@@ -1134,7 +1268,112 @@ const AdminInventory = () => {
   };
 
   return (
-    <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap', animation: 'fadeIn 0.5s ease' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
+      {/* CJ Health & Beauty Sync + Webhook Readiness Control Bar */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '22px 25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#5C5454', margin: '0 0 4px 0' }}>
+              CJ Dropshipping Health & Beauty Filter + Webhook Diagnostics ✧
+            </h3>
+            <p style={{ margin: 0, fontSize: '0.92rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Strictly syncs verified Health, Skincare, Makeup, Hair Care & Personal Care items while purging non-beauty products.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              disabled={isSyncingCj || isCleaningCj}
+              onClick={() => handleCjSyncOrClean(false)}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
+            >
+              {isSyncingCj ? '⏳ Syncing Health & Beauty...' : '🔄 Sync Health & Beauty'}
+            </button>
+
+            <button
+              type="button"
+              disabled={isSyncingCj || isCleaningCj}
+              onClick={() => handleCjSyncOrClean(true)}
+              style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
+            >
+              {isCleaningCj ? '⏳ Cleaning...' : '🧹 Clean Non-Beauty Items'}
+            </button>
+
+            <button
+              type="button"
+              disabled={isTestingWebhooks}
+              onClick={handleRunWebhookDiagnostics}
+              style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: isTestingWebhooks ? 'not-allowed' : 'pointer' }}
+            >
+              {isTestingWebhooks ? '⏳ Testing Webhooks...' : '🧪 Test CJ & Stripe Webhooks'}
+            </button>
+          </div>
+        </div>
+
+        {opsBanner.text && (
+          <div style={{
+            marginTop: '15px',
+            padding: '12px 16px',
+            borderRadius: '10px',
+            fontFamily: 'sans-serif',
+            fontSize: '0.95rem',
+            backgroundColor: opsBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+            color: opsBanner.type === 'success' ? '#2E7D32' : '#C62828',
+            border: `1px solid ${opsBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+          }}>
+            {opsBanner.text}
+          </div>
+        )}
+
+        {webhookReport && (
+          <div style={{ marginTop: '15px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
+                Webhook & Public Launch Readiness Report ({webhookReport.overallStatus})
+              </strong>
+              <button
+                type="button"
+                onClick={() => setWebhookReport(null)}
+                style={{ background: 'none', border: 'none', color: '#8A797A', cursor: 'pointer', fontSize: '0.85rem', textDecoration: 'underline' }}
+              >
+                Hide Report
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+                <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
+                  {webhookReport.checks?.cjWebhookParser?.passed ? '✅' : '⚠️'} CJ v2 Webhook Parser
+                </strong>
+                <span style={{ color: '#736A6A', fontSize: '0.85rem' }}>
+                  Nested <code>params</code> & test order IDs handled without CastError.
+                </span>
+              </div>
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+                <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
+                  {webhookReport.checks?.stripeToCjFulfillment?.passed ? '✅' : '⚠️'} Stripe → CJ Fulfillment
+                </strong>
+                <span style={{ color: '#736A6A', fontSize: '0.85rem' }}>
+                  Extracts Stripe shipping address & phone into CJ <code>createOrderV2</code>.
+                </span>
+              </div>
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+                <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
+                  🔐 Environment Keys
+                </strong>
+                <span style={{ color: '#736A6A', fontSize: '0.82rem', display: 'block' }}>
+                  Stripe Key: {webhookReport.checks?.environment?.stripeSecretConfigured ? '✓' : 'Missing'} | Webhook: {webhookReport.checks?.environment?.stripeWebhookSecretConfigured ? '✓' : 'Missing'}
+                </span>
+                <span style={{ color: '#736A6A', fontSize: '0.82rem', display: 'block' }}>
+                  CJ Token: {webhookReport.checks?.environment?.cjAccessTokenConfigured ? '✓' : 'Missing'} | SMTP: {webhookReport.checks?.environment?.smtpConfigured ? '✓' : 'Missing'}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <div style={{ width: '350px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
@@ -1156,7 +1395,7 @@ const AdminInventory = () => {
         </form>
       </div>
 
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minWidth: '280px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
           <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
@@ -1189,6 +1428,7 @@ const AdminInventory = () => {
             );
           })}
         </div>
+      </div>
       </div>
     </div>
   );
@@ -1389,7 +1629,7 @@ const AdminAiAssistant = ({ onProductDeleted }) => {
   );
 };
 
-const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted }) => {
+const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted, onCatalogUpdated }) => {
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('adminActiveTab') || 'Inbox';
   });
@@ -1512,16 +1752,16 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
   };
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
+    <div className="sanctuary-shell" style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
       
       {/* Sidebar Navigation */}
-      <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
-        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+      <div className="sanctuary-sidebar" style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
+        <div style={{ textAlign: 'center', marginBottom: '25px' }}>
           <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '3rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
           <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '5px 0 0 0', fontStyle: 'italic' }}>Susan's Beauty Consulting</p>
         </div>
         
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+        <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
           {tabs.map(tab => (
             <button
               key={tab}
@@ -1555,7 +1795,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
       </div>
 
       {/* Main Content Area */}
-      <div ref={mainContentRef} style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
+      <div ref={mainContentRef} className="sanctuary-main" style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
         <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', marginTop: 0, borderBottom: '1px solid rgba(232, 197, 200, 0.5)', paddingBottom: '15px', marginBottom: '30px' }}>
           {activeTab}
         </h1>
@@ -1819,7 +2059,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
           </div>
         )}
         {activeTab === 'Inventory' && (
-          <AdminInventory />
+          <AdminInventory onCatalogUpdated={onCatalogUpdated} />
         )}
         {activeTab === 'Video' && (
           <AdminVideoPortal />
@@ -2082,15 +2322,45 @@ function App() {
   };
 
   const handleRemoveFromCart = (sku) => setCart(prevCart => prevCart.filter(item => item.sku !== sku));
-  const calculateCartTotal = () => cart.reduce((total, item) => total + (item.price * item.quantity), 0).toFixed(2);
+
+  const getActiveMemberDiscount = () => {
+    const isSignedIn = Boolean(localStorage.getItem('token'));
+    if (!isSignedIn) return { rate: 0, label: '' };
+    const activeTier = String(userDetails.membershipTier || selectedTier || '').toLowerCase().trim();
+    if (activeTier === 'radiance') {
+      return { rate: 0.25, label: '25% Radiance Elite Member Discount' };
+    }
+    if (activeTier === 'luminary') {
+      return { rate: 0.10, label: '10% Luminary Circle Member Discount' };
+    }
+    return { rate: 0, label: '' };
+  };
+
+  const calculateCartSubtotal = () =>
+    cart.reduce((total, item) => total + ((Number(item.price) || 0) * (Number(item.quantity) || 1)), 0);
+
+  const calculateCartTotal = () => {
+    const subtotal = calculateCartSubtotal();
+    const { rate } = getActiveMemberDiscount();
+    return (subtotal * (1 - rate)).toFixed(2);
+  };
 
   const handleCartCheckout = async () => {
     setIsLoading(true);
     try {
+      const token = localStorage.getItem('token');
+      const activeTier = String(userDetails.membershipTier || selectedTier || '').toLowerCase().trim();
       const res = await fetch(`${API_BASE_URL}/api/cart-checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: cart })
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          items: cart,
+          ...(userDetails.email ? { customerEmail: userDetails.email } : {}),
+          ...(activeTier ? { membershipTier: activeTier } : {})
+        })
       });
       const data = await res.json();
       if (data.url) {
@@ -2336,6 +2606,7 @@ function App() {
   return (
     <div style={{ width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', position: 'relative' }}>
       
+      <GlobalPublicLaunchStyles />
       {isLoading && <FallingSparkles/>}
 
       <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} />
@@ -2355,7 +2626,7 @@ function App() {
       )}
 
       {isCartOpen && (
-        <div style={{ position: 'fixed', top: 0, right: 0, width: '380px', height: '100vh', backgroundColor: '#FFF9F9', borderLeft: '1px solid #E8C5C8', boxShadow: '-5px 0 25px rgba(232, 197, 200, 0.3)', zIndex: 1100, display: 'flex', flexDirection: 'column', padding: '25px', boxSizing: 'border-box', animation: 'fadeIn 0.3s ease' }}>
+        <div className="ritual-bag-drawer" style={{ position: 'fixed', top: 0, right: 0, width: '380px', height: '100vh', backgroundColor: '#FFF9F9', borderLeft: '1px solid #E8C5C8', boxShadow: '-5px 0 25px rgba(232, 197, 200, 0.3)', zIndex: 1100, display: 'flex', flexDirection: 'column', padding: '25px', boxSizing: 'border-box', animation: 'fadeIn 0.3s ease' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E8C5C8', paddingBottom: '15px' }}>
             <h3 style={{ fontFamily: "'Alex Brush', cursive", fontSize: '2.5rem', color: '#B38B8F', margin: 0 }}>Your Ritual Bag</h3>
             <button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A' }}>✕</button>
@@ -2386,11 +2657,35 @@ function App() {
             )}
           </div>
 
-          <div style={{ borderTop: '1px solid #E8C5C8', paddingTop: '20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>Total:</span>
-              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>${calculateCartTotal()}</span>
-            </div>
+          <div style={{ borderTop: '1px solid #E8C5C8', paddingTop: '18px' }}>
+            {(() => {
+              const subtotal = calculateCartSubtotal();
+              const { rate, label } = getActiveMemberDiscount();
+              const discountAmount = subtotal * rate;
+              return (
+                <>
+                  {rate > 0 && cart.length > 0 && (
+                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#FFF0F2', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: '#736A6A', marginBottom: '4px' }}>
+                        <span>Subtotal:</span>
+                        <span>${subtotal.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: '#B38B8F', fontWeight: 'bold' }}>
+                        <span>✧ {label}:</span>
+                        <span>-${discountAmount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>Total:</span>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>${calculateCartTotal()}</span>
+                  </div>
+                  <p style={{ margin: '0 0 14px 0', fontSize: '0.8rem', color: '#8A797A', textAlign: 'center', fontFamily: 'sans-serif' }}>
+                    ✈️ Shipping address & phone collected securely at Stripe Checkout
+                  </p>
+                </>
+              );
+            })()}
             <button 
               onClick={handleCartCheckout}
               disabled={cart.length === 0}
@@ -2615,16 +2910,16 @@ function App() {
         )}
 
         {step === 5 && (
-          <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
+          <div className="sanctuary-shell" style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
             
             {/* Sidebar Navigation */}
-            <div style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
-              <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+            <div className="sanctuary-sidebar" style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
+              <div style={{ textAlign: 'center', marginBottom: '25px' }}>
                 <img src={logo} alt="Susan's Logo" style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '10px' }} />
                 <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
               </div>
 
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+              <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
                 {['Blueprint', 'Boutique', 'Inbox', 'Consultations'].map(tab => (
                   <button
                     key={tab}
@@ -2655,8 +2950,8 @@ function App() {
             </div>
 
             {/* Main Content Area */}
-            <div ref={memberContentRef} style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '15px' }}>
+            <div ref={memberContentRef} className="sanctuary-main" style={{ flex: 1, height: '100%', padding: '50px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', boxSizing: 'border-box' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '30px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '15px' }}>
                 <h1 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.8rem', margin: 0 }}>
                   {activeMemberTab}
                 </h1>
@@ -2908,6 +3203,7 @@ function App() {
             onLogout={handleLogOut}
             backendProducts={backendProducts}
             onProductDeleted={(deletedId) => setBackendProducts(prev => prev.filter(p => p._id !== deletedId))}
+            onCatalogUpdated={(updatedCatalog) => setBackendProducts(updatedCatalog)}
           />
         )}
 
