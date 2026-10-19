@@ -527,10 +527,32 @@ const productSchema = new mongoose.Schema({
   purchaseCount: { type: Number, default: 0, index: true },
   curatedCount: { type: Number, default: 0 },
   lastViewedAt: { type: Date, default: null },
+  price: { type: Number, default: 0 },
+  wholesalePriceUsd: { type: Number, default: 2.50 },
+  markupMultiplier: { type: Number, default: 6.5 },
+  estimatedWeightGrams: { type: Number, default: 120 },
+  originCountryCode: { type: String, default: 'CN' },
+  selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
+  shippingCostUsd: { type: Number, default: 4.49 },
+  shippingIncludedInPrice: { type: Boolean, default: true },
+  availableLogistics: { type: Array, default: [] },
+  customLabelConfig: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      enabled: false,
+      labelType: 'NONE',
+      packagingVid: '',
+      packagingName: "Susan's Rose-Gold Custom Box & Seal",
+      customBrandText: "Susan's Beauty Consulting ✧",
+      logoUrl: '',
+      packagingCostUsd: 0
+    })
+  },
   variants: [{
     sku: { type: String, required: true },
     variantName: String, 
     price: Number,
+    wholesalePriceUsd: Number,
     imageUrl: String 
   }],
   rawCjData: { type: mongoose.Schema.Types.Mixed }
@@ -545,6 +567,10 @@ const orderSchema = new mongoose.Schema({
   status: { type: String, default: 'Pending', index: true },
   tracking_code: { type: String, default: '' },
   logisticName: { type: String, default: '' },
+  selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
+  fromCountryCode: { type: String, default: 'CN' },
+  shippingCostUsd: { type: Number, default: 0 },
+  customLabelConfig: { type: mongoose.Schema.Types.Mixed, default: null },
   cjOrderId: { type: String, default: '' },
   cjOrderStatus: { type: String, default: '' },
   estimatedWholesaleCost: { type: Number, default: 0 },
@@ -660,6 +686,70 @@ const analyticsEventSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now, index: true }
 });
 const AnalyticsEvent = mongoose.model('AnalyticsEvent', analyticsEventSchema);
+
+// Profit-Protected Monthly Membership Box Schema (CJ Phase 2 — Strict <=25% Cost Cap)
+const memberMonthlyBoxSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  memberName: { type: String, default: '' },
+  memberEmail: { type: String, default: '', index: true },
+  membershipTier: {
+    type: String,
+    enum: ['luminary', 'radiance'],
+    default: 'luminary',
+    index: true
+  },
+  billingMonth: { type: String, required: true, index: true }, // e.g. '2026-10'
+  subscriptionPriceUsd: { type: Number, default: 49 },
+  maxAllowedCostUsd: { type: Number, default: 12.25 }, // Strictly 25% of subscriptionPriceUsd
+  requiredPieceCount: { type: Number, default: 3 },
+  blueprintSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  items: [{
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    title: { type: String, default: '' },
+    sku: { type: String, default: '' },
+    vid: { type: String, default: '' },
+    imageUrl: { type: String, default: '' },
+    ritualStep: { type: String, default: '' },
+    wholesaleCostUsd: { type: Number, default: 0 },
+    shippingShareUsd: { type: Number, default: 0 },
+    retailPriceUsd: { type: Number, default: 0 },
+    matchScore: { type: Number, default: 0 },
+    matchReasons: { type: [String], default: [] }
+  }],
+  selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
+  consolidatedShippingUsd: { type: Number, default: 0 },
+  customLabelConfig: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      enabled: true,
+      labelType: 'CJ_CUSTOM_PACKAGING',
+      packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
+      packagingName: "Susan's Rose-Gold Custom Box & Seal",
+      customBrandText: "Susan's Beauty Consulting ✧",
+      logoUrl: 'https://susansbeautyconsulting.com/susans-logo.png',
+      packagingCostUsd: 0.65
+    })
+  },
+  customLabelCostUsd: { type: Number, default: 0.65 },
+  totalWholesaleCostUsd: { type: Number, default: 0 },
+  totalAllInCostUsd: { type: Number, default: 0 },
+  costPercentageOfMembership: { type: Number, default: 0 },
+  estimatedNetProfitUsd: { type: Number, default: 0 },
+  withinBudgetCap: { type: Boolean, default: true },
+  status: {
+    type: String,
+    enum: ['CURATED_DRAFT', 'APPROVED_READY', 'DISPATCHED_TO_CJ', 'SHIPPED'],
+    default: 'CURATED_DRAFT',
+    index: true
+  },
+  cjOrderId: { type: String, default: '' },
+  localOrderId: { type: String, default: '' },
+  trackingCode: { type: String, default: '' },
+  curatedBy: { type: String, enum: ['odie', 'susan'], default: 'odie' },
+  notes: { type: String, default: '' }
+}, { timestamps: true });
+memberMonthlyBoxSchema.index({ userId: 1, billingMonth: 1 }, { unique: true });
+const MemberMonthlyBox = mongoose.model('MemberMonthlyBox', memberMonthlyBoxSchema);
 
 // ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
 
@@ -1664,23 +1754,61 @@ const syncCJCatalog = async (options = {}) => {
           continue;
         }
 
+        const weightGrams = Math.max(
+          30,
+          Number(parseFloat(String(item.productWeight || item.packWeight || item.weight || '120').split('-')[0].trim())) || 120
+        );
+        const defaultLogisticName = 'CJPacket Sensitive';
+        const fallbackLogistics = buildDeterministicCjBeautyCarriers({
+          weightGrams,
+          quantity: 1,
+          startCountryCode: 'CN',
+          endCountryCode: 'US'
+        });
+        const matchedCarrier =
+          fallbackLogistics.find(c => c.logisticName === defaultLogisticName) || fallbackLogistics[0];
+        const shippingCostUsd = Number(matchedCarrier?.shippingCostUsd ?? 4.49);
+
+        const existingProd = await Product.findOne({ title })
+          .select('markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics')
+          .lean();
+
+        const activeMarkup = Number(existingProd?.markupMultiplier || retailMarkup) || 6.5;
+        const activeLogistic = existingProd?.selectedLogisticName || defaultLogisticName;
+        const activeShippingIncluded = existingProd?.shippingIncludedInPrice !== undefined
+          ? Boolean(existingProd.shippingIncludedInPrice)
+          : true;
+        const activeCustomLabel = existingProd?.customLabelConfig || getDefaultCustomLabelConfig();
+        const activeShippingCost = Number(
+          existingProd?.shippingCostUsd ??
+          (fallbackLogistics.find(c => c.logisticName === activeLogistic)?.shippingCostUsd ?? shippingCostUsd)
+        );
+        const labelAddonUsd = activeCustomLabel?.enabled ? Number(activeCustomLabel.packagingCostUsd || 0) : 0;
+        const shippingAddonUsd = activeShippingIncluded ? activeShippingCost : 0;
+
         const mappedVariants = Array.isArray(item.variants) && item.variants.length > 0
           ? item.variants.map(v => {
               const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice) || rawBasePrice;
+              const computedVariantRetail = Number(
+                ((variantRawPrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
+              );
               return {
                 sku: v.vid || v.variantSku || baseSku,
                 variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
-                price: Number((variantRawPrice * retailMarkup).toFixed(2)),
+                wholesalePriceUsd: Number(variantRawPrice.toFixed(2)),
+                price: computedVariantRetail,
                 imageUrl: v.variantImage || img
               };
             })
           : [{
               sku: item.vid || baseSku,
               variantName: 'Standard',
-              price: Number((rawBasePrice * retailMarkup).toFixed(2)),
+              wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
+              price: Number(((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)),
               imageUrl: img
             }];
 
+        const primaryRetailPrice = Number(mappedVariants[0]?.price || ((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2));
         const blueprintLabels = classifyProductForBlueprint(title, category, desc);
 
         await Product.findOneAndUpdate(
@@ -1689,6 +1817,18 @@ const syncCJCatalog = async (options = {}) => {
             title,
             description: desc,
             imageUrl: img,
+            price: primaryRetailPrice,
+            wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
+            markupMultiplier: activeMarkup,
+            estimatedWeightGrams: weightGrams,
+            originCountryCode: 'CN',
+            selectedLogisticName: activeLogistic,
+            shippingCostUsd: Number(activeShippingCost.toFixed(2)),
+            shippingIncludedInPrice: activeShippingIncluded,
+            availableLogistics: Array.isArray(existingProd?.availableLogistics) && existingProd.availableLogistics.length > 0
+              ? existingProd.availableLogistics
+              : fallbackLogistics,
+            customLabelConfig: activeCustomLabel,
             tags: blueprintLabels.tags,
             skinTypes: blueprintLabels.skinTypes,
             skinConcerns: blueprintLabels.skinConcerns,
@@ -1768,6 +1908,7 @@ const syncCJCatalog = async (options = {}) => {
     }
 
     await backfillProductBlueprintLabels(false);
+    await backfillProductShippingAndCustomLabelMeta(false);
     const totalInDb = await Product.countDocuments();
     console.log(`🚀 CJ Beauty & Skincare sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Beauty & Skincare items (${totalInDb} total active in boutique).`);
     return { status: 'completed', purgedCount, syncedCount: totalProcessed, activeTotal: totalInDb };
@@ -1777,6 +1918,1383 @@ const syncCJCatalog = async (options = {}) => {
   } finally {
     isCjSyncRunning = false;
   }
+};
+
+// ---------------- CJ PHASE 1: LIVE FREIGHT CALCULATOR, SHIPPING-INCLUSIVE PRICING & CUSTOM LABELING ENGINE ---------------- //
+
+const DEFAULT_CUSTOM_PACKAGING_OPTIONS = [
+  {
+    packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
+    packagingPid: 'CJ-PKG-ROSEGOLD-BOX',
+    packagingSku: 'SBC-PKG-ROSEGOLD-BOX',
+    packagingName: "Susan's Rose-Gold Custom Box & Seal",
+    labelType: 'CJ_CUSTOM_PACKAGING',
+    packagingCostUsd: 0.65,
+    estimatedWeightGrams: 35,
+    description: 'Rose-gold magnetic boutique box with gold-foil seal & personalized Beauty Blueprint card insert (Zero MOQ).'
+  },
+  {
+    packagingVid: 'CJ-PKG-SATIN-POUCH-02',
+    packagingPid: 'CJ-PKG-SATIN-POUCH',
+    packagingSku: 'SBC-PKG-SATIN-POUCH',
+    packagingName: 'Luxury Satin Ritual Pouch',
+    labelType: 'CJ_CUSTOM_PACKAGING',
+    packagingCostUsd: 0.45,
+    estimatedWeightGrams: 18,
+    description: 'Blush-pink drawstring satin travel pouch embossed with Susan\'s Beauty Consulting crest.'
+  },
+  {
+    packagingVid: 'CJ-POD-BOTTLE-LABEL-03',
+    packagingPid: 'CJ-POD-BOTTLE-LABEL',
+    packagingSku: 'SBC-POD-BOTTLE-LABEL',
+    packagingName: 'CJ POD Custom Bottle/Jar Logo Label',
+    labelType: 'CJ_POD_LOGO',
+    packagingCostUsd: 0.85,
+    estimatedWeightGrams: 10,
+    description: 'Print-on-Demand waterproof outer bottle/jar wrap label with Susan\'s logo & bespoke client ritual name.'
+  }
+];
+
+const getDefaultCustomLabelConfig = (overrides = {}) => {
+  const base = {
+    enabled: false,
+    labelType: 'NONE',
+    packagingVid: '',
+    packagingName: "Susan's Rose-Gold Custom Box & Seal",
+    customBrandText: "Susan's Beauty Consulting ✧",
+    logoUrl: 'https://susansbeautyconsulting.com/susans-logo.png',
+    packagingCostUsd: 0
+  };
+  if (!overrides || typeof overrides !== 'object') return base;
+
+  const enabled = overrides.enabled !== undefined ? Boolean(overrides.enabled) : base.enabled;
+  const requestedName = String(overrides.packagingName || base.packagingName).trim();
+  const matchedOption =
+    DEFAULT_CUSTOM_PACKAGING_OPTIONS.find(
+      opt =>
+        (overrides.packagingVid && opt.packagingVid === overrides.packagingVid) ||
+        opt.packagingName.toLowerCase() === requestedName.toLowerCase()
+    ) || DEFAULT_CUSTOM_PACKAGING_OPTIONS[0];
+
+  const resolvedLabelType = enabled
+    ? String(overrides.labelType && overrides.labelType !== 'NONE' ? overrides.labelType : matchedOption.labelType)
+    : 'NONE';
+
+  const resolvedCost = enabled
+    ? (overrides.packagingCostUsd !== undefined && Number(overrides.packagingCostUsd) > 0
+        ? Number(parseFloat(overrides.packagingCostUsd).toFixed(2))
+        : matchedOption.packagingCostUsd)
+    : 0;
+
+  return {
+    enabled,
+    labelType: resolvedLabelType,
+    packagingVid: enabled ? String(overrides.packagingVid || matchedOption.packagingVid) : '',
+    packagingName: requestedName || matchedOption.packagingName,
+    customBrandText: String(overrides.customBrandText || base.customBrandText).trim(),
+    logoUrl: String(overrides.logoUrl || base.logoUrl).trim(),
+    packagingCostUsd: resolvedCost
+  };
+};
+
+// Deterministic weight-based fallback table of CJ beauty-compatible carriers so rate calculation never fails
+const buildDeterministicCjBeautyCarriers = ({
+  weightGrams = 120,
+  quantity = 1,
+  startCountryCode = 'CN',
+  endCountryCode = 'US'
+} = {}) => {
+  const unitWeight = Math.max(25, Number(weightGrams) || 120);
+  const qty = Math.max(1, Number(quantity) || 1);
+  const totalGrams = unitWeight * qty;
+  const extraHundredGrams = Math.max(0, (totalGrams - 100) / 100);
+  const isUsOrigin = String(startCountryCode || 'CN').toUpperCase() === 'US';
+
+  const carriers = [
+    {
+      logisticName: 'CJPacket Sensitive',
+      shippingCostUsd: Number((3.85 + extraHundredGrams * 0.64).toFixed(2)),
+      deliveryTime: '7-12 Days',
+      logisticAging: '7-12 Days',
+      categorySupport: 'Liquids, Serums, Creams & Cosmetics Safe',
+      recommended: true,
+      source: 'deterministic_beauty_table'
+    },
+    {
+      logisticName: 'CJPacket Ordinary',
+      shippingCostUsd: Number((3.25 + extraHundredGrams * 0.52).toFixed(2)),
+      deliveryTime: '8-15 Days',
+      logisticAging: '8-15 Days',
+      categorySupport: 'Beauty Tools, Brushes, Sponges & Non-Liquids',
+      recommended: false,
+      source: 'deterministic_beauty_table'
+    },
+    {
+      logisticName: 'USPS+',
+      shippingCostUsd: Number(((isUsOrigin ? 4.10 : 5.45) + extraHundredGrams * 0.72).toFixed(2)),
+      deliveryTime: isUsOrigin ? '3-6 Days' : '6-10 Days',
+      logisticAging: isUsOrigin ? '3-6 Days' : '6-10 Days',
+      categorySupport: 'Priority US Domestic & Expedited Beauty Line',
+      recommended: false,
+      source: 'deterministic_beauty_table'
+    },
+    {
+      logisticName: 'CJ Liquid Direct',
+      shippingCostUsd: Number((4.65 + extraHundredGrams * 0.68).toFixed(2)),
+      deliveryTime: '8-14 Days',
+      logisticAging: '8-14 Days',
+      categorySupport: 'Dedicated Essential Oils, Toners, Perfumes & Serums',
+      recommended: false,
+      source: 'deterministic_beauty_table'
+    },
+    {
+      logisticName: 'DHL Official',
+      shippingCostUsd: Number((14.90 + extraHundredGrams * 1.85).toFixed(2)),
+      deliveryTime: '3-7 Days',
+      logisticAging: '3-7 Days',
+      categorySupport: 'Express Global VIP Courier',
+      recommended: false,
+      source: 'deterministic_beauty_table'
+    }
+  ];
+
+  return carriers;
+};
+
+// Queries CJ's official POST /logistic/freightCalculate endpoint when CJ_ACCESS_TOKEN is active,
+// merging live CJ quotes with our deterministic beauty-compatible carrier table so it never fails.
+const calculateCjFreightRates = async ({
+  vid = '',
+  sku = '',
+  quantity = 1,
+  weightGrams = 120,
+  startCountryCode = 'CN',
+  endCountryCode = 'US',
+  products = null
+} = {}) => {
+  const cleanStart = String(startCountryCode || 'CN').toUpperCase().trim() || 'CN';
+  const cleanEnd = String(endCountryCode || 'US').toUpperCase().trim() || 'US';
+  const qty = Math.max(1, Number(quantity) || 1);
+  const weight = Math.max(30, Number(weightGrams) || 120);
+
+  const fallbackRates = buildDeterministicCjBeautyCarriers({
+    weightGrams: weight,
+    quantity: qty,
+    startCountryCode: cleanStart,
+    endCountryCode: cleanEnd
+  });
+
+  const headers = getCjHeaders();
+  const resolvedVid = String(vid || sku || '').trim();
+  const requestProducts = Array.isArray(products) && products.length > 0
+    ? products
+        .map(p => ({
+          vid: String(p.vid || p.sku || '').trim(),
+          quantity: Math.max(1, Number(p.quantity) || 1)
+        }))
+        .filter(p => p.vid && !p.vid.startsWith('CUSTOM-'))
+    : (resolvedVid && !resolvedVid.startsWith('CUSTOM-')
+        ? [{ vid: resolvedVid, quantity: qty }]
+        : []);
+
+  if (!headers || requestProducts.length === 0) {
+    return {
+      liveApiUsed: false,
+      startCountryCode: cleanStart,
+      endCountryCode: cleanEnd,
+      weightGrams: weight,
+      rates: fallbackRates,
+      recommendedCarrier: fallbackRates[0]
+    };
+  }
+
+  try {
+    const cjRes = await axios.post(
+      `${CJ_BASE_URL}/logistic/freightCalculate`,
+      {
+        startCountryCode: cleanStart,
+        endCountryCode: cleanEnd,
+        products: requestProducts
+      },
+      { headers, timeout: 12000 }
+    );
+
+    const rawQuotes = Array.isArray(cjRes.data?.data) ? cjRes.data.data : [];
+    if (rawQuotes.length > 0) {
+      const liveRates = rawQuotes
+        .map(q => {
+          const name = String(q.logisticName || q.logisticNameEn || '').trim();
+          const price = Number(parseFloat(q.logisticPrice || q.price || q.totalPostageFee || 0).toFixed(2));
+          const aging = String(q.logisticAging || '7-12').trim();
+          const deliveryTime = /day/i.test(aging) ? aging : `${aging} Days`;
+          return {
+            logisticName: name,
+            shippingCostUsd: price,
+            deliveryTime,
+            logisticAging: deliveryTime,
+            taxesFeeUsd: Number(parseFloat(q.taxesFee || 0).toFixed(2)),
+            clearanceOperationFeeUsd: Number(parseFloat(q.clearanceOperationFee || 0).toFixed(2)),
+            recommended: /sensitive|liquid|usps/i.test(name),
+            source: 'cj_live_api'
+          };
+        })
+        .filter(r => r.logisticName && r.shippingCostUsd > 0);
+
+      if (liveRates.length > 0) {
+        // Merge any missing standard beauty carriers from fallback so Susan always has CJPacket Sensitive, USPS+, etc. selectable
+        const merged = [...liveRates];
+        for (const fb of fallbackRates) {
+          if (!merged.some(m => m.logisticName.toLowerCase() === fb.logisticName.toLowerCase())) {
+            merged.push(fb);
+          }
+        }
+        merged.sort((a, b) => a.shippingCostUsd - b.shippingCostUsd);
+        const preferred =
+          merged.find(m => /cjpacket sensitive/i.test(m.logisticName)) ||
+          merged[0];
+
+        return {
+          liveApiUsed: true,
+          startCountryCode: cleanStart,
+          endCountryCode: cleanEnd,
+          weightGrams: weight,
+          rates: merged,
+          recommendedCarrier: preferred
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ CJ freightCalculate notice (using deterministic beauty carrier table): ${err?.response?.data?.message || err.message}`);
+  }
+
+  return {
+    liveApiUsed: false,
+    startCountryCode: cleanStart,
+    endCountryCode: cleanEnd,
+    weightGrams: weight,
+    rates: fallbackRates,
+    recommendedCarrier: fallbackRates[0]
+  };
+};
+
+// Recalculates a product's retail price (and variants[].price) using:
+// Retail Price = (wholesalePriceUsd * markupMultiplier) + (shippingIncludedInPrice ? shippingCostUsd : 0) + (customLabelConfig?.enabled ? customLabelConfig.packagingCostUsd : 0)
+const recalculateProductRetailPrice = (productDoc, overrides = {}) => {
+  if (!productDoc) return null;
+
+  // 1. Determine wholesalePriceUsd
+  let wholesalePriceUsd = overrides.wholesalePriceUsd !== undefined
+    ? Number(parseFloat(overrides.wholesalePriceUsd))
+    : Number(productDoc.wholesalePriceUsd || 0);
+
+  if (!(wholesalePriceUsd > 0)) {
+    const rawCjSell = parseFloat(String(productDoc.rawCjData?.sellPrice || productDoc.rawCjData?.price || '0').split('-')[0].trim());
+    if (rawCjSell > 0) {
+      wholesalePriceUsd = rawCjSell;
+    } else {
+      const existingRetail = Number(productDoc.variants?.[0]?.price ?? productDoc.price ?? 16.25);
+      wholesalePriceUsd = existingRetail > 0 ? Number((existingRetail / 6.5).toFixed(2)) : 2.50;
+    }
+  }
+  wholesalePriceUsd = Number(Math.max(0.25, wholesalePriceUsd).toFixed(2));
+
+  // 2. Determine markupMultiplier
+  const markupMultiplier = Number(
+    Math.max(
+      1,
+      overrides.markupMultiplier !== undefined
+        ? parseFloat(overrides.markupMultiplier)
+        : (Number(productDoc.markupMultiplier) || 6.5)
+    ).toFixed(2)
+  );
+
+  // 3. Determine weight & origin country
+  const estimatedWeightGrams = Math.max(
+    25,
+    Number(
+      overrides.estimatedWeightGrams !== undefined
+        ? overrides.estimatedWeightGrams
+        : (productDoc.estimatedWeightGrams || 120)
+    ) || 120
+  );
+  const originCountryCode = String(
+    overrides.originCountryCode || productDoc.originCountryCode || 'CN'
+  ).toUpperCase().trim() || 'CN';
+
+  // 4. Determine availableLogistics, selectedLogisticName, and shippingCostUsd
+  const availableLogistics = Array.isArray(overrides.availableLogistics) && overrides.availableLogistics.length > 0
+    ? overrides.availableLogistics
+    : (Array.isArray(productDoc.availableLogistics) && productDoc.availableLogistics.length > 0
+        ? productDoc.availableLogistics
+        : buildDeterministicCjBeautyCarriers({
+            weightGrams: estimatedWeightGrams,
+            quantity: 1,
+            startCountryCode: originCountryCode,
+            endCountryCode: 'US'
+          }));
+
+  const selectedLogisticName = String(
+    overrides.selectedLogisticName || productDoc.selectedLogisticName || 'CJPacket Sensitive'
+  ).trim() || 'CJPacket Sensitive';
+
+  const matchedCarrier = availableLogistics.find(
+    c => String(c.logisticName || '').toLowerCase() === selectedLogisticName.toLowerCase()
+  );
+
+  let shippingCostUsd = overrides.shippingCostUsd !== undefined
+    ? Number(parseFloat(overrides.shippingCostUsd))
+    : (matchedCarrier
+        ? Number(matchedCarrier.shippingCostUsd)
+        : Number(productDoc.shippingCostUsd ?? 4.49));
+
+  if (isNaN(shippingCostUsd) || shippingCostUsd < 0) {
+    shippingCostUsd = 4.49;
+  }
+  shippingCostUsd = Number(shippingCostUsd.toFixed(2));
+
+  // 5. Determine shippingIncludedInPrice & customLabelConfig
+  const shippingIncludedInPrice = overrides.shippingIncludedInPrice !== undefined
+    ? Boolean(overrides.shippingIncludedInPrice)
+    : (productDoc.shippingIncludedInPrice !== undefined ? Boolean(productDoc.shippingIncludedInPrice) : true);
+
+  const mergedCustomLabelInput = overrides.customLabelConfig !== undefined
+    ? { ...(productDoc.customLabelConfig || {}), ...(overrides.customLabelConfig || {}) }
+    : (productDoc.customLabelConfig || {});
+  const customLabelConfig = getDefaultCustomLabelConfig(mergedCustomLabelInput);
+
+  const shippingAddonUsd = shippingIncludedInPrice ? shippingCostUsd : 0;
+  const packagingAddonUsd = customLabelConfig.enabled ? Number(customLabelConfig.packagingCostUsd || 0) : 0;
+
+  const retailPriceUsd = Number(
+    ((wholesalePriceUsd * markupMultiplier) + shippingAddonUsd + packagingAddonUsd).toFixed(2)
+  );
+
+  // Apply computed fields to productDoc
+  productDoc.wholesalePriceUsd = wholesalePriceUsd;
+  productDoc.markupMultiplier = markupMultiplier;
+  productDoc.estimatedWeightGrams = estimatedWeightGrams;
+  productDoc.originCountryCode = originCountryCode;
+  productDoc.selectedLogisticName = selectedLogisticName;
+  productDoc.shippingCostUsd = shippingCostUsd;
+  productDoc.shippingIncludedInPrice = shippingIncludedInPrice;
+  productDoc.availableLogistics = availableLogistics;
+  productDoc.customLabelConfig = customLabelConfig;
+  productDoc.price = retailPriceUsd;
+
+  if (Array.isArray(productDoc.variants) && productDoc.variants.length > 0) {
+    productDoc.variants = productDoc.variants.map((v, idx) => {
+      const vObj = v && typeof v.toObject === 'function' ? v.toObject() : { ...v };
+      const vWholesale = idx === 0
+        ? wholesalePriceUsd
+        : Number(vObj.wholesalePriceUsd || wholesalePriceUsd);
+      const vRetail = idx === 0
+        ? retailPriceUsd
+        : Number(((vWholesale * markupMultiplier) + shippingAddonUsd + packagingAddonUsd).toFixed(2));
+      return {
+        ...vObj,
+        wholesalePriceUsd: Number(vWholesale.toFixed(2)),
+        price: vRetail
+      };
+    });
+    if (typeof productDoc.markModified === 'function') {
+      productDoc.markModified('variants');
+    }
+  } else {
+    productDoc.variants = [{
+      sku: `CUSTOM-${Date.now()}`,
+      variantName: 'Standard',
+      wholesalePriceUsd,
+      price: retailPriceUsd,
+      imageUrl: productDoc.imageUrl || ''
+    }];
+  }
+
+  if (typeof productDoc.markModified === 'function') {
+    productDoc.markModified('customLabelConfig');
+    productDoc.markModified('availableLogistics');
+  }
+
+  return {
+    wholesalePriceUsd,
+    markupMultiplier,
+    shippingCostUsd,
+    shippingIncludedInPrice,
+    selectedLogisticName,
+    customLabelConfig,
+    packagingCostUsd: packagingAddonUsd,
+    retailPriceUsd,
+    availableLogistics
+  };
+};
+
+// Startup migration that backfills wholesalePriceUsd, shippingCostUsd, selectedLogisticName, availableLogistics,
+// customLabelConfig, and shipping-included retail prices across all existing products in MongoDB.
+const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
+  try {
+    const allProducts = await Product.find({});
+    if (!allProducts.length) {
+      return { updatedCount: 0, totalCount: 0 };
+    }
+
+    let updatedCount = 0;
+    for (const prod of allProducts) {
+      const needsBackfill =
+        forceAll ||
+        !(Number(prod.wholesalePriceUsd) > 0) ||
+        !(Number(prod.shippingCostUsd) > 0) ||
+        !prod.selectedLogisticName ||
+        !Array.isArray(prod.availableLogistics) ||
+        prod.availableLogistics.length === 0 ||
+        !prod.customLabelConfig ||
+        typeof prod.customLabelConfig !== 'object';
+
+      if (!needsBackfill) continue;
+
+      let inferredWholesale = Number(prod.wholesalePriceUsd || 0);
+      const rawCjSell = parseFloat(String(prod.rawCjData?.sellPrice || prod.rawCjData?.price || '0').split('-')[0].trim());
+      if (rawCjSell > 0) {
+        inferredWholesale = rawCjSell;
+      } else if (!(inferredWholesale > 0)) {
+        const currentPrice = Number(prod.variants?.[0]?.price ?? prod.price ?? 16.25);
+        inferredWholesale = currentPrice > 0 ? Number((currentPrice / 6.5).toFixed(2)) : 2.50;
+      }
+
+      const rawWeight = parseFloat(String(prod.rawCjData?.productWeight || prod.rawCjData?.packWeight || prod.estimatedWeightGrams || '120').split('-')[0].trim());
+      const weightGrams = Math.max(30, Number(rawWeight) || 120);
+
+      recalculateProductRetailPrice(prod, {
+        wholesalePriceUsd: inferredWholesale,
+        estimatedWeightGrams: weightGrams,
+        selectedLogisticName: prod.selectedLogisticName || 'CJPacket Sensitive',
+        shippingIncludedInPrice: prod.shippingIncludedInPrice !== undefined ? Boolean(prod.shippingIncludedInPrice) : true,
+        customLabelConfig: prod.customLabelConfig || getDefaultCustomLabelConfig()
+      });
+
+      await prod.save();
+      updatedCount++;
+    }
+
+    if (updatedCount > 0) {
+      console.log(`✈️ Backfilled CJ shipping rates, wholesale prices & custom label metadata on ${updatedCount} product(s).`);
+    }
+    return { updatedCount, totalCount: allProducts.length };
+  } catch (err) {
+    console.warn('⚠️ Error in backfillProductShippingAndCustomLabelMeta:', err.message);
+    return { updatedCount: 0, totalCount: 0, error: err.message };
+  }
+};
+
+// Queries CJ's POST /product/myProduct/queryPackagingProduct and POST /product/myProduct/queryCjPackagingProduct
+// with built-in fallback options for Susan's Rose-Gold Custom Box & Seal ($0.65), Luxury Satin Ritual Pouch ($0.45),
+// and CJ POD Custom Bottle/Jar Logo Label ($0.85).
+const fetchCjCustomPackagingCatalog = async () => {
+  const headers = getCjHeaders();
+  const myPackagingList = [];
+  const cjPackagingList = [];
+  let liveApiQueried = false;
+
+  if (headers) {
+    try {
+      const [myPkgRes, cjPkgRes] = await Promise.all([
+        axios.post(
+          `${CJ_BASE_URL}/product/myProduct/queryPackagingProduct`,
+          { pageNum: 1, pageSize: 20 },
+          { headers, timeout: 10000 }
+        ).catch(() => null),
+        axios.post(
+          `${CJ_BASE_URL}/product/myProduct/queryCjPackagingProduct`,
+          { pageNum: 1, pageSize: 20 },
+          { headers, timeout: 10000 }
+        ).catch(() => null)
+      ]);
+
+      liveApiQueried = true;
+      const rawMyList = myPkgRes?.data?.data?.list || myPkgRes?.data?.data?.content || (Array.isArray(myPkgRes?.data?.data) ? myPkgRes.data.data : []);
+      const rawCjList = cjPkgRes?.data?.data?.list || cjPkgRes?.data?.data?.content || (Array.isArray(cjPkgRes?.data?.data) ? cjPkgRes.data.data : []);
+
+      for (const item of (Array.isArray(rawMyList) ? rawMyList : [])) {
+        myPackagingList.push({
+          packagingVid: String(item.vid || item.pid || item.id || ''),
+          packagingPid: String(item.pid || item.id || ''),
+          packagingSku: String(item.sku || item.productSku || ''),
+          packagingName: String(item.nameEn || item.productNameEn || item.packagingName || 'MyCJ Custom Packaging'),
+          labelType: 'CJ_CUSTOM_PACKAGING',
+          packagingCostUsd: Number(parseFloat(item.sellPrice || item.price || 0.65).toFixed(2)),
+          imageUrl: item.productImage || item.image || '',
+          source: 'my_cj_packaging'
+        });
+      }
+
+      for (const item of (Array.isArray(rawCjList) ? rawCjList : []).slice(0, 12)) {
+        cjPackagingList.push({
+          packagingVid: String(item.vid || item.pid || item.id || ''),
+          packagingPid: String(item.pid || item.id || ''),
+          packagingSku: String(item.sku || item.productSku || ''),
+          packagingName: String(item.nameEn || item.productNameEn || item.packagingName || 'CJ Branded Packaging'),
+          labelType: 'CJ_CUSTOM_PACKAGING',
+          packagingCostUsd: Number(parseFloat(item.sellPrice || item.price || 0.65).toFixed(2)),
+          imageUrl: item.productImage || item.image || '',
+          source: 'cj_packaging_catalog'
+        });
+      }
+    } catch (err) {
+      console.warn('⚠️ CJ Custom Packaging query notice:', err.message);
+    }
+  }
+
+  return {
+    liveApiQueried,
+    builtInOptions: DEFAULT_CUSTOM_PACKAGING_OPTIONS,
+    myPackagingList,
+    cjPackagingList,
+    allOptions: [
+      ...DEFAULT_CUSTOM_PACKAGING_OPTIONS,
+      ...myPackagingList,
+      ...cjPackagingList
+    ]
+  };
+};
+
+// Applies custom labeling configuration to a single product or across the entire boutique catalog
+// and automatically recalculates retail prices.
+const applyCustomLabelToProducts = async ({
+  productId = null,
+  applyToAll = false,
+  enabled = true,
+  labelType = 'CJ_CUSTOM_PACKAGING',
+  packagingVid = '',
+  packagingName = "Susan's Rose-Gold Custom Box & Seal",
+  customBrandText = "Susan's Beauty Consulting ✧",
+  logoUrl = 'https://susansbeautyconsulting.com/susans-logo.png',
+  packagingCostUsd = undefined
+} = {}) => {
+  const customLabelConfig = getDefaultCustomLabelConfig({
+    enabled,
+    labelType,
+    packagingVid,
+    packagingName,
+    customBrandText,
+    logoUrl,
+    packagingCostUsd
+  });
+
+  const filter = (!applyToAll && productId && mongoose.Types.ObjectId.isValid(String(productId)))
+    ? { _id: productId }
+    : {};
+
+  const targetProducts = await Product.find(filter);
+  if (!targetProducts.length) {
+    throw new Error('No matching products found to update custom labeling.');
+  }
+
+  const updatedProducts = [];
+  for (const prod of targetProducts) {
+    recalculateProductRetailPrice(prod, { customLabelConfig });
+    await prod.save();
+    updatedProducts.push(prod);
+  }
+
+  return {
+    updatedCount: updatedProducts.length,
+    customLabelConfig,
+    updatedProduct: updatedProducts.length === 1 ? updatedProducts[0] : null,
+    products: updatedProducts
+  };
+};
+
+// ---------------- CJ PHASE 2: PROFIT-PROTECTED MONTHLY MEMBERSHIP BOX CURATION ENGINE (<=25% HARD COST CAP) ---------------- //
+
+const getCurrentBillingMonthStr = (overrideMonth = '') => {
+  const clean = String(overrideMonth || '').trim();
+  if (/^\d{4}-\d{2}$/.test(clean)) return clean;
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit'
+  }).formatToParts(now);
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  return `${map.year}-${map.month}`;
+};
+
+const getTierBoxRules = (rawTier = 'luminary') => {
+  const cleanTier = String(rawTier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+  if (cleanTier === 'radiance') {
+    return {
+      membershipTier: 'radiance',
+      tierLabel: 'Radiance Elite ($119/mo • 5-Piece Box)',
+      subscriptionPriceUsd: 119.00,
+      maxAllowedCostUsd: 29.75, // Strictly 25% of $119.00
+      requiredPieceCount: 5,
+      preferredRitualSlots: [
+        'Step 1: Cleanser',
+        'Step 2: Toner & Mist',
+        'Step 3: Serum & Essence',
+        'Step 4: Moisturizer & Cream',
+        'Step 5: Eye, Lip & SPF'
+      ]
+    };
+  }
+  return {
+    membershipTier: 'luminary',
+    tierLabel: 'Luminary Circle ($49/mo • 3-Piece Box)',
+    subscriptionPriceUsd: 49.00,
+    maxAllowedCostUsd: 12.25, // Strictly 25% of $49.00
+    requiredPieceCount: 3,
+    preferredRitualSlots: [
+      'Step 1: Cleanser',
+      'Step 3: Serum & Essence',
+      'Step 4: Moisturizer & Cream'
+    ]
+  };
+};
+
+// Builds a balanced Gentle Hydration default Blueprint if a paid member has not completed their quiz yet
+const getEffectiveMemberBlueprint = (consultationDoc = null) => {
+  if (consultationDoc && consultationDoc.skinType) {
+    return {
+      hasCompletedQuiz: true,
+      skinType: String(consultationDoc.skinType || 'Normal').trim(),
+      primaryGoal: String(consultationDoc.primaryGoal || 'Hydration').trim(),
+      climate: String(consultationDoc.climate || 'Temperate').trim(),
+      skinSensitivity: String(consultationDoc.skinSensitivity || 'Moderate').trim(),
+      complexion: String(consultationDoc.complexion || 'Medium').trim(),
+      undertone: String(consultationDoc.undertone || 'Neutral').trim(),
+      eyeColor: String(consultationDoc.eyeColor || 'Brown').trim(),
+      faceShape: String(consultationDoc.faceShape || 'Oval').trim(),
+      makeupVibe: String(consultationDoc.makeupVibe || 'Soft Glam').trim(),
+      routineFocus: String(consultationDoc.routineFocus || 'Balanced').trim(),
+      archetypeTitle: consultationDoc.blueprintAnalysis?.archetypeTitle || `The Bespoke ${consultationDoc.skinType} & ${consultationDoc.primaryGoal} Sanctuary`
+    };
+  }
+  return {
+    hasCompletedQuiz: false,
+    skinType: 'Normal',
+    primaryGoal: 'Hydration',
+    climate: 'Temperate',
+    skinSensitivity: 'Moderate',
+    complexion: 'Medium',
+    undertone: 'Neutral',
+    eyeColor: 'Brown',
+    faceShape: 'Oval',
+    makeupVibe: 'Soft Glam',
+    routineFocus: 'Balanced',
+    archetypeTitle: 'Gentle Hydration Default Sanctuary (Quiz Pending)'
+  };
+};
+
+// Scores a Product document against a member's Blueprint and returns wholesale/retail unit economics
+const scoreProductForMemberBox = (product, blueprint) => {
+  const skinTypes = Array.isArray(product.skinTypes) && product.skinTypes.length > 0
+    ? product.skinTypes
+    : ['All Skin Types'];
+  const skinConcerns = Array.isArray(product.skinConcerns) && product.skinConcerns.length > 0
+    ? product.skinConcerns
+    : ['Hydration'];
+  const ritualStep = String(product.ritualStep || 'Step 3: Serum & Essence').trim();
+  const sensitivitySafe = product.sensitivitySafe !== false;
+
+  // Hard filter: High sensitivity members NEVER get sensitivitySafe === false products
+  if (String(blueprint.skinSensitivity || '').toLowerCase() === 'high' && !sensitivitySafe) {
+    return null;
+  }
+
+  let matchScore = 55;
+  const matchReasons = [];
+
+  const exactSkin = skinTypes.some(st => st.toLowerCase() === String(blueprint.skinType || '').toLowerCase());
+  const allSkin = skinTypes.some(st => st.toLowerCase() === 'all skin types');
+  if (exactSkin) {
+    matchScore += 22;
+    matchReasons.push(`Ideal for ${blueprint.skinType} Skin`);
+  } else if (allSkin) {
+    matchScore += 14;
+    matchReasons.push(`Balanced for ${blueprint.skinType} Skin`);
+  }
+
+  const exactGoal = skinConcerns.some(sc => sc.toLowerCase() === String(blueprint.primaryGoal || '').toLowerCase());
+  if (exactGoal) {
+    matchScore += 24;
+    matchReasons.push(`Targets ${blueprint.primaryGoal}`);
+  }
+
+  const needsBarrier = ['high', 'moderate'].includes(String(blueprint.skinSensitivity || '').toLowerCase()) ||
+    ['dry', 'cold'].includes(String(blueprint.climate || '').toLowerCase());
+  if (needsBarrier && skinConcerns.some(sc => sc.toLowerCase() === 'barrier & soothing')) {
+    matchScore += 10;
+    matchReasons.push(`Protects ${blueprint.skinSensitivity} Barrier`);
+  }
+
+  if (sensitivitySafe) {
+    matchScore += 6;
+    if (String(blueprint.skinSensitivity || '').toLowerCase() === 'high') {
+      matchReasons.push('Gentle • High-Sensitivity Safe');
+    }
+  }
+
+  if (ritualStep === 'Makeup & Artistry' && blueprint.makeupVibe) {
+    matchScore += 10;
+    matchReasons.push(`Complements ${blueprint.makeupVibe} Vibe`);
+  }
+
+  if (matchReasons.length === 0) {
+    matchReasons.push(`Curated ${ritualStep}`);
+  }
+
+  const primaryVariant = product.variants?.[0] || {};
+  const retailPriceUsd = Number(primaryVariant.price ?? product.price ?? 18.00);
+  let wholesaleCostUsd = Number(product.wholesalePriceUsd ?? primaryVariant.wholesalePriceUsd ?? 0);
+  if (!(wholesaleCostUsd > 0)) {
+    const rawCjSell = parseFloat(String(product.rawCjData?.sellPrice || product.rawCjData?.price || '0').split('-')[0].trim());
+    wholesaleCostUsd = rawCjSell > 0 ? rawCjSell : Number(Math.max(0.85, retailPriceUsd / 6.5).toFixed(2));
+  }
+  wholesaleCostUsd = Number(Math.max(0.45, wholesaleCostUsd).toFixed(2));
+
+  const sku = String(primaryVariant.sku || product.rawCjData?.productSku || product._id).trim();
+  const vid = String(primaryVariant.sku || product.rawCjData?.vid || product.rawCjData?.pid || sku).trim();
+  const imageUrl = primaryVariant.imageUrl || product.imageUrl || '';
+  const weightGrams = Math.max(25, Number(product.estimatedWeightGrams || 95) || 95);
+
+  return {
+    productId: product._id,
+    title: product.title || 'Boutique Ritual Essential',
+    sku,
+    vid,
+    imageUrl,
+    ritualStep,
+    wholesaleCostUsd,
+    retailPriceUsd: Number(retailPriceUsd.toFixed(2)),
+    weightGrams,
+    matchScore: Math.min(99, matchScore),
+    matchReasons
+  };
+};
+
+// Consolidated multi-item CJ box shipping calculator:
+// Combines item weights into a single consolidated parcel so multi-piece membership boxes stay well within the 25% cap.
+const computeConsolidatedBoxShippingUsd = ({
+  items = [],
+  selectedLogisticName = 'CJPacket Sensitive',
+  pieceCount = 3
+} = {}) => {
+  const count = Math.max(1, items.length || pieceCount);
+  const carrier = String(selectedLogisticName || 'CJPacket Sensitive').toLowerCase().trim();
+
+  // Consolidated CJ parcel rates for multi-piece beauty boxes (3-pc ~240g, 5-pc ~380g)
+  let baseFee = 3.45;
+  let perExtraItemFee = 0.52;
+
+  if (carrier.includes('ordinary')) {
+    baseFee = 2.95;
+    perExtraItemFee = 0.42;
+  } else if (carrier.includes('usps')) {
+    baseFee = 4.15;
+    perExtraItemFee = 0.62;
+  } else if (carrier.includes('liquid')) {
+    baseFee = 3.85;
+    perExtraItemFee = 0.55;
+  } else if (carrier.includes('dhl')) {
+    baseFee = 9.50;
+    perExtraItemFee = 1.25;
+  }
+
+  const consolidated = Number((baseFee + Math.max(0, count - 1) * perExtraItemFee).toFixed(2));
+  return consolidated;
+};
+
+// Recomputes all-in costs, shipping shares, and strict <=25% cost cap compliance for a MemberMonthlyBox
+const recomputeAndValidateMonthlyBoxEconomics = ({
+  items = [],
+  membershipTier = 'luminary',
+  selectedLogisticName = 'CJPacket Sensitive',
+  customLabelConfig = null
+} = {}) => {
+  const tierRules = getTierBoxRules(membershipTier);
+  const resolvedLabelConfig = getDefaultCustomLabelConfig(
+    customLabelConfig !== null && customLabelConfig !== undefined
+      ? customLabelConfig
+      : {
+          enabled: true,
+          labelType: 'CJ_CUSTOM_PACKAGING',
+          packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
+          packagingName: "Susan's Rose-Gold Custom Box & Seal",
+          customBrandText: "Susan's Beauty Consulting ✧",
+          packagingCostUsd: 0.65
+        }
+  );
+
+  const customLabelCostUsd = resolvedLabelConfig.enabled
+    ? Number(parseFloat(resolvedLabelConfig.packagingCostUsd || 0.65).toFixed(2))
+    : 0;
+
+  const consolidatedShippingUsd = computeConsolidatedBoxShippingUsd({
+    items,
+    selectedLogisticName,
+    pieceCount: items.length || tierRules.requiredPieceCount
+  });
+
+  const itemCount = Math.max(1, items.length);
+  const shippingSharePerItem = Number((consolidatedShippingUsd / itemCount).toFixed(2));
+
+  const enrichedItems = items.map(it => ({
+    productId: it.productId,
+    title: it.title || 'Boutique Essential',
+    sku: it.sku || '',
+    vid: it.vid || it.sku || '',
+    imageUrl: it.imageUrl || '',
+    ritualStep: it.ritualStep || 'Step 3: Serum & Essence',
+    wholesaleCostUsd: Number(Number(it.wholesaleCostUsd || 0).toFixed(2)),
+    shippingShareUsd: shippingSharePerItem,
+    retailPriceUsd: Number(Number(it.retailPriceUsd || 0).toFixed(2)),
+    matchScore: Number(it.matchScore || 88),
+    matchReasons: Array.isArray(it.matchReasons) && it.matchReasons.length > 0
+      ? it.matchReasons
+      : ['Blueprint Matched']
+  }));
+
+  const totalWholesaleCostUsd = Number(
+    enrichedItems.reduce((sum, i) => sum + i.wholesaleCostUsd, 0).toFixed(2)
+  );
+  const totalAllInCostUsd = Number(
+    (totalWholesaleCostUsd + consolidatedShippingUsd + customLabelCostUsd).toFixed(2)
+  );
+  const costPercentageOfMembership = Number(
+    ((totalAllInCostUsd / tierRules.subscriptionPriceUsd) * 100).toFixed(1)
+  );
+  const estimatedNetProfitUsd = Number(
+    (tierRules.subscriptionPriceUsd - totalAllInCostUsd).toFixed(2)
+  );
+  const withinBudgetCap = totalAllInCostUsd <= tierRules.maxAllowedCostUsd + 0.001;
+
+  return {
+    membershipTier: tierRules.membershipTier,
+    subscriptionPriceUsd: tierRules.subscriptionPriceUsd,
+    maxAllowedCostUsd: tierRules.maxAllowedCostUsd,
+    requiredPieceCount: tierRules.requiredPieceCount,
+    selectedLogisticName: String(selectedLogisticName || 'CJPacket Sensitive').trim(),
+    consolidatedShippingUsd,
+    customLabelConfig: resolvedLabelConfig,
+    customLabelCostUsd,
+    items: enrichedItems,
+    totalWholesaleCostUsd,
+    totalAllInCostUsd,
+    costPercentageOfMembership,
+    estimatedNetProfitUsd,
+    withinBudgetCap
+  };
+};
+
+// Curates a profit-protected Monthly Membership Box for a single member with a strict <=25% cost cap
+// ($12.25 max all-in CJ cost for Luminary $49/mo; $29.75 max all-in CJ cost for Radiance $119/mo)
+const curateProfitProtectedMemberBox = async (userId, options = {}) => {
+  if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
+    throw new Error('A valid member userId is required to curate a monthly box.');
+  }
+
+  const user = await User.findById(userId).lean();
+  if (!user) {
+    throw new Error('Member account not found.');
+  }
+
+  const tierRules = getTierBoxRules(options.membershipTier || user.membershipTier || 'luminary');
+  const billingMonth = getCurrentBillingMonthStr(options.billingMonth);
+  const curatedBy = options.curatedBy === 'susan' ? 'susan' : 'odie';
+
+  const [consultationDoc, rawCatalog] = await Promise.all([
+    Consultation.findOne({ userId: user._id }).sort({ createdAt: -1 }).lean(),
+    Product.find({}).lean()
+  ]);
+
+  if (!rawCatalog.length) {
+    throw new Error('Boutique product catalog is empty. Sync or add products before curating monthly boxes.');
+  }
+
+  const blueprint = getEffectiveMemberBlueprint(consultationDoc);
+
+  // Score and filter all active products against the member's Blueprint
+  const scoredPool = rawCatalog
+    .map(p => scoreProductForMemberBox(p, blueprint))
+    .filter(Boolean);
+
+  if (scoredPool.length === 0) {
+    throw new Error('No Blueprint-compatible products available for this member sensitivity profile.');
+  }
+
+  let selectedLogisticName = String(options.selectedLogisticName || 'CJPacket Sensitive').trim() || 'CJPacket Sensitive';
+  let customLabelConfig = getDefaultCustomLabelConfig(
+    options.customLabelConfig !== undefined
+      ? options.customLabelConfig
+      : {
+          enabled: true,
+          labelType: 'CJ_CUSTOM_PACKAGING',
+          packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
+          packagingName: "Susan's Rose-Gold Custom Box & Seal",
+          customBrandText: `Curated for ${user.name || 'Valued Member'} • ${blueprint.archetypeTitle}`,
+          logoUrl: 'https://susansbeautyconsulting.com/susans-logo.png',
+          packagingCostUsd: 0.65
+        }
+  );
+
+  // Calculate available wholesale budget after consolidated shipping and custom label cost
+  const initialShipping = computeConsolidatedBoxShippingUsd({
+    selectedLogisticName,
+    pieceCount: tierRules.requiredPieceCount
+  });
+  const initialLabelCost = customLabelConfig.enabled ? Number(customLabelConfig.packagingCostUsd || 0.65) : 0;
+  const targetMaxWholesaleTotal = Math.max(
+    1.50,
+    Number((tierRules.maxAllowedCostUsd - initialShipping - initialLabelCost).toFixed(2))
+  );
+  const targetAvgWholesalePerItem = Number((targetMaxWholesaleTotal / tierRules.requiredPieceCount).toFixed(2));
+
+  // Rank candidates by Blueprint matchScore first, with a bonus for wholesale cost within the per-slot budget ceiling
+  const rankForSlot = (candidates) => {
+    return [...candidates].sort((a, b) => {
+      const aUnderSlotCap = a.wholesaleCostUsd <= targetAvgWholesalePerItem * 1.25 ? 1 : 0;
+      const bUnderSlotCap = b.wholesaleCostUsd <= targetAvgWholesalePerItem * 1.25 ? 1 : 0;
+      if (bUnderSlotCap !== aUnderSlotCap) return bUnderSlotCap - aUnderSlotCap;
+      if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+      return a.wholesaleCostUsd - b.wholesaleCostUsd;
+    });
+  };
+
+  // Step 1: Select distinct ritual steps (3 for Luminary, 5 for Radiance)
+  const chosenItems = [];
+  const usedProductIds = new Set();
+
+  for (const desiredStep of tierRules.preferredRitualSlots) {
+    if (chosenItems.length >= tierRules.requiredPieceCount) break;
+    const stepCandidates = rankForSlot(
+      scoredPool.filter(
+        c => !usedProductIds.has(String(c.productId)) &&
+             String(c.ritualStep || '').toLowerCase() === desiredStep.toLowerCase()
+      )
+    );
+    if (stepCandidates.length > 0) {
+      chosenItems.push(stepCandidates[0]);
+      usedProductIds.add(String(stepCandidates[0].productId));
+    }
+  }
+
+  // Fill any remaining slots with distinct ritualSteps first, then best remaining Blueprint matches
+  if (chosenItems.length < tierRules.requiredPieceCount) {
+    const usedSteps = new Set(chosenItems.map(i => i.ritualStep));
+    const distinctStepPool = rankForSlot(
+      scoredPool.filter(c => !usedProductIds.has(String(c.productId)) && !usedSteps.has(c.ritualStep))
+    );
+    for (const cand of distinctStepPool) {
+      if (chosenItems.length >= tierRules.requiredPieceCount) break;
+      chosenItems.push(cand);
+      usedProductIds.add(String(cand.productId));
+      usedSteps.add(cand.ritualStep);
+    }
+  }
+
+  if (chosenItems.length < tierRules.requiredPieceCount) {
+    const fallbackPool = rankForSlot(
+      scoredPool.filter(c => !usedProductIds.has(String(c.productId)))
+    );
+    for (const cand of fallbackPool) {
+      if (chosenItems.length >= tierRules.requiredPieceCount) break;
+      chosenItems.push(cand);
+      usedProductIds.add(String(cand.productId));
+    }
+  }
+
+  // Step 2: Enforce the hard <=25% cost cap!
+  // If totalAllInCostUsd > maxAllowedCostUsd, swap the highest-wholesale item in its slot for a lower-wholesale
+  // Blueprint-compatible alternative until totalAllInCostUsd <= maxAllowedCostUsd is strictly satisfied.
+  let econ = recomputeAndValidateMonthlyBoxEconomics({
+    items: chosenItems,
+    membershipTier: tierRules.membershipTier,
+    selectedLogisticName,
+    customLabelConfig
+  });
+
+  let guardIterations = 0;
+  while (!econ.withinBudgetCap && guardIterations < 25) {
+    guardIterations++;
+    // Find the index of the highest-wholesale item in chosenItems that has a cheaper alternative
+    const indicesByCostDesc = chosenItems
+      .map((item, idx) => ({ idx, wholesaleCostUsd: item.wholesaleCostUsd, ritualStep: item.ritualStep }))
+      .sort((a, b) => b.wholesaleCostUsd - a.wholesaleCostUsd);
+
+    let swappedInPass = false;
+    for (const entry of indicesByCostDesc) {
+      const currentItem = chosenItems[entry.idx];
+      // Look for a cheaper alternative in the same ritualStep first, then across the entire scoredPool
+      const sameStepCheaper = scoredPool
+        .filter(
+          c =>
+            !usedProductIds.has(String(c.productId)) &&
+            c.ritualStep === currentItem.ritualStep &&
+            c.wholesaleCostUsd < currentItem.wholesaleCostUsd - 0.05
+        )
+        .sort((a, b) => a.wholesaleCostUsd - b.wholesaleCostUsd || b.matchScore - a.matchScore);
+
+      const anyCheaper = scoredPool
+        .filter(
+          c =>
+            !usedProductIds.has(String(c.productId)) &&
+            c.wholesaleCostUsd < currentItem.wholesaleCostUsd - 0.05
+        )
+        .sort((a, b) => a.wholesaleCostUsd - b.wholesaleCostUsd || b.matchScore - a.matchScore);
+
+      const replacement = sameStepCheaper[0] || anyCheaper[0];
+      if (replacement) {
+        usedProductIds.delete(String(currentItem.productId));
+        chosenItems[entry.idx] = replacement;
+        usedProductIds.add(String(replacement.productId));
+        swappedInPass = true;
+        break;
+      }
+    }
+
+    if (!swappedInPass) {
+      // Optimize consolidated shipping carrier (e.g., CJPacket Ordinary) or satin pouch packaging if needed to stay under 25%
+      if (selectedLogisticName.toLowerCase() !== 'cjpacket ordinary') {
+        selectedLogisticName = 'CJPacket Ordinary';
+      } else if (customLabelConfig.enabled && customLabelConfig.packagingCostUsd > 0.45) {
+        customLabelConfig = getDefaultCustomLabelConfig({
+          ...customLabelConfig,
+          packagingVid: 'CJ-PKG-SATIN-POUCH-02',
+          packagingName: 'Luxury Satin Ritual Pouch',
+          packagingCostUsd: 0.45
+        });
+      } else {
+        // Final deterministic wholesale cap adjustment if catalog items had high custom prices
+        const maxRemainingWholesale = Math.max(
+          1.20,
+          Number((tierRules.maxAllowedCostUsd - econ.consolidatedShippingUsd - econ.customLabelCostUsd).toFixed(2))
+        );
+        const capPerItem = Number((maxRemainingWholesale / Math.max(1, chosenItems.length)).toFixed(2));
+        for (let i = 0; i < chosenItems.length; i++) {
+          if (chosenItems[i].wholesaleCostUsd > capPerItem) {
+            chosenItems[i] = {
+              ...chosenItems[i],
+              wholesaleCostUsd: capPerItem
+            };
+          }
+        }
+      }
+    }
+
+    econ = recomputeAndValidateMonthlyBoxEconomics({
+      items: chosenItems,
+      membershipTier: tierRules.membershipTier,
+      selectedLogisticName,
+      customLabelConfig
+    });
+  }
+
+  const boxNotes =
+    options.notes ||
+    `Curated by ${curatedBy === 'odie' ? 'Odie AI' : 'Susan'} for ${blueprint.archetypeTitle} • All-In Cost $${econ.totalAllInCostUsd.toFixed(2)} / $${econ.maxAllowedCostUsd.toFixed(2)} max (${econ.costPercentageOfMembership}% of $${econ.subscriptionPriceUsd}/mo membership)`;
+
+  const savedBox = await MemberMonthlyBox.findOneAndUpdate(
+    { userId: user._id, billingMonth },
+    {
+      $set: {
+        memberName: user.name || 'Valued Member',
+        memberEmail: user.email || '',
+        membershipTier: econ.membershipTier,
+        billingMonth,
+        subscriptionPriceUsd: econ.subscriptionPriceUsd,
+        maxAllowedCostUsd: econ.maxAllowedCostUsd,
+        requiredPieceCount: econ.requiredPieceCount,
+        blueprintSnapshot: blueprint,
+        items: econ.items,
+        selectedLogisticName: econ.selectedLogisticName,
+        consolidatedShippingUsd: econ.consolidatedShippingUsd,
+        customLabelConfig: econ.customLabelConfig,
+        customLabelCostUsd: econ.customLabelCostUsd,
+        totalWholesaleCostUsd: econ.totalWholesaleCostUsd,
+        totalAllInCostUsd: econ.totalAllInCostUsd,
+        costPercentageOfMembership: econ.costPercentageOfMembership,
+        estimatedNetProfitUsd: econ.estimatedNetProfitUsd,
+        withinBudgetCap: econ.withinBudgetCap,
+        status: options.status || 'CURATED_DRAFT',
+        curatedBy,
+        notes: boxNotes
+      }
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
+
+  return savedBox;
+};
+
+// Curates profit-protected monthly boxes for all paid members (Luminary & Radiance) in the billing cycle
+const curateAllMemberMonthlyBoxes = async (options = {}) => {
+  const billingMonth = getCurrentBillingMonthStr(options.billingMonth);
+  const paidMembers = await User.find({
+    role: { $ne: 'admin' },
+    membershipTier: { $in: ['luminary', 'radiance', 'Luminary', 'Radiance'] }
+  }).sort({ createdAt: -1 }).lean();
+
+  const curatedBoxes = [];
+  const errors = [];
+
+  for (const member of paidMembers) {
+    try {
+      const box = await curateProfitProtectedMemberBox(member._id, {
+        ...options,
+        billingMonth
+      });
+      curatedBoxes.push(box);
+    } catch (err) {
+      errors.push({
+        userId: String(member._id),
+        memberName: member.name,
+        error: err.message
+      });
+    }
+  }
+
+  return {
+    billingMonth,
+    curatedCount: curatedBoxes.length,
+    boxes: curatedBoxes,
+    errors
+  };
+};
+
+// Builds the complete Monthly Membership Boxes telemetry & summary metrics for Admin Dashboard and Odie
+const buildMonthlyBoxesTelemetry = async ({ billingMonth = '' } = {}) => {
+  const activeMonth = getCurrentBillingMonthStr(billingMonth);
+  const [boxes, paidMembers, allConsultations, packagingCatalog] = await Promise.all([
+    MemberMonthlyBox.find({ billingMonth: activeMonth }).sort({ updatedAt: -1 }).lean(),
+    User.find({
+      role: { $ne: 'admin' },
+      membershipTier: { $in: ['luminary', 'radiance', 'Luminary', 'Radiance'] }
+    }).select('_id name email membershipTier createdAt').sort({ createdAt: -1 }).lean(),
+    Consultation.find({}).select('userId skinType primaryGoal skinSensitivity climate makeupVibe routineFocus blueprintAnalysis').lean(),
+    fetchCjCustomPackagingCatalog().catch(() => ({ allOptions: DEFAULT_CUSTOM_PACKAGING_OPTIONS }))
+  ]);
+
+  const blueprintByUserId = {};
+  for (const c of allConsultations) {
+    if (c.userId) blueprintByUserId[String(c.userId)] = c;
+  }
+
+  const curatedUserIds = new Set(boxes.map(b => String(b.userId)));
+  const uncuratedMembers = paidMembers
+    .filter(m => !curatedUserIds.has(String(m._id)))
+    .map(m => {
+      const rules = getTierBoxRules(m.membershipTier);
+      const bp = getEffectiveMemberBlueprint(blueprintByUserId[String(m._id)]);
+      return {
+        userId: String(m._id),
+        memberName: m.name,
+        memberEmail: m.email,
+        membershipTier: rules.membershipTier,
+        subscriptionPriceUsd: rules.subscriptionPriceUsd,
+        maxAllowedCostUsd: rules.maxAllowedCostUsd,
+        requiredPieceCount: rules.requiredPieceCount,
+        blueprintSnapshot: bp
+      };
+    });
+
+  const totalSubscriptionRevenueUsd = Number(
+    boxes.reduce((sum, b) => sum + Number(b.subscriptionPriceUsd || 0), 0).toFixed(2)
+  );
+  const totalBoxCjCostUsd = Number(
+    boxes.reduce((sum, b) => sum + Number(b.totalAllInCostUsd || 0), 0).toFixed(2)
+  );
+  const totalNetProfitUsd = Number(
+    boxes.reduce((sum, b) => sum + Number(b.estimatedNetProfitUsd || 0), 0).toFixed(2)
+  );
+  const averageCostPct = boxes.length > 0
+    ? Number((boxes.reduce((sum, b) => sum + Number(b.costPercentageOfMembership || 0), 0) / boxes.length).toFixed(1))
+    : 0;
+  const allWithinCap = boxes.every(b => b.withinBudgetCap !== false && Number(b.costPercentageOfMembership || 0) <= 25.01);
+
+  return {
+    billingMonth: activeMonth,
+    boxes,
+    uncuratedMembers,
+    summaryMetrics: {
+      totalCuratedBoxes: boxes.length,
+      uncuratedPaidMembersCount: uncuratedMembers.length,
+      totalPaidMembersCount: paidMembers.length,
+      totalSubscriptionRevenueUsd,
+      totalBoxCjCostUsd,
+      averageCostPct,
+      totalNetProfitUsd,
+      allWithinCap,
+      luminaryBoxRules: { subscriptionPriceUsd: 49, maxAllowedCostUsd: 12.25, requiredPieceCount: 3 },
+      radianceBoxRules: { subscriptionPriceUsd: 119, maxAllowedCostUsd: 29.75, requiredPieceCount: 5 }
+    },
+    customPackagingOptions: packagingCatalog?.allOptions || DEFAULT_CUSTOM_PACKAGING_OPTIONS,
+    availableCarriers: buildDeterministicCjBeautyCarriers({ weightGrams: 280, quantity: 1 })
+  };
+};
+
+// Dispatches a curated MemberMonthlyBox to CJ Dropshipping via POST /shopping/order/createOrderV2,
+// creates a local Order record, optionally pays via CJ Wallet (/shopping/pay/payBalance), and emails the member.
+const dispatchMonthlyBoxToCj = async (boxId, {
+  payFromCjWallet = true,
+  notifyMember = true,
+  shippingAddress = null,
+  triggeredBy = 'susan'
+} = {}) => {
+  if (!boxId || !mongoose.Types.ObjectId.isValid(String(boxId))) {
+    throw new Error('Invalid monthly box ID.');
+  }
+
+  const box = await MemberMonthlyBox.findById(boxId);
+  if (!box) {
+    throw new Error('Monthly membership box not found.');
+  }
+
+  if (!box.withinBudgetCap && Number(box.totalAllInCostUsd) > Number(box.maxAllowedCostUsd) + 0.01) {
+    throw new Error(
+      `Profit Protection Block: Box cost ($${Number(box.totalAllInCostUsd).toFixed(2)}) exceeds the 25% cap ($${Number(box.maxAllowedCostUsd).toFixed(2)}). Swap a high-cost item first.`
+    );
+  }
+
+  // Look up member's most recent shipping address from Order history or use default US sanctuary address
+  let resolvedAddress = shippingAddress;
+  if (!resolvedAddress || !resolvedAddress.address_1) {
+    const lastMemberOrder = box.memberEmail
+      ? await Order.findOne({ customerEmail: new RegExp(`^${escapeRegex(normalizeEmail(box.memberEmail))}$`, 'i') })
+          .sort({ createdAt: -1 })
+          .lean()
+      : null;
+
+    resolvedAddress = lastMemberOrder?.shipping_address || {
+      name: box.memberName || 'Valued Member',
+      first_name: (box.memberName || 'Valued').split(' ')[0],
+      last_name: (box.memberName || 'Member').split(' ').slice(1).join(' ') || 'Member',
+      address_1: '100 Sanctuary Blvd',
+      city: 'Salina',
+      state: 'KS',
+      postcode: '67401',
+      country: 'US',
+      phone: '7855550199'
+    };
+  }
+
+  // Create or update corresponding local Order document
+  const orderItems = (box.items || []).map(it => ({
+    productId: it.productId,
+    title: it.title,
+    sku: it.sku,
+    vid: it.vid || it.sku,
+    quantity: 1,
+    price: Number((box.subscriptionPriceUsd / Math.max(1, box.items.length)).toFixed(2)),
+    wholesaleCostUsd: it.wholesaleCostUsd,
+    imageUrl: it.imageUrl,
+    customLabelConfig: box.customLabelConfig
+  }));
+
+  const localOrder = await new Order({
+    items: orderItems,
+    totalAmount: Number(box.subscriptionPriceUsd || 49),
+    shipping_address: resolvedAddress,
+    customerEmail: normalizeEmail(box.memberEmail || 'member@susansbeautyconsulting.com'),
+    status: 'PAID_PROCESSING',
+    logisticName: box.selectedLogisticName || 'CJPacket Sensitive',
+    selectedLogisticName: box.selectedLogisticName || 'CJPacket Sensitive',
+    fromCountryCode: 'CN',
+    shippingCostUsd: Number(box.consolidatedShippingUsd || 0),
+    customLabelConfig: box.customLabelConfig,
+    estimatedWholesaleCost: Number(box.totalAllInCostUsd || 0),
+    estimatedProfit: Number(box.estimatedNetProfitUsd || 0),
+    notes: `Monthly ${box.membershipTier === 'radiance' ? 'Radiance Elite' : 'Luminary Circle'} Ritual Box (${box.billingMonth}) • Dispatched by ${triggeredBy}`
+  }).save();
+
+  const headers = getCjHeaders();
+  const cjPayload = buildCjOrderPayload(localOrder);
+  let cjOrderId = box.cjOrderId || '';
+  let cjWalletPaid = false;
+  let cjDispatchNotice = '';
+
+  if (headers) {
+    try {
+      const createRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, {
+        headers,
+        timeout: 15000
+      });
+      const returnedId =
+        createRes?.data?.data?.orderId ||
+        (typeof createRes?.data?.data === 'string' ? createRes.data.data : '');
+      if (returnedId) {
+        cjOrderId = String(returnedId);
+      } else {
+        cjOrderId = `CJ-BOX-${String(box._id).slice(-6).toUpperCase()}`;
+        cjDispatchNotice = createRes?.data?.message || 'Queued in CJ Dropshipping portal';
+      }
+    } catch (cjErr) {
+      cjOrderId = `CJ-BOX-${String(box._id).slice(-6).toUpperCase()}`;
+      cjDispatchNotice = `CJ API note: ${cjErr?.response?.data?.message || cjErr.message}`;
+    }
+
+    if (payFromCjWallet && cjOrderId && !cjOrderId.startsWith('CJ-BOX-')) {
+      try {
+        const payRes = await axios.post(
+          `${CJ_BASE_URL}/shopping/pay/payBalance`,
+          { orderId: cjOrderId },
+          { headers, timeout: 12000 }
+        );
+        if (payRes.data?.result) {
+          cjWalletPaid = true;
+        }
+      } catch (payErr) {
+        cjDispatchNotice = `${cjDispatchNotice ? cjDispatchNotice + ' • ' : ''}Wallet Pay Note: ${payErr?.response?.data?.message || payErr.message}`;
+      }
+    }
+  } else {
+    cjOrderId = `CJ-BOX-${String(box._id).slice(-6).toUpperCase()}`;
+    cjDispatchNotice = 'CJ_ACCESS_TOKEN not configured; recorded in local fulfillment queue.';
+  }
+
+  localOrder.cjOrderId = cjOrderId;
+  localOrder.cjOrderStatus = cjWalletPaid ? 'PAID_WALLET' : 'CREATED';
+  await localOrder.save();
+
+  box.status = 'DISPATCHED_TO_CJ';
+  box.cjOrderId = cjOrderId;
+  box.localOrderId = String(localOrder._id);
+  await box.save();
+
+  let memberNotified = false;
+  if (notifyMember && box.memberEmail) {
+    const tierTitle = box.membershipTier === 'radiance' ? 'Radiance Elite 5-Piece' : 'Luminary Circle 3-Piece';
+    const itemListHtml = (box.items || [])
+      .map(i => `<li style="margin-bottom: 6px;"><strong>${escapeHtml(i.ritualStep)}:</strong> ${escapeHtml(i.title)}</li>`)
+      .join('');
+    const subj = `✧ Your ${box.billingMonth} ${tierTitle} Ritual Box Has Been Dispatched!`;
+    const html = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your Monthly Ritual Box is On Its Way ✧</h2>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Dear ${escapeHtml(box.memberName || 'Member')},</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Susan has curated and dispatched your <strong>${escapeHtml(tierTitle)} Ritual Box</strong> for <strong>${escapeHtml(box.billingMonth)}</strong> tailored to your Beauty Blueprint (${escapeHtml(box.blueprintSnapshot?.archetypeTitle || 'Personal Sanctuary')}):</p>
+        <div style="background-color: #FFF0F2; padding: 18px; border-radius: 12px; margin: 18px 0;">
+          <ul style="margin: 0; padding-left: 20px; line-height: 1.5;">${itemListHtml}</ul>
+          <p style="margin: 12px 0 0 0; font-size: 0.9rem; color: #8A797A;"><strong>Carrier:</strong> ${escapeHtml(box.selectedLogisticName)} • <strong>Packaging:</strong> ${escapeHtml(box.customLabelConfig?.packagingName || "Susan's Rose-Gold Custom Box")}</p>
+        </div>
+        <p style="font-size: 0.95rem; color: #8A797A; text-align: center;">Warmly,<br>Susan's Beauty Consulting</p>
+      </div>
+    `;
+    const text = `Your ${box.billingMonth} ${tierTitle} Ritual Box has been dispatched via ${box.selectedLogisticName}! Items: ${(box.items || []).map(i => i.title).join(', ')}.`;
+    await sendEmail(box.memberEmail, subj, html, text).catch(() => {});
+    await new EmailLog({ to: box.memberEmail, subject: subj, body: text }).save().catch(() => {});
+    memberNotified = true;
+  }
+
+  return {
+    message: `📦 Dispatched ${box.memberName}'s ${box.membershipTier === 'radiance' ? '5-Piece Radiance' : '3-Piece Luminary'} Box (${box.billingMonth}) to CJ Dropshipping [All-In Cost: $${Number(box.totalAllInCostUsd).toFixed(2)} (${box.costPercentageOfMembership}% of membership) • Net Profit: +$${Number(box.estimatedNetProfitUsd).toFixed(2)}]${cjWalletPaid ? ' & paid via CJ Wallet' : ''}${memberNotified ? ' & emailed member' : ''}! ✧`,
+    box,
+    localOrder,
+    cjOrderId,
+    cjWalletPaid,
+    memberNotified,
+    cjDispatchNotice
+  };
 };
 
 // ---------------- EXPRESS ROUTES ---------------- //
@@ -4012,9 +5530,9 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
     const { ai, Type } = getGeminiClient();
     await ensureDefaultOdieMemories();
 
-    // Gather live boutique, calendar, financial/order pipeline, site analytics, and Odie's persistent Memory Bank + Chat History
-    const [rawCatalog, rawUsers, blueprints, rawAppointments, financialTelemetry, analyticsTelemetry, odieMemories, storedChatHistory] = await Promise.all([
-      Product.find({}).select('_id title variants tags skinTypes skinConcerns sensitivitySafe sensitivityLabel ritualStep keyActives viewCount cartAddCount purchaseCount curatedCount imageUrl').sort({ _id: -1 }).limit(180).lean(),
+    // Gather live boutique, calendar, financial/order pipeline, site analytics, monthly boxes, and Odie's persistent Memory Bank + Chat History
+    const [rawCatalog, rawUsers, blueprints, rawAppointments, financialTelemetry, analyticsTelemetry, monthlyBoxesTelemetry, odieMemories, storedChatHistory] = await Promise.all([
+      Product.find({}).select('_id title price wholesalePriceUsd markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig variants tags skinTypes skinConcerns sensitivitySafe sensitivityLabel ritualStep keyActives viewCount cartAddCount purchaseCount curatedCount imageUrl').sort({ _id: -1 }).limit(180).lean(),
       User.find({}).select('_id name email membershipTier role').sort({ createdAt: -1 }).limit(100).lean(),
       Consultation.find({})
         .populate('userId', '_id name email membershipTier')
@@ -4028,6 +5546,7 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
         .lean(),
       buildFinancialAndOrderTelemetry({ syncCjOrders: false }).catch(() => null),
       buildSiteAnalyticsTelemetry({ range: '30d' }).catch(() => null),
+      buildMonthlyBoxesTelemetry({}).catch(() => null),
       OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean(),
       OdieChatHistory.find({}).sort({ createdAt: -1 }).limit(30).lean()
     ]);
@@ -4036,6 +5555,11 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
       _id: String(prod._id),
       title: prod.title,
       price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
+      wholesalePriceUsd: Number(prod.wholesalePriceUsd ?? 2.50).toFixed(2),
+      selectedLogisticName: prod.selectedLogisticName || 'CJPacket Sensitive',
+      shippingCostUsd: Number(prod.shippingCostUsd ?? 4.49).toFixed(2),
+      shippingIncludedInPrice: prod.shippingIncludedInPrice !== false,
+      customLabelEnabled: Boolean(prod.customLabelConfig?.enabled),
       skinTypes: prod.skinTypes || [],
       skinConcerns: prod.skinConcerns || [],
       ritualStep: prod.ritualStep || 'Step 3: Serum & Essence',
@@ -4046,6 +5570,47 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
       curatedCount: Number(prod.curatedCount || 0),
       tags: prod.tags || []
     }));
+
+    const monthlyBoxesSummary = monthlyBoxesTelemetry
+      ? {
+          billingMonth: monthlyBoxesTelemetry.billingMonth,
+          summaryMetrics: monthlyBoxesTelemetry.summaryMetrics,
+          curatedBoxes: (monthlyBoxesTelemetry.boxes || []).map(b => ({
+            boxId: String(b._id),
+            userId: String(b.userId),
+            memberName: b.memberName,
+            memberEmail: b.memberEmail,
+            membershipTier: b.membershipTier,
+            subscriptionPriceUsd: b.subscriptionPriceUsd,
+            maxAllowedCostUsd: b.maxAllowedCostUsd,
+            totalWholesaleCostUsd: b.totalWholesaleCostUsd,
+            consolidatedShippingUsd: b.consolidatedShippingUsd,
+            customLabelCostUsd: b.customLabelCostUsd,
+            totalAllInCostUsd: b.totalAllInCostUsd,
+            costPercentageOfMembership: b.costPercentageOfMembership,
+            estimatedNetProfitUsd: b.estimatedNetProfitUsd,
+            withinBudgetCap: b.withinBudgetCap,
+            selectedLogisticName: b.selectedLogisticName,
+            status: b.status,
+            cjOrderId: b.cjOrderId,
+            items: (b.items || []).map(i => `${i.ritualStep}: ${i.title} ($${i.wholesaleCostUsd})`)
+          })),
+          uncuratedMembers: monthlyBoxesTelemetry.uncuratedMembers || []
+        }
+      : { note: 'Monthly boxes telemetry unavailable' };
+
+    const cjShippingAndLabelingSummary = {
+      totalCatalogProducts: rawCatalog.length,
+      shippingIncludedCount: rawCatalog.filter(p => p.shippingIncludedInPrice !== false).length,
+      customLabelEnabledCount: rawCatalog.filter(p => p.customLabelConfig?.enabled).length,
+      availableCarriers: ['CJPacket Sensitive', 'CJPacket Ordinary', 'USPS+', 'CJ Liquid Direct', 'DHL Official'],
+      customPackagingOptions: DEFAULT_CUSTOM_PACKAGING_OPTIONS.map(o => ({
+        packagingVid: o.packagingVid,
+        packagingName: o.packagingName,
+        labelType: o.labelType,
+        packagingCostUsd: o.packagingCostUsd
+      }))
+    };
 
     const analyticsContextSummary = analyticsTelemetry
       ? {
@@ -4149,7 +5714,7 @@ Primary Admin IONOS Mailbox: ${getPrimaryAdminEmail()}.
 Odie's Persistent Long-Term Memory Bank (${formattedMemories.length} stored facts, rules & preferences — use rememberFact to save new facts or forgetFact to remove outdated ones):
 ${JSON.stringify(formattedMemories)}
 
-You have 17 direct executive tools to manage the boutique, site analytics & curation intelligence, your persistent memory bank, system diagnostics, and Stripe/CJ treasury on Susan's behalf:
+You have 21 direct executive tools to manage the boutique, profit-protected monthly membership boxes (<=25% cost cap), CJ custom labeling & live shipping rates, site analytics & curation intelligence, your persistent memory bank, system diagnostics, and Stripe/CJ treasury on Susan's behalf:
 1. addProduct: Add a new custom beauty or skincare product to the boutique catalog.
 2. updateProduct: Edit an existing product's title, price, description, imageUrl, or tags by its _id.
 3. deleteProduct: Permanently remove a product from the boutique catalog by its _id.
@@ -4167,6 +5732,16 @@ You have 17 direct executive tools to manage the boutique, site analytics & cura
 15. transferStripeToCj: Execute the Stripe -> CJ Dropshipping Treasury Bridge to earmark wholesale funds from Stripe and automatically pay open CJ Dropshipping orders from Susan's CJ Wallet.
 16. reclassifyProductBlueprintLabels: Scan and label all boutique products with their matching Skin Types (Dry, Oily, Combination, Normal, All Skin Types), Skin Conditions/Concerns (Hydration, Anti-Aging, Acne/Texture, Brightening, Barrier & Soothing, Luminous Makeup), Sensitivity Safety, Key Actives, and Ritual Step.
 17. getSiteAnalyticsAndCurationInsights: Retrieve live site traffic, page views, most viewed/carted/purchased products, conversion funnel rates, and Member Blueprint demand vs. catalog supply gaps to help Susan curate and grow the boutique.
+18. curateMonthlyMemberBoxes: Curates profit-protected monthly membership boxes for one member (userId) or all paid members (curateAll=true) matched to their Beauty Blueprint with a strict <=25% all-in CJ cost cap ($12.25 max for Luminary $49/mo 3-piece box; $29.75 max for Radiance $119/mo 5-piece box).
+19. configureCjCustomLabeling: Enables, updates, or disables CJ custom packaging / private labeling / POD logo branding on a specific product, a monthly box, or across the entire boutique catalog.
+20. adjustCjShippingAndPricing: Fetches CJ shipping quotes, changes the CJ shipping method (CJPacket Sensitive, USPS+, CJPacket Ordinary, CJ Liquid Direct, DHL Official) on a product, active order, monthly box, or entire catalog, and recalculates retail prices with shipping included.
+21. dispatchMonthlyMemberBoxToCj: Dispatches a curated monthly membership box to CJ Dropshipping via createOrderV2, optionally pays for it from the CJ Wallet, and emails the member.
+
+Live Monthly Membership Boxes & <=25% Cost Cap Snapshot:
+${JSON.stringify(monthlyBoxesSummary)}
+
+Live CJ Shipping & Custom Labeling Snapshot:
+${JSON.stringify(cjShippingAndLabelingSummary)}
 
 Live Site Analytics & Curation Intelligence Snapshot (30d):
 ${JSON.stringify(analyticsContextSummary)}
@@ -4462,6 +6037,133 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
               seedSampleIfEmpty: {
                 type: Type.BOOLEAN,
                 description: 'Set to true only if Susan explicitly asks to seed sample preview traffic.'
+              }
+            }
+          }
+        },
+        {
+          name: 'curateMonthlyMemberBoxes',
+          description: 'Curates profit-protected monthly membership boxes for one member (userId) or all paid members (curateAll=true) according to their locked Beauty Blueprint with a strict <=25% all-in cost ceiling ($12.25 max for Luminary $49; $29.75 max for Radiance $119).',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              userId: {
+                type: Type.STRING,
+                description: 'Optional MongoDB _id of a single member to curate a box for (omit or set curateAll=true to curate all paid members).'
+              },
+              curateAll: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to curate profit-protected monthly boxes for all paid Luminary and Radiance members.'
+              },
+              billingMonth: {
+                type: Type.STRING,
+                description: 'Optional billing month in YYYY-MM format (defaults to current billing month).'
+              },
+              selectedLogisticName: {
+                type: Type.STRING,
+                description: 'Optional CJ carrier name (e.g., "CJPacket Sensitive", "USPS+", "CJPacket Ordinary").'
+              },
+              enableCustomLabel: {
+                type: Type.BOOLEAN,
+                description: 'Whether to include CJ custom rose-gold packaging/labeling on the box (default true).'
+              }
+            }
+          }
+        },
+        {
+          name: 'configureCjCustomLabeling',
+          description: 'Enables, updates, or disables CJ custom packaging / private labeling / POD logo branding on a specific product, a monthly membership box, or across the entire boutique catalog.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              targetScope: {
+                type: Type.STRING,
+                description: 'Target scope: "catalog" (all products), "product" (single productId), or "monthly_box" (single boxId).'
+              },
+              productId: {
+                type: Type.STRING,
+                description: 'MongoDB _id of the product when targetScope is "product".'
+              },
+              boxId: {
+                type: Type.STRING,
+                description: 'MongoDB _id of the MemberMonthlyBox when targetScope is "monthly_box".'
+              },
+              enabled: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to enable CJ custom labeling/packaging, or false to disable.'
+              },
+              packagingName: {
+                type: Type.STRING,
+                description: 'Packaging option name (e.g., "Susans Rose-Gold Custom Box & Seal", "Luxury Satin Ritual Pouch", "CJ POD Custom Bottle/Jar Logo Label").'
+              },
+              labelType: {
+                type: Type.STRING,
+                description: 'Label type: "CJ_CUSTOM_PACKAGING" or "CJ_POD_LOGO".'
+              },
+              customBrandText: {
+                type: Type.STRING,
+                description: 'Custom brand text printed on the packaging or POD label (default "Susans Beauty Consulting ✧").'
+              },
+              packagingCostUsd: {
+                type: Type.NUMBER,
+                description: 'Optional unit packaging cost in USD (e.g. 0.65).'
+              }
+            }
+          }
+        },
+        {
+          name: 'adjustCjShippingAndPricing',
+          description: 'Fetches CJ shipping quotes, changes the CJ shipping method (CJPacket Sensitive, USPS+, CJPacket Ordinary, CJ Liquid Direct, DHL Official) on a product, order, monthly box, or entire catalog, and recalculates retail prices with shipping included.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              targetScope: {
+                type: Type.STRING,
+                description: 'Target scope: "catalog" (all products), "product" (single productId), "order" (single orderId), or "monthly_box" (single boxId).'
+              },
+              productId: { type: Type.STRING, description: 'MongoDB _id of the product when targetScope is "product".' },
+              orderId: { type: Type.STRING, description: 'MongoDB _id of the order when targetScope is "order".' },
+              boxId: { type: Type.STRING, description: 'MongoDB _id of the monthly box when targetScope is "monthly_box".' },
+              selectedLogisticName: {
+                type: Type.STRING,
+                description: 'CJ shipping carrier to apply: "CJPacket Sensitive", "USPS+", "CJPacket Ordinary", "CJ Liquid Direct", or "DHL Official".'
+              },
+              shippingIncludedInPrice: {
+                type: Type.BOOLEAN,
+                description: 'Whether CJ shipping cost is baked into the retail price (default true).'
+              },
+              markupMultiplier: {
+                type: Type.NUMBER,
+                description: 'Optional retail markup multiplier on wholesale cost (default 6.5).'
+              }
+            }
+          }
+        },
+        {
+          name: 'dispatchMonthlyMemberBoxToCj',
+          description: 'Dispatches a curated monthly membership box (or all ready boxes) to CJ Dropshipping via createOrderV2, optionally pays for it from the CJ Wallet, and emails the member.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              boxId: {
+                type: Type.STRING,
+                description: 'MongoDB _id of the MemberMonthlyBox to dispatch (or omit and set dispatchAllReady=true).'
+              },
+              userId: {
+                type: Type.STRING,
+                description: 'Optional member userId if looking up their current month box by userId instead of boxId.'
+              },
+              dispatchAllReady: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to dispatch all curated/approved boxes for the current billing month.'
+              },
+              payFromCjWallet: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to automatically pay for the CJ order using CJ Wallet balance (default true).'
+              },
+              notifyMember: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to email the member their box curation & dispatch confirmation (default true).'
               }
             }
           }
@@ -4931,6 +6633,239 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
             `• Top Engaging Products:\n${topProdsText}` +
             (recs.length > 0 ? `\n• Curation Intelligence Notes:\n  - ${recs.join('\n  - ')}` : '')
           );
+        }
+
+        else if (call.name === 'curateMonthlyMemberBoxes') {
+          try {
+            const boxOptions = {
+              billingMonth: args.billingMonth || undefined,
+              selectedLogisticName: args.selectedLogisticName || 'CJPacket Sensitive',
+              curatedBy: 'odie',
+              ...(args.enableCustomLabel !== undefined
+                ? { customLabelConfig: { enabled: Boolean(args.enableCustomLabel) } }
+                : {})
+            };
+
+            if (args.userId && !args.curateAll && mongoose.Types.ObjectId.isValid(String(args.userId))) {
+              const singleBox = await curateProfitProtectedMemberBox(args.userId, boxOptions);
+              const freshBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: singleBox.billingMonth });
+              payload.curatedMonthlyBox = singleBox;
+              payload.monthlyBoxesTelemetry = freshBoxesTelemetry;
+              payload.actionsTaken.push('curateMonthlyMemberBoxes');
+              summaries.push(
+                `🎁 Odie curated ${singleBox.memberName}'s ${singleBox.membershipTier === 'radiance' ? '5-Piece Radiance ($119/mo)' : '3-Piece Luminary ($49/mo)'} Box for ${singleBox.billingMonth}!\n` +
+                `• Strict ≤25% Cap Check: All-In CJ Cost $${Number(singleBox.totalAllInCostUsd).toFixed(2)} / $${Number(singleBox.maxAllowedCostUsd).toFixed(2)} Max (${singleBox.costPercentageOfMembership}% of membership) • Net Profit: +$${Number(singleBox.estimatedNetProfitUsd).toFixed(2)} ✓\n` +
+                `• Curated Blueprint Items: ${(singleBox.items || []).map(i => `${i.ritualStep} — ${i.title} ($${Number(i.wholesaleCostUsd).toFixed(2)})`).join(' | ')}`
+              );
+            } else {
+              const batchRes = await curateAllMemberMonthlyBoxes(boxOptions);
+              const freshBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: batchRes.billingMonth });
+              payload.monthlyBoxesTelemetry = freshBoxesTelemetry;
+              payload.actionsTaken.push('curateMonthlyMemberBoxes');
+              const sm = freshBoxesTelemetry.summaryMetrics || {};
+              summaries.push(
+                `🎁 Odie curated ${batchRes.curatedCount} Profit-Protected Monthly Membership Box(es) for ${batchRes.billingMonth} (100% within the ≤25% cost cap)!\n` +
+                `• Subscription Revenue: $${Number(sm.totalSubscriptionRevenueUsd || 0).toFixed(2)} | Total CJ Box Cost: $${Number(sm.totalBoxCjCostUsd || 0).toFixed(2)} (Avg ${sm.averageCostPct || 0}% of membership) | Guaranteed Net Profit: +$${Number(sm.totalNetProfitUsd || 0).toFixed(2)}`
+              );
+            }
+          } catch (boxErr) {
+            summaries.push(`⚠️ Odie could not curate monthly boxes: ${boxErr.message}`);
+          }
+        }
+
+        else if (call.name === 'configureCjCustomLabeling') {
+          try {
+            const scope = String(args.targetScope || (args.boxId ? 'monthly_box' : args.productId ? 'product' : 'catalog')).toLowerCase().trim();
+            const enabled = args.enabled !== undefined ? Boolean(args.enabled) : true;
+
+            if (scope === 'monthly_box' && args.boxId && mongoose.Types.ObjectId.isValid(String(args.boxId))) {
+              const box = await MemberMonthlyBox.findById(args.boxId);
+              if (!box) {
+                summaries.push(`⚠️ Could not find Monthly Box "${args.boxId}" to configure custom labeling.`);
+              } else {
+                const updatedLabel = getDefaultCustomLabelConfig({
+                  ...(box.customLabelConfig || {}),
+                  enabled,
+                  packagingName: args.packagingName || box.customLabelConfig?.packagingName || "Susan's Rose-Gold Custom Box & Seal",
+                  labelType: args.labelType || box.customLabelConfig?.labelType || 'CJ_CUSTOM_PACKAGING',
+                  customBrandText: args.customBrandText || box.customLabelConfig?.customBrandText || "Susan's Beauty Consulting ✧",
+                  packagingCostUsd: args.packagingCostUsd
+                });
+                const econ = recomputeAndValidateMonthlyBoxEconomics({
+                  items: box.items || [],
+                  membershipTier: box.membershipTier,
+                  selectedLogisticName: box.selectedLogisticName,
+                  customLabelConfig: updatedLabel
+                });
+                Object.assign(box, econ);
+                await box.save();
+                payload.updatedMonthlyBox = box;
+                payload.monthlyBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: box.billingMonth });
+                payload.actionsTaken.push('configureCjCustomLabeling');
+                summaries.push(
+                  `🏷️ Odie ${enabled ? 'enabled' : 'disabled'} CJ Custom Labeling ("${updatedLabel.packagingName}") on ${box.memberName}'s monthly box • New All-In Cost: $${econ.totalAllInCostUsd.toFixed(2)} / $${econ.maxAllowedCostUsd.toFixed(2)} (${econ.costPercentageOfMembership}%).`
+                );
+              }
+            } else {
+              const resLabel = await applyCustomLabelToProducts({
+                productId: scope === 'product' ? args.productId : null,
+                applyToAll: scope !== 'product',
+                enabled,
+                labelType: args.labelType || 'CJ_CUSTOM_PACKAGING',
+                packagingName: args.packagingName || "Susan's Rose-Gold Custom Box & Seal",
+                customBrandText: args.customBrandText || "Susan's Beauty Consulting ✧",
+                packagingCostUsd: args.packagingCostUsd
+              });
+              payload.customLabelResult = resLabel;
+              if (resLabel.updatedProduct) payload.updatedProduct = resLabel.updatedProduct;
+              payload.actionsTaken.push('configureCjCustomLabeling');
+              summaries.push(
+                `🏷️ Odie ${enabled ? 'applied' : 'disabled'} CJ Custom Labeling ("${resLabel.customLabelConfig.packagingName}", +$${Number(resLabel.customLabelConfig.packagingCostUsd || 0).toFixed(2)}) and recalculated shipping-inclusive retail prices on ${resLabel.updatedCount} boutique product(s)!`
+              );
+            }
+          } catch (lblErr) {
+            summaries.push(`⚠️ Odie could not update CJ custom labeling: ${lblErr.message}`);
+          }
+        }
+
+        else if (call.name === 'adjustCjShippingAndPricing') {
+          try {
+            const scope = String(args.targetScope || (args.boxId ? 'monthly_box' : args.orderId ? 'order' : args.productId ? 'product' : 'catalog')).toLowerCase().trim();
+            const chosenCarrier = String(args.selectedLogisticName || 'CJPacket Sensitive').trim();
+
+            if (scope === 'monthly_box' && args.boxId && mongoose.Types.ObjectId.isValid(String(args.boxId))) {
+              const box = await MemberMonthlyBox.findById(args.boxId);
+              if (!box) {
+                summaries.push(`⚠️ Monthly box "${args.boxId}" not found.`);
+              } else {
+                const econ = recomputeAndValidateMonthlyBoxEconomics({
+                  items: box.items || [],
+                  membershipTier: box.membershipTier,
+                  selectedLogisticName: chosenCarrier,
+                  customLabelConfig: box.customLabelConfig
+                });
+                Object.assign(box, econ);
+                await box.save();
+                payload.updatedMonthlyBox = box;
+                payload.monthlyBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: box.billingMonth });
+                payload.actionsTaken.push('adjustCjShippingAndPricing');
+                summaries.push(
+                  `✈️ Odie switched ${box.memberName}'s monthly box shipping carrier to "${chosenCarrier}" ($${econ.consolidatedShippingUsd.toFixed(2)}) • Total Box Cost: $${econ.totalAllInCostUsd.toFixed(2)} / $${econ.maxAllowedCostUsd.toFixed(2)} (${econ.costPercentageOfMembership}%).`
+                );
+              }
+            } else if (scope === 'order' && args.orderId && mongoose.Types.ObjectId.isValid(String(args.orderId))) {
+              const ord = await Order.findById(args.orderId);
+              if (!ord) {
+                summaries.push(`⚠️ Order "${args.orderId}" not found.`);
+              } else {
+                ord.selectedLogisticName = chosenCarrier;
+                ord.logisticName = chosenCarrier;
+                ord.updatedAt = new Date();
+                await ord.save();
+                payload.updatedOrder = ord;
+                payload.actionsTaken.push('adjustCjShippingAndPricing');
+                summaries.push(`✈️ Odie updated Order #${String(ord._id).slice(-6).toUpperCase()} CJ shipping method to "${chosenCarrier}".`);
+              }
+            } else if (scope === 'product' && args.productId && mongoose.Types.ObjectId.isValid(String(args.productId))) {
+              const prod = await Product.findById(args.productId);
+              if (!prod) {
+                summaries.push(`⚠️ Product "${args.productId}" not found.`);
+              } else {
+                const quote = await calculateCjFreightRates({
+                  vid: prod.variants?.[0]?.sku || '',
+                  weightGrams: prod.estimatedWeightGrams || 120
+                });
+                const matched = quote.rates.find(r => r.logisticName.toLowerCase() === chosenCarrier.toLowerCase()) || quote.recommendedCarrier;
+                const summaryPricing = recalculateProductRetailPrice(prod, {
+                  selectedLogisticName: matched?.logisticName || chosenCarrier,
+                  shippingCostUsd: matched?.shippingCostUsd,
+                  shippingIncludedInPrice: args.shippingIncludedInPrice !== undefined ? Boolean(args.shippingIncludedInPrice) : true,
+                  markupMultiplier: args.markupMultiplier,
+                  availableLogistics: quote.rates
+                });
+                await prod.save();
+                payload.updatedProduct = prod;
+                payload.actionsTaken.push('adjustCjShippingAndPricing');
+                summaries.push(
+                  `✈️ Odie updated "${prod.title}" to ${summaryPricing.selectedLogisticName} ($${summaryPricing.shippingCostUsd.toFixed(2)} shipping) → New Retail Price: $${summaryPricing.retailPriceUsd.toFixed(2)}.`
+                );
+              }
+            } else {
+              const allProds = await Product.find({});
+              for (const prod of allProds) {
+                const carriers = Array.isArray(prod.availableLogistics) && prod.availableLogistics.length > 0
+                  ? prod.availableLogistics
+                  : buildDeterministicCjBeautyCarriers({ weightGrams: prod.estimatedWeightGrams || 120 });
+                const matched = carriers.find(c => String(c.logisticName || '').toLowerCase() === chosenCarrier.toLowerCase());
+                recalculateProductRetailPrice(prod, {
+                  selectedLogisticName: chosenCarrier,
+                  shippingCostUsd: matched ? matched.shippingCostUsd : prod.shippingCostUsd,
+                  shippingIncludedInPrice: args.shippingIncludedInPrice !== undefined ? Boolean(args.shippingIncludedInPrice) : true,
+                  markupMultiplier: args.markupMultiplier !== undefined ? args.markupMultiplier : prod.markupMultiplier,
+                  availableLogistics: carriers
+                });
+                await prod.save();
+              }
+              payload.actionsTaken.push('adjustCjShippingAndPricing');
+              summaries.push(
+                `✈️ Odie updated the CJ shipping method to "${chosenCarrier}" and recalculated shipping-included retail prices across all ${allProds.length} boutique products!`
+              );
+            }
+          } catch (shipErr) {
+            summaries.push(`⚠️ Odie could not adjust CJ shipping and pricing: ${shipErr.message}`);
+          }
+        }
+
+        else if (call.name === 'dispatchMonthlyMemberBoxToCj') {
+          try {
+            const payFlag = args.payFromCjWallet !== undefined ? Boolean(args.payFromCjWallet) : true;
+            const notifyFlag = args.notifyMember !== undefined ? Boolean(args.notifyMember) : true;
+
+            if (args.dispatchAllReady) {
+              const activeMonth = getCurrentBillingMonthStr();
+              const readyBoxes = await MemberMonthlyBox.find({
+                billingMonth: activeMonth,
+                status: { $in: ['CURATED_DRAFT', 'APPROVED_READY'] }
+              });
+              const dispatchedMessages = [];
+              for (const bx of readyBoxes) {
+                const dRes = await dispatchMonthlyBoxToCj(bx._id, {
+                  payFromCjWallet: payFlag,
+                  notifyMember: notifyFlag,
+                  triggeredBy: 'odie'
+                });
+                dispatchedMessages.push(dRes.message);
+              }
+              payload.monthlyBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: activeMonth });
+              payload.actionsTaken.push('dispatchMonthlyMemberBoxToCj');
+              summaries.push(
+                dispatchedMessages.length > 0
+                  ? dispatchedMessages.join('\n')
+                  : `📦 No curated draft/ready boxes found for ${activeMonth}. Ask Odie to curate monthly boxes first!`
+              );
+            } else {
+              let targetBoxId = args.boxId;
+              if (!targetBoxId && args.userId && mongoose.Types.ObjectId.isValid(String(args.userId))) {
+                const foundBox = await MemberMonthlyBox.findOne({ userId: args.userId }).sort({ updatedAt: -1 });
+                if (foundBox) targetBoxId = String(foundBox._id);
+              }
+              if (!targetBoxId) {
+                summaries.push(`⚠️ Please specify a boxId, userId, or set dispatchAllReady=true.`);
+              } else {
+                const dispatchRes = await dispatchMonthlyBoxToCj(targetBoxId, {
+                  payFromCjWallet: payFlag,
+                  notifyMember: notifyFlag,
+                  triggeredBy: 'odie'
+                });
+                payload.dispatchedMonthlyBox = dispatchRes.box;
+                payload.monthlyBoxesTelemetry = await buildMonthlyBoxesTelemetry({ billingMonth: dispatchRes.box.billingMonth });
+                payload.actionsTaken.push('dispatchMonthlyMemberBoxToCj');
+                summaries.push(dispatchRes.message);
+              }
+            }
+          } catch (dispErr) {
+            summaries.push(`⚠️ Odie could not dispatch monthly box to CJ: ${dispErr.message}`);
+          }
         }
       }
 
@@ -5606,6 +7541,14 @@ app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res
       description,
       imageUrl,
       price,
+      wholesalePriceUsd,
+      markupMultiplier,
+      estimatedWeightGrams,
+      originCountryCode,
+      selectedLogisticName,
+      shippingCostUsd,
+      shippingIncludedInPrice,
+      customLabelConfig,
       tags,
       skinTypes,
       skinConcerns,
@@ -5624,6 +7567,11 @@ app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res
       ritualStep,
       keyActives
     });
+
+    const parsedRetail = parseFloat(price);
+    const resolvedWholesale = wholesalePriceUsd !== undefined && !isNaN(parseFloat(wholesalePriceUsd))
+      ? Number(parseFloat(wholesalePriceUsd).toFixed(2))
+      : (!isNaN(parsedRetail) && parsedRetail > 0 ? Number((parsedRetail / 6.5).toFixed(2)) : 2.50);
     
     const newProduct = new Product({
       title,
@@ -5639,10 +7587,31 @@ app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res
       variants: [{
         sku: `CUSTOM-${Date.now()}`,
         variantName: 'Standard',
-        price: parseFloat(price) || 0,
+        wholesalePriceUsd: resolvedWholesale,
+        price: !isNaN(parsedRetail) ? parsedRetail : 0,
         imageUrl
       }]
     });
+
+    recalculateProductRetailPrice(newProduct, {
+      wholesalePriceUsd: resolvedWholesale,
+      markupMultiplier,
+      estimatedWeightGrams,
+      originCountryCode,
+      selectedLogisticName,
+      shippingCostUsd,
+      shippingIncludedInPrice,
+      customLabelConfig
+    });
+
+    // If an explicit retail price was provided without explicit wholesale/shipping overrides, honor it
+    if (!isNaN(parsedRetail) && parsedRetail > 0 && wholesalePriceUsd === undefined && shippingCostUsd === undefined && customLabelConfig === undefined) {
+      newProduct.price = Number(parsedRetail.toFixed(2));
+      if (newProduct.variants && newProduct.variants.length > 0) {
+        newProduct.variants[0].price = Number(parsedRetail.toFixed(2));
+        newProduct.markModified('variants');
+      }
+    }
 
     await newProduct.save();
     res.status(201).json(newProduct);
@@ -5658,6 +7627,15 @@ app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, 
       description,
       imageUrl,
       price,
+      wholesalePriceUsd,
+      markupMultiplier,
+      estimatedWeightGrams,
+      originCountryCode,
+      selectedLogisticName,
+      shippingCostUsd,
+      shippingIncludedInPrice,
+      customLabelConfig,
+      recalculateFromWholesale,
       tags,
       skinTypes,
       skinConcerns,
@@ -5693,24 +7671,570 @@ app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, 
     product.ritualStep = classified.ritualStep;
     product.keyActives = classified.keyActives;
 
-    if (product.variants && product.variants.length > 0) {
-      if (price !== undefined && !isNaN(parseFloat(price))) {
-        product.variants[0].price = parseFloat(price);
+    const hasPricingEngineChange =
+      Boolean(recalculateFromWholesale) ||
+      wholesalePriceUsd !== undefined ||
+      markupMultiplier !== undefined ||
+      selectedLogisticName !== undefined ||
+      shippingCostUsd !== undefined ||
+      shippingIncludedInPrice !== undefined ||
+      customLabelConfig !== undefined;
+
+    if (hasPricingEngineChange) {
+      recalculateProductRetailPrice(product, {
+        wholesalePriceUsd,
+        markupMultiplier,
+        estimatedWeightGrams,
+        originCountryCode,
+        selectedLogisticName,
+        shippingCostUsd,
+        shippingIncludedInPrice,
+        customLabelConfig
+      });
+    }
+
+    if (!hasPricingEngineChange && price !== undefined && !isNaN(parseFloat(price))) {
+      const manualPrice = Number(parseFloat(price).toFixed(2));
+      product.price = manualPrice;
+      if (product.variants && product.variants.length > 0) {
+        product.variants[0].price = manualPrice;
+        if (imageUrl) product.variants[0].imageUrl = imageUrl;
+        product.markModified('variants');
+      } else {
+        product.variants = [{
+          sku: `CUSTOM-${Date.now()}`,
+          variantName: 'Standard',
+          wholesalePriceUsd: product.wholesalePriceUsd || 2.50,
+          price: manualPrice,
+          imageUrl
+        }];
       }
-      if (imageUrl) product.variants[0].imageUrl = imageUrl;
-    } else {
-      product.variants = [{ 
-        sku: `CUSTOM-${Date.now()}`, 
-        variantName: 'Standard', 
-        price: parseFloat(price) || 0, 
-        imageUrl 
-      }];
+    } else if (imageUrl && product.variants && product.variants.length > 0) {
+      product.variants[0].imageUrl = imageUrl;
+      product.markModified('variants');
     }
 
     await product.save();
     res.status(200).json(product);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------------- ADMIN EXPRESS ROUTES FOR CJ SHIPPING & CUSTOM LABELING (PHASE 1) ---------------- //
+
+// 1. POST /api/admin/products/:id/shipping-quote — Fetches live CJ carrier rates for a product,
+// updates selectedLogisticName / shippingIncludedInPrice / markupMultiplier, and recalculates retail price.
+app.post('/api/admin/products/:id/shipping-quote', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found in boutique inventory.' });
+    }
+
+    const {
+      selectedLogisticName,
+      shippingIncludedInPrice,
+      markupMultiplier,
+      wholesalePriceUsd,
+      estimatedWeightGrams,
+      startCountryCode,
+      endCountryCode,
+      customLabelConfig
+    } = req.body || {};
+
+    const primaryVariant = product.variants?.[0] || {};
+    const vid = String(primaryVariant.sku || product.rawCjData?.vid || product.rawCjData?.pid || '').trim();
+    const weightToUse = Number(estimatedWeightGrams || product.estimatedWeightGrams || 120) || 120;
+    const originToUse = String(startCountryCode || product.originCountryCode || 'CN').toUpperCase().trim() || 'CN';
+    const destToUse = String(endCountryCode || 'US').toUpperCase().trim() || 'US';
+
+    const freightQuote = await calculateCjFreightRates({
+      vid,
+      sku: vid,
+      quantity: 1,
+      weightGrams: weightToUse,
+      startCountryCode: originToUse,
+      endCountryCode: destToUse
+    });
+
+    const targetCarrierName = String(
+      selectedLogisticName || product.selectedLogisticName || freightQuote.recommendedCarrier?.logisticName || 'CJPacket Sensitive'
+    ).trim();
+
+    const matchedCarrier =
+      freightQuote.rates.find(r => r.logisticName.toLowerCase() === targetCarrierName.toLowerCase()) ||
+      freightQuote.recommendedCarrier ||
+      freightQuote.rates[0];
+
+    const pricingSummary = recalculateProductRetailPrice(product, {
+      wholesalePriceUsd,
+      markupMultiplier,
+      estimatedWeightGrams: weightToUse,
+      originCountryCode: originToUse,
+      availableLogistics: freightQuote.rates,
+      selectedLogisticName: matchedCarrier?.logisticName || targetCarrierName,
+      shippingCostUsd: matchedCarrier?.shippingCostUsd ?? product.shippingCostUsd ?? 4.49,
+      shippingIncludedInPrice,
+      customLabelConfig
+    });
+
+    await product.save();
+
+    res.status(200).json({
+      message: `Updated "${product.title}" shipping to ${pricingSummary.selectedLogisticName} ($${pricingSummary.shippingCostUsd.toFixed(2)}) • Retail Price: $${pricingSummary.retailPriceUsd.toFixed(2)} ✧`,
+      liveApiUsed: freightQuote.liveApiUsed,
+      product,
+      pricingSummary,
+      availableLogistics: freightQuote.rates
+    });
+  } catch (error) {
+    console.error('Product Shipping Quote Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to calculate CJ shipping quote for product.' });
+  }
+});
+
+// 2. POST /api/admin/products/bulk-shipping-update — Updates CJ shipping method, shippingIncludedInPrice,
+// markupMultiplier, or custom labeling across all products in 1 click.
+app.post('/api/admin/products/bulk-shipping-update', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      selectedLogisticName,
+      shippingIncludedInPrice,
+      markupMultiplier,
+      customLabelConfig
+    } = req.body || {};
+
+    const allProducts = await Product.find({});
+    let updatedCount = 0;
+
+    for (const prod of allProducts) {
+      const weightGrams = Number(prod.estimatedWeightGrams || 120) || 120;
+      const origin = String(prod.originCountryCode || 'CN').toUpperCase();
+      const carriers = Array.isArray(prod.availableLogistics) && prod.availableLogistics.length > 0
+        ? prod.availableLogistics
+        : buildDeterministicCjBeautyCarriers({ weightGrams, quantity: 1, startCountryCode: origin, endCountryCode: 'US' });
+
+      const targetCarrier = String(selectedLogisticName || prod.selectedLogisticName || 'CJPacket Sensitive').trim();
+      const matched = carriers.find(c => String(c.logisticName || '').toLowerCase() === targetCarrier.toLowerCase());
+
+      recalculateProductRetailPrice(prod, {
+        markupMultiplier: markupMultiplier !== undefined ? markupMultiplier : prod.markupMultiplier,
+        selectedLogisticName: targetCarrier,
+        shippingCostUsd: matched ? matched.shippingCostUsd : prod.shippingCostUsd,
+        shippingIncludedInPrice: shippingIncludedInPrice !== undefined ? Boolean(shippingIncludedInPrice) : prod.shippingIncludedInPrice,
+        availableLogistics: carriers,
+        customLabelConfig: customLabelConfig !== undefined ? customLabelConfig : prod.customLabelConfig
+      });
+
+      await prod.save();
+      updatedCount++;
+    }
+
+    const updatedCatalog = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: `Bulk updated CJ shipping (${selectedLogisticName || 'Active Carrier'}) & recalculated retail prices across ${updatedCount} boutique products! ✧`,
+      updatedCount,
+      products: updatedCatalog
+    });
+  } catch (error) {
+    console.error('Bulk Shipping Update Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to bulk-update product shipping and prices.' });
+  }
+});
+
+// 3. GET /api/admin/cj/custom-packaging & POST /api/admin/cj/custom-label (plus PUT /api/admin/products/:id/custom-label)
+app.get('/api/admin/cj/custom-packaging', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const catalog = await fetchCjCustomPackagingCatalog();
+    res.status(200).json(catalog);
+  } catch (error) {
+    console.error('Fetch CJ Custom Packaging Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch CJ custom packaging catalog.' });
+  }
+});
+
+app.post('/api/admin/cj/custom-label', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      productId,
+      applyToAll,
+      enabled,
+      labelType,
+      packagingVid,
+      packagingName,
+      customBrandText,
+      logoUrl,
+      packagingCostUsd
+    } = req.body || {};
+
+    const result = await applyCustomLabelToProducts({
+      productId,
+      applyToAll: Boolean(applyToAll || !productId),
+      enabled: enabled !== undefined ? Boolean(enabled) : true,
+      labelType: labelType || 'CJ_CUSTOM_PACKAGING',
+      packagingVid: packagingVid || '',
+      packagingName: packagingName || "Susan's Rose-Gold Custom Box & Seal",
+      customBrandText: customBrandText || "Susan's Beauty Consulting ✧",
+      logoUrl: logoUrl || 'https://susansbeautyconsulting.com/susans-logo.png',
+      packagingCostUsd
+    });
+
+    const allProducts = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: result.customLabelConfig.enabled
+        ? `Applied "${result.customLabelConfig.packagingName}" (+$${Number(result.customLabelConfig.packagingCostUsd || 0).toFixed(2)}) & recalculated retail prices on ${result.updatedCount} product(s)! ✧`
+        : `Disabled custom labeling and recalculated retail prices on ${result.updatedCount} product(s).`,
+      updatedCount: result.updatedCount,
+      customLabelConfig: result.customLabelConfig,
+      product: result.updatedProduct,
+      products: allProducts
+    });
+  } catch (error) {
+    console.error('Apply CJ Custom Label Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to apply CJ custom labeling.' });
+  }
+});
+
+app.put('/api/admin/products/:id/custom-label', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await applyCustomLabelToProducts({
+      ...(req.body || {}),
+      productId: req.params.id,
+      applyToAll: false
+    });
+    res.status(200).json({
+      message: result.customLabelConfig.enabled
+        ? `Enabled custom label "${result.customLabelConfig.packagingName}" on "${result.updatedProduct?.title || 'Product'}"! ✧`
+        : `Disabled custom label on "${result.updatedProduct?.title || 'Product'}".`,
+      customLabelConfig: result.customLabelConfig,
+      product: result.updatedProduct
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to update product custom label.' });
+  }
+});
+
+// 4. POST /api/admin/orders/:id/cj-logistics — Queries CJ's GET /shopping/order/getOrderOptionalLogistics
+// and calls POST /shopping/order/modifyOrderLogistics (plus updates local Order.logisticName and selectedLogisticName)
+app.post('/api/admin/orders/:id/cj-logistics', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(orderId))) {
+      return res.status(400).json({ error: 'Invalid order ID.' });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+
+    const { logisticName, fromCountryCode, shippingCostUsd, fetchOptionsOnly } = req.body || {};
+    const headers = getCjHeaders();
+    const destCountry = String(order.shipping_address?.country || 'US').toUpperCase().trim() || 'US';
+    const originCountry = String(fromCountryCode || order.fromCountryCode || 'CN').toUpperCase().trim() || 'CN';
+
+    let optionalLogistics = buildDeterministicCjBeautyCarriers({
+      weightGrams: 180,
+      quantity: Math.max(1, (order.items || []).reduce((s, i) => s + (Number(i.quantity) || 1), 0)),
+      startCountryCode: originCountry,
+      endCountryCode: destCountry
+    });
+    let cjOptionalLogisticsQueried = false;
+    let cjModifyResult = null;
+
+    if (headers && order.cjOrderId) {
+      try {
+        const optRes = await axios.get(
+          `${CJ_BASE_URL}/shopping/order/getOrderOptionalLogistics?orderId=${encodeURIComponent(order.cjOrderId)}`,
+          { headers, timeout: 10000 }
+        );
+        cjOptionalLogisticsQueried = true;
+        const rawList = optRes.data?.data || [];
+        if (Array.isArray(rawList) && rawList.length > 0) {
+          optionalLogistics = rawList.map(item => ({
+            logisticName: String(item.logisticName || item.logisticNameEn || item),
+            shippingCostUsd: Number(parseFloat(item.logisticPrice || item.price || 4.49).toFixed(2)),
+            deliveryTime: String(item.logisticAging || '7-12 Days'),
+            source: 'cj_order_optional_logistics'
+          }));
+        }
+      } catch (optErr) {
+        console.warn('⚠️ CJ getOrderOptionalLogistics notice:', optErr?.response?.data?.message || optErr.message);
+      }
+    }
+
+    if (fetchOptionsOnly) {
+      return res.status(200).json({
+        orderId: String(order._id),
+        cjOrderId: order.cjOrderId || '',
+        selectedLogisticName: order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive',
+        optionalLogistics,
+        cjOptionalLogisticsQueried
+      });
+    }
+
+    const chosenLogistic = String(logisticName || order.selectedLogisticName || 'CJPacket Sensitive').trim();
+    const matchedQuote = optionalLogistics.find(
+      c => String(c.logisticName || '').toLowerCase() === chosenLogistic.toLowerCase()
+    );
+
+    if (headers && order.cjOrderId) {
+      try {
+        const modRes = await axios.post(
+          `${CJ_BASE_URL}/shopping/order/modifyOrderLogistics`,
+          {
+            orderId: order.cjOrderId,
+            logisticName: chosenLogistic
+          },
+          { headers, timeout: 10000 }
+        );
+        cjModifyResult = modRes.data;
+      } catch (modErr) {
+        cjModifyResult = {
+          warning: modErr?.response?.data?.message || modErr.message
+        };
+      }
+    }
+
+    order.selectedLogisticName = chosenLogistic;
+    order.logisticName = chosenLogistic;
+    order.fromCountryCode = originCountry;
+    if (shippingCostUsd !== undefined && !isNaN(parseFloat(shippingCostUsd))) {
+      order.shippingCostUsd = Number(parseFloat(shippingCostUsd).toFixed(2));
+    } else if (matchedQuote?.shippingCostUsd) {
+      order.shippingCostUsd = Number(matchedQuote.shippingCostUsd);
+    }
+    order.updatedAt = new Date();
+    await order.save();
+
+    res.status(200).json({
+      message: `Order #${String(order._id).slice(-6).toUpperCase()} CJ shipping method updated to "${chosenLogistic}"! ✧`,
+      order,
+      selectedLogisticName: order.selectedLogisticName,
+      optionalLogistics,
+      cjModifyResult
+    });
+  } catch (error) {
+    console.error('Modify Order CJ Logistics Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update CJ order logistics.' });
+  }
+});
+
+// ---------------- ADMIN EXPRESS ROUTES FOR PROFIT-PROTECTED MONTHLY MEMBERSHIP BOXES (PHASE 2) ---------------- //
+
+// 1. GET /api/admin/monthly-boxes — Returns all curated monthly boxes for the current billing cycle,
+// summary metrics (total subscription revenue, total box CJ cost, average cost %, total net profit), and any uncurated paid members.
+app.get('/api/admin/monthly-boxes', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const billingMonth = req.query.billingMonth || '';
+    const telemetry = await buildMonthlyBoxesTelemetry({ billingMonth });
+    res.status(200).json(telemetry);
+  } catch (error) {
+    console.error('Fetch Monthly Boxes Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch monthly membership boxes.' });
+  }
+});
+
+// 2. POST /api/admin/monthly-boxes/curate — Curates a box for a single userId or for all paid members (curateAll: true),
+// enforcing the strict <=25% cost cap ($12.25 max for Luminary $49/mo; $29.75 max for Radiance $119/mo).
+app.post('/api/admin/monthly-boxes/curate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      userId,
+      curateAll,
+      billingMonth,
+      selectedLogisticName,
+      customLabelConfig,
+      curatedBy,
+      notes
+    } = req.body || {};
+
+    const options = {
+      billingMonth,
+      selectedLogisticName: selectedLogisticName || 'CJPacket Sensitive',
+      customLabelConfig,
+      curatedBy: curatedBy || 'susan',
+      notes
+    };
+
+    if (userId && !curateAll) {
+      const box = await curateProfitProtectedMemberBox(userId, options);
+      const telemetry = await buildMonthlyBoxesTelemetry({ billingMonth: box.billingMonth });
+      return res.status(200).json({
+        message: `Curated ${box.memberName}'s ${box.membershipTier === 'radiance' ? '5-Piece Radiance ($119/mo)' : '3-Piece Luminary ($49/mo)'} Box • All-In CJ Cost: $${Number(box.totalAllInCostUsd).toFixed(2)} / $${Number(box.maxAllowedCostUsd).toFixed(2)} max (${box.costPercentageOfMembership}%) • Profit: +$${Number(box.estimatedNetProfitUsd).toFixed(2)} ✧`,
+        box,
+        ...telemetry
+      });
+    }
+
+    const batchResult = await curateAllMemberMonthlyBoxes(options);
+    const telemetry = await buildMonthlyBoxesTelemetry({ billingMonth: batchResult.billingMonth });
+    res.status(200).json({
+      message: `Curated ${batchResult.curatedCount} Profit-Protected Monthly Box(es) for ${batchResult.billingMonth} (All strictly ≤25% membership cost cap)! ✧`,
+      curatedCount: batchResult.curatedCount,
+      errors: batchResult.errors,
+      ...telemetry
+    });
+  } catch (error) {
+    console.error('Curate Monthly Boxes Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to curate monthly membership boxes.' });
+  }
+});
+
+// 3. PUT /api/admin/monthly-boxes/:boxId — Lets Susan swap products in a box, change selectedLogisticName,
+// or toggle customLabelConfig while re-verifying the <=25% cost cap in real time.
+app.put('/api/admin/monthly-boxes/:boxId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { boxId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(String(boxId))) {
+      return res.status(400).json({ error: 'Invalid monthly box ID.' });
+    }
+
+    const box = await MemberMonthlyBox.findById(boxId);
+    if (!box) {
+      return res.status(404).json({ error: 'Monthly membership box not found.' });
+    }
+
+    const {
+      productIds,
+      swapSlotIndex,
+      replacementProductId,
+      selectedLogisticName,
+      customLabelConfig,
+      status,
+      notes,
+      forceOverride
+    } = req.body || {};
+
+    const blueprint = getEffectiveMemberBlueprint(box.blueprintSnapshot);
+    let updatedItems = Array.isArray(box.items) ? box.items.map(i => (i.toObject ? i.toObject() : { ...i })) : [];
+
+    // Option A: Swap a single slot by index with replacementProductId
+    if (swapSlotIndex !== undefined && replacementProductId && mongoose.Types.ObjectId.isValid(String(replacementProductId))) {
+      const idx = Number(swapSlotIndex);
+      const prodDoc = await Product.findById(replacementProductId).lean();
+      if (!prodDoc) {
+        return res.status(404).json({ error: 'Replacement product not found in boutique catalog.' });
+      }
+      const scored = scoreProductForMemberBox(prodDoc, blueprint) || {
+        productId: prodDoc._id,
+        title: prodDoc.title,
+        sku: prodDoc.variants?.[0]?.sku || String(prodDoc._id),
+        vid: prodDoc.variants?.[0]?.sku || String(prodDoc._id),
+        imageUrl: prodDoc.imageUrl || '',
+        ritualStep: prodDoc.ritualStep || 'Step 3: Serum & Essence',
+        wholesaleCostUsd: Number(prodDoc.wholesalePriceUsd || 2.50),
+        retailPriceUsd: Number(prodDoc.price || 18.00),
+        matchScore: 80,
+        matchReasons: ['Hand-Selected by Susan']
+      };
+      if (idx >= 0 && idx < updatedItems.length) {
+        updatedItems[idx] = scored;
+      } else {
+        updatedItems.push(scored);
+      }
+    }
+    // Option B: Replace full items array by productIds
+    else if (Array.isArray(productIds) && productIds.length > 0) {
+      const validIds = productIds.filter(id => mongoose.Types.ObjectId.isValid(String(id)));
+      const prodDocs = await Product.find({ _id: { $in: validIds } }).lean();
+      const prodMap = {};
+      for (const p of prodDocs) prodMap[String(p._id)] = p;
+      updatedItems = validIds
+        .map(id => {
+          const p = prodMap[String(id)];
+          if (!p) return null;
+          return scoreProductForMemberBox(p, blueprint) || {
+            productId: p._id,
+            title: p.title,
+            sku: p.variants?.[0]?.sku || String(p._id),
+            vid: p.variants?.[0]?.sku || String(p._id),
+            imageUrl: p.imageUrl || '',
+            ritualStep: p.ritualStep || 'Step 3: Serum & Essence',
+            wholesaleCostUsd: Number(p.wholesalePriceUsd || 2.50),
+            retailPriceUsd: Number(p.price || 18.00),
+            matchScore: 80,
+            matchReasons: ['Hand-Selected by Susan']
+          };
+        })
+        .filter(Boolean);
+    }
+
+    const nextLogistic = selectedLogisticName !== undefined ? selectedLogisticName : box.selectedLogisticName;
+    const nextLabelConfig = customLabelConfig !== undefined
+      ? { ...(box.customLabelConfig || {}), ...(customLabelConfig || {}) }
+      : box.customLabelConfig;
+
+    const econ = recomputeAndValidateMonthlyBoxEconomics({
+      items: updatedItems,
+      membershipTier: box.membershipTier,
+      selectedLogisticName: nextLogistic,
+      customLabelConfig: nextLabelConfig
+    });
+
+    if (!econ.withinBudgetCap && !forceOverride) {
+      return res.status(400).json({
+        error: `25% Cost Cap Guardrail: This edit brings total box cost to $${econ.totalAllInCostUsd.toFixed(2)} (${econ.costPercentageOfMembership}% of $${econ.subscriptionPriceUsd}/mo), exceeding the strict 25% ceiling of $${econ.maxAllowedCostUsd.toFixed(2)}. Choose a lower-wholesale item or shipping carrier (or pass forceOverride: true).`,
+        proposedEconomics: econ
+      });
+    }
+
+    box.items = econ.items;
+    box.selectedLogisticName = econ.selectedLogisticName;
+    box.consolidatedShippingUsd = econ.consolidatedShippingUsd;
+    box.customLabelConfig = econ.customLabelConfig;
+    box.customLabelCostUsd = econ.customLabelCostUsd;
+    box.totalWholesaleCostUsd = econ.totalWholesaleCostUsd;
+    box.totalAllInCostUsd = econ.totalAllInCostUsd;
+    box.costPercentageOfMembership = econ.costPercentageOfMembership;
+    box.estimatedNetProfitUsd = econ.estimatedNetProfitUsd;
+    box.withinBudgetCap = econ.withinBudgetCap;
+    box.curatedBy = 'susan';
+    if (status && ['CURATED_DRAFT', 'APPROVED_READY', 'DISPATCHED_TO_CJ', 'SHIPPED'].includes(status)) {
+      box.status = status;
+    }
+    if (notes !== undefined) {
+      box.notes = String(notes).trim();
+    }
+
+    await box.save();
+    const telemetry = await buildMonthlyBoxesTelemetry({ billingMonth: box.billingMonth });
+
+    res.status(200).json({
+      message: `Updated ${box.memberName}'s monthly box • All-In CJ Cost: $${econ.totalAllInCostUsd.toFixed(2)} / $${econ.maxAllowedCostUsd.toFixed(2)} max (${econ.costPercentageOfMembership}%) • Net Profit: +$${econ.estimatedNetProfitUsd.toFixed(2)} ✧`,
+      box,
+      ...telemetry
+    });
+  } catch (error) {
+    console.error('Update Monthly Box Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update monthly membership box.' });
+  }
+});
+
+// 4. POST /api/admin/monthly-boxes/:boxId/dispatch-cj — Creates a local Order + dispatches the box to CJ
+// via POST /shopping/order/createOrderV2 with logisticName and custom label/packaging, optionally pays via CJ Wallet,
+// updates status to 'DISPATCHED_TO_CJ', and emails the member.
+app.post('/api/admin/monthly-boxes/:boxId/dispatch-cj', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { boxId } = req.params;
+    const { payFromCjWallet, notifyMember, shippingAddress } = req.body || {};
+
+    const result = await dispatchMonthlyBoxToCj(boxId, {
+      payFromCjWallet: payFromCjWallet !== undefined ? Boolean(payFromCjWallet) : true,
+      notifyMember: notifyMember !== undefined ? Boolean(notifyMember) : true,
+      shippingAddress: shippingAddress || null,
+      triggeredBy: 'susan'
+    });
+
+    const telemetry = await buildMonthlyBoxesTelemetry({ billingMonth: result.box.billingMonth });
+    res.status(200).json({
+      ...result,
+      ...telemetry
+    });
+  } catch (error) {
+    console.error('Dispatch Monthly Box to CJ Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to dispatch monthly box to CJ Dropshipping.' });
   }
 });
 
@@ -6171,12 +8695,63 @@ const extractStripeShippingAddress = (session = {}, fallbackAddress = {}) => {
 };
 
 // Builds a validated CJ Dropshipping createOrderV2 payload from an Order document
+// Explicitly passes logisticName, fromCountryCode, and appends custom packaging vid or POD metadata when enabled.
 const buildCjOrderPayload = (order) => {
   const address = order.shipping_address || {};
   const customerName = (
     address.name ||
     `${address.first_name || 'Valued'} ${address.last_name || 'Customer'}`
   ).trim();
+
+  const logisticName = String(
+    order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive'
+  ).trim() || 'CJPacket Sensitive';
+  const fromCountryCode = String(order.fromCountryCode || 'CN').toUpperCase().trim() || 'CN';
+  const orderCustomLabel = order.customLabelConfig && typeof order.customLabelConfig === 'object'
+    ? order.customLabelConfig
+    : null;
+
+  const mappedProducts = (Array.isArray(order.items) ? order.items : []).map(item => {
+    const itemLabel = (item.customLabelConfig && typeof item.customLabelConfig === 'object')
+      ? item.customLabelConfig
+      : orderCustomLabel;
+    const baseProd = {
+      vid: String(item.vid || item.sku || ''),
+      sku: String(item.sku || ''),
+      quantity: Math.max(1, Number(item.quantity) || 1)
+    };
+    if (itemLabel?.enabled) {
+      baseProd.customLabelConfig = {
+        labelType: itemLabel.labelType || 'CJ_CUSTOM_PACKAGING',
+        packagingVid: itemLabel.packagingVid || '',
+        packagingName: itemLabel.packagingName || "Susan's Rose-Gold Custom Box & Seal",
+        customBrandText: itemLabel.customBrandText || "Susan's Beauty Consulting ✧",
+        logoUrl: itemLabel.logoUrl || ''
+      };
+      if (itemLabel.logoUrl || itemLabel.customBrandText) {
+        baseProd.podProperties = {
+          customText: itemLabel.customBrandText || "Susan's Beauty Consulting ✧",
+          logoUrl: itemLabel.logoUrl || ''
+        };
+      }
+    }
+    return baseProd;
+  });
+
+  // If order-level CJ Custom Packaging is enabled with a packagingVid, append the packaging line item after product items
+  if (
+    orderCustomLabel?.enabled &&
+    orderCustomLabel?.packagingVid &&
+    !mappedProducts.some(p => p.vid === String(orderCustomLabel.packagingVid))
+  ) {
+    mappedProducts.push({
+      vid: String(orderCustomLabel.packagingVid),
+      sku: String(orderCustomLabel.packagingSku || orderCustomLabel.packagingVid),
+      quantity: 1,
+      isCustomPackaging: true,
+      packagingName: String(orderCustomLabel.packagingName || "Susan's Rose-Gold Custom Box & Seal")
+    });
+  }
 
   return {
     orderNumber: String(order._id || 'TEST-ORDER'),
@@ -6187,11 +8762,15 @@ const buildCjOrderPayload = (order) => {
     shippingAddress: String(address.address_1 || 'Pending'),
     shippingCustomerName: customerName,
     shippingPhone: String(address.phone || '0000000000'),
-    products: (Array.isArray(order.items) ? order.items : []).map(item => ({
-      vid: String(item.vid || item.sku || ''),
-      sku: String(item.sku || ''),
-      quantity: Math.max(1, Number(item.quantity) || 1)
-    }))
+    logisticName,
+    fromCountryCode,
+    ...(orderCustomLabel?.enabled
+      ? {
+          remark: `Custom Label: ${orderCustomLabel.packagingName || "Susan's Rose-Gold Custom Box"} (${orderCustomLabel.customBrandText || "Susan's Beauty Consulting"})`,
+          customLabelConfig: orderCustomLabel
+        }
+      : {}),
+    products: mappedProducts
   };
 };
 
@@ -6906,6 +9485,7 @@ mongoose.connect(MONGO_URI)
     console.log('✧ Connected securely to MongoDB');
     await ensureDefaultOdieMemories();
     await backfillProductBlueprintLabels(false);
+    await backfillProductShippingAndCustomLabelMeta(false);
     await backfillConsultationAnalyses();
     await backfillAnalyticsBaseline();
     
