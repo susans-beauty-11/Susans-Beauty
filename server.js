@@ -113,22 +113,22 @@ const getCandidateSmtpUsers = () => {
 // explicit auth user casing, and configurable TLS strictness.
 const createIonosTransporter = ({ port, secure, user, strictTls = true }) =>
   nodemailer.createTransport({
-    host: 'smtp.ionos.com',
-    port: 587, // Often more reliable on cloud hosts than 465
+    host: smtpHost,
+    port,
     secure, // true for 465 (Implicit SSL/TLS), false for 587/2525 (STARTTLS)
     requireTLS: !secure,
     family: 4, // Force IPv4 resolution to prevent IPv6 ETIMEDOUT stalls on cloud hosts
-    connectionTimeout: 10000,
-    greetingTimeout: 1000,
+    connectionTimeout: 9000,
+    greetingTimeout: 9000,
     socketTimeout: 12000,
     auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+      user,
+      pass: smtpPass,
     },
     tls: {
       minVersion: 'TLSv1.2',
-      servername: 'smtp.ionos.com',
-      rejectUnauthorized: false
+      servername: smtpHost,
+      rejectUnauthorized: strictTls
     }
   });
 
@@ -506,6 +506,7 @@ const consultationSchema = new mongoose.Schema({
   faceShape: String,
   makeupVibe: String,
   routineFocus: String,
+  blueprintAnalysis: { type: mongoose.Schema.Types.Mixed },
   createdAt: { type: Date, default: Date.now }
 });
 const Consultation = mongoose.model('Consultation', consultationSchema);
@@ -515,6 +516,17 @@ const productSchema = new mongoose.Schema({
   description: String,
   imageUrl: String,
   tags: { type: [String], index: true },
+  skinTypes: { type: [String], default: [], index: true },
+  skinConcerns: { type: [String], default: [], index: true },
+  sensitivitySafe: { type: Boolean, default: true, index: true },
+  sensitivityLabel: { type: String, default: 'Gentle • High-Sensitivity Safe' },
+  ritualStep: { type: String, default: 'Step 3: Serum & Essence', index: true },
+  keyActives: { type: [String], default: [] },
+  viewCount: { type: Number, default: 0, index: true },
+  cartAddCount: { type: Number, default: 0, index: true },
+  purchaseCount: { type: Number, default: 0, index: true },
+  curatedCount: { type: Number, default: 0 },
+  lastViewedAt: { type: Date, default: null },
   variants: [{
     sku: { type: String, required: true },
     variantName: String, 
@@ -611,6 +623,43 @@ const treasuryTransferSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now, index: true }
 });
 const TreasuryTransfer = mongoose.model('TreasuryTransfer', treasuryTransferSchema);
+
+// Behavioral Event Telemetry & Curation Intelligence Schema (Analytics Phase 1)
+const VALID_ANALYTICS_EVENT_TYPES = [
+  'PAGE_VIEW',
+  'PRODUCT_VIEW',
+  'ADD_TO_CART',
+  'REMOVE_FROM_CART',
+  'CHECKOUT_INITIATED',
+  'FILTER_USED',
+  'SEARCH_QUERY',
+  'QUIZ_STARTED',
+  'QUIZ_COMPLETED'
+];
+
+const analyticsEventSchema = new mongoose.Schema({
+  eventType: {
+    type: String,
+    enum: VALID_ANALYTICS_EVENT_TYPES,
+    required: true,
+    index: true
+  },
+  page: { type: String, default: '' },
+  sessionId: { type: String, default: '', index: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, default: null },
+  userEmail: { type: String, default: '' },
+  membershipTier: { type: String, default: 'guest' },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: false, default: null, index: true },
+  productTitle: { type: String, default: '' },
+  ritualStep: { type: String, default: '' },
+  filterType: { type: String, default: '' },
+  filterValue: { type: String, default: '' },
+  searchQuery: { type: String, default: '' },
+  cartValueUsd: { type: Number, default: 0 },
+  metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const AnalyticsEvent = mongoose.model('AnalyticsEvent', analyticsEventSchema);
 
 // ---------------- AUTHENTICATION & RBAC MIDDLEWARE ---------------- //
 
@@ -804,6 +853,664 @@ const extractCleanTags = (categoryName = '', title = '') => {
   return tags;
 };
 
+// ---------------- BLUEPRINT PRODUCT CLASSIFIER & DIAGNOSTIC DOSSIER ENGINE ---------------- //
+
+const parseStringOrArrayField = (val) => {
+  if (!val) return [];
+  if (Array.isArray(val)) {
+    return val.map(v => String(v || '').trim()).filter(Boolean);
+  }
+  return String(val)
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean);
+};
+
+// Deterministically labels any CJ or custom boutique product with structured Blueprint compatibility fields:
+// - skinTypes: ['Dry', 'Oily', 'Combination', 'Normal', 'All Skin Types']
+// - skinConcerns: ['Hydration', 'Anti-Aging', 'Acne/Texture', 'Brightening', 'Barrier & Soothing', 'Luminous Makeup']
+// - sensitivitySafe (Boolean) & sensitivityLabel (String)
+// - ritualStep: 'Step 1: Cleanser' | 'Step 2: Toner & Mist' | 'Step 3: Serum & Essence' | 'Step 4: Moisturizer & Cream' | 'Step 5: Eye, Lip & SPF' | 'Makeup & Artistry' | 'Beauty Tool & Spa'
+// - keyActives: Array of notable hero actives or formulation highlights
+const classifyProductForBlueprint = (title = '', categoryName = '', description = '', customFields = {}) => {
+  const cleanTitle = String(title || '').trim();
+  const cleanCat = String(categoryName || '').trim();
+  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 800);
+  const customTagsList = parseStringOrArrayField(customFields?.tags);
+  const corpus = `${cleanTitle} ${cleanCat} ${cleanDesc} ${customTagsList.join(' ')}`.toLowerCase();
+
+  // 1. Determine Ritual Step
+  let ritualStep = 'Step 3: Serum & Essence';
+  if (customFields?.ritualStep && String(customFields.ritualStep).trim()) {
+    ritualStep = String(customFields.ritualStep).trim();
+  } else if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
+    ritualStep = 'Makeup & Artistry';
+  } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
+    ritualStep = 'Beauty Tool & Spa';
+  } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
+    ritualStep = 'Step 1: Cleanser';
+  } else if (/\b(toner|facial mist|face mist|rosewater|hydrosol|essence water|toning|refining water|balancing water)\b/i.test(corpus)) {
+    ritualStep = 'Step 2: Toner & Mist';
+  } else if (/\b(eye cream|eye patch|eye patches|eye mask|eye serum|eye gel|under eye|lip balm|lip mask|lip oil|lip scrub|lip plumper|lip sleeping|sunscreen|sunblock|spf|uv protection)\b/i.test(corpus)) {
+    ritualStep = 'Step 5: Eye, Lip & SPF';
+  } else if (/\b(moisturizer|moisturizing|face cream|night cream|day cream|neck cream|barrier cream|lotion|body lotion|body butter|body cream|emulsion|gel cream|balm|sleeping mask|ointment)\b/i.test(corpus)) {
+    ritualStep = 'Step 4: Moisturizer & Cream';
+  } else {
+    ritualStep = 'Step 3: Serum & Essence';
+  }
+
+  // 2. Determine Skin Concerns / Primary Goals
+  const explicitConcerns = parseStringOrArrayField(customFields?.skinConcerns);
+  const skinConcerns = [...explicitConcerns];
+  const addConcern = (c) => {
+    if (c && !skinConcerns.includes(c)) skinConcerns.push(c);
+  };
+
+  if (explicitConcerns.length === 0) {
+    if (/\b(hydrat|hyaluronic|moisture|moisturiz|dry|plump|dewy|water|squalane|glycerin|aloe|snail|mucin|hydrogel|lotion|cream|balm|mist|lip oil|lip balm)\b/i.test(corpus)) {
+      addConcern('Hydration');
+    }
+    if (/\b(anti-aging|anti aging|anti-wrinkle|wrinkle|fine line|firming|lifting|retinol|retinoid|peptide|collagen|elasticity|youth|age-defying|bakuchiol|eye cream|neck|gua sha|jade roller|led mask|massager)\b/i.test(corpus)) {
+      addConcern('Anti-Aging');
+    }
+    if (/\b(acne|blemish|pimple|pore|blackhead|salicylic|bha|aha|pha|glycolic|lactic|exfoliat|scrub|peel|clay|mud|charcoal|tea tree|niacinamide|nicotinamide|oil control|mattif|sebum|purifying|cleanser|scrubber)\b/i.test(corpus)) {
+      addConcern('Acne/Texture');
+    }
+    if (/\b(brighten|whitening|vitamin c|ascorbic|dark spot|hyperpigmentation|even tone|glow|radiance|radiant|luminous|kojic|turmeric|arbutin|pearl|illuminat|niacinamide)\b/i.test(corpus)) {
+      addConcern('Brightening');
+    }
+    if (/\b(sensitive|soothing|calming|barrier|ceramide|centella|cica|aloe|chamomile|rose|panthenol|allantoin|redness|repair|gentle|fragrance-free|micellar|oat)\b/i.test(corpus)) {
+      addConcern('Barrier & Soothing');
+    }
+    if (ritualStep === 'Makeup & Artistry' || /\b(makeup|cosmetic|foundation|concealer|blush|highlighter|lipstick|lip gloss|eyeshadow|mascara|eyeliner|brow|contour|powder|palette)\b/i.test(corpus)) {
+      addConcern('Luminous Makeup');
+    }
+
+    // Fallback by ritualStep so no product ever has an empty skinConcerns array
+    if (skinConcerns.length === 0) {
+      if (ritualStep === 'Step 1: Cleanser') {
+        addConcern('Acne/Texture');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 2: Toner & Mist') {
+        addConcern('Hydration');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 4: Moisturizer & Cream') {
+        addConcern('Hydration');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 5: Eye, Lip & SPF') {
+        addConcern('Hydration');
+        addConcern('Anti-Aging');
+      } else if (ritualStep === 'Beauty Tool & Spa') {
+        addConcern('Anti-Aging');
+        addConcern('Barrier & Soothing');
+      } else {
+        addConcern('Hydration');
+        addConcern('Brightening');
+      }
+    }
+  }
+
+  // 3. Determine Best-Fit Skin Types (Normal, Dry, Oily, Combination, All Skin Types)
+  const explicitSkinTypes = parseStringOrArrayField(customFields?.skinTypes);
+  const skinTypes = [...explicitSkinTypes];
+  const addSkinType = (st) => {
+    if (st && !skinTypes.includes(st)) skinTypes.push(st);
+  };
+
+  if (explicitSkinTypes.length === 0) {
+    if (/\b(dry skin|thirsty|dehydrated|rich cream|nourishing|hydrating|hyaluronic|ceramide|squalane|shea|argan|balm|facial oil|sleeping mask|moisture|night cream|lip oil|lip balm)\b/i.test(corpus) || skinConcerns.includes('Hydration')) {
+      addSkinType('Dry');
+    }
+    if (/\b(oily skin|oil control|mattifying|matte|sebum|salicylic|bha|clay|mud|charcoal|pore|blackhead|tea tree|acne|blemish|pimple|foaming|gel cleanser|lightweight|water gel|setting powder|loose powder)\b/i.test(corpus) || skinConcerns.includes('Acne/Texture')) {
+      addSkinType('Oily');
+    }
+    if (/\b(combination skin|balancing|niacinamide|toner|mist|serum|essence|gel cream|lotion|sheet mask|micellar|vitamin c|cleanser)\b/i.test(corpus) || (skinTypes.includes('Dry') && skinTypes.includes('Oily'))) {
+      addSkinType('Combination');
+    }
+    if (/\b(normal skin|all skin|daily|gentle|balanced|vitamin c|peptide|collagen|brightening|eye|lip|sunscreen|spf)\b/i.test(corpus) || skinConcerns.includes('Brightening') || skinConcerns.includes('Anti-Aging')) {
+      addSkinType('Normal');
+    }
+
+    if (
+      ritualStep === 'Makeup & Artistry' ||
+      ritualStep === 'Beauty Tool & Spa' ||
+      ritualStep === 'Step 5: Eye, Lip & SPF' ||
+      skinTypes.length === 0 ||
+      skinTypes.length >= 3
+    ) {
+      if (skinTypes.length === 0) {
+        addSkinType('Normal');
+        addSkinType('Dry');
+        addSkinType('Combination');
+        addSkinType('Oily');
+      }
+      addSkinType('All Skin Types');
+    } else if (skinTypes.length === 1) {
+      // Pair single skin types with their natural companion so members get accurate matches
+      if (skinTypes[0] === 'Dry') addSkinType('Normal');
+      else if (skinTypes[0] === 'Oily') addSkinType('Combination');
+      else if (skinTypes[0] === 'Combination') addSkinType('Normal');
+      else if (skinTypes[0] === 'Normal') addSkinType('All Skin Types');
+    }
+  }
+
+  // 4. Determine Sensitivity Profile
+  const hasPotentActives = /\b(retinol|retinoid|aha|bha|pha|glycolic|salicylic|lactic acid|peel|peeling|scrub|exfoliant|exfoliating|microneedle|derma roller)\b/i.test(corpus);
+  const sensitivitySafe = customFields?.sensitivitySafe !== undefined
+    ? Boolean(customFields.sensitivitySafe)
+    : !hasPotentActives;
+
+  const sensitivityLabel = (customFields?.sensitivityLabel && String(customFields.sensitivityLabel).trim())
+    ? String(customFields.sensitivityLabel).trim()
+    : (sensitivitySafe
+        ? 'Gentle • High-Sensitivity Safe'
+        : 'Active Formula • Best for Low/Moderate Sensitivity');
+
+  // 5. Extract Key Actives / Formulation Highlights
+  const explicitActives = parseStringOrArrayField(customFields?.keyActives);
+  const keyActives = [...explicitActives];
+  const addActive = (act) => {
+    if (act && !keyActives.includes(act) && keyActives.length < 4) keyActives.push(act);
+  };
+
+  if (explicitActives.length === 0) {
+    const activeRules = [
+      { regex: /\b(hyaluronic|sodium hyaluronate)\b/i, name: 'Hyaluronic Acid' },
+      { regex: /\b(ceramide)\b/i, name: 'Barrier Ceramides' },
+      { regex: /\b(niacinamide|nicotinamide|vitamin b3)\b/i, name: 'Niacinamide (B3)' },
+      { regex: /\b(vitamin c|ascorbic)\b/i, name: 'Vitamin C Complex' },
+      { regex: /\b(peptide|matrixyl|argireline)\b/i, name: 'Firming Peptides' },
+      { regex: /\b(collagen)\b/i, name: 'Hydrolyzed Collagen' },
+      { regex: /\b(retinol|retinoid|bakuchiol)\b/i, name: 'Retinol / Cellular Renewal' },
+      { regex: /\b(salicylic|bha|tea tree)\b/i, name: 'Clarifying BHA / Tea Tree' },
+      { regex: /\b(glycolic|lactic|aha|pha|exfoli)\b/i, name: 'Smoothing AHA Complex' },
+      { regex: /\b(centella|cica|aloe|chamomile|calendula|green tea)\b/i, name: 'Soothing Botanical Cica' },
+      { regex: /\b(squalane|argan|rosehip|jojoba|shea|vitamin e)\b/i, name: 'Nourishing Lipid Oils' },
+      { regex: /\b(snail|mucin)\b/i, name: 'Snail Mucin Filtrate' },
+      { regex: /\b(rose|rosewater)\b/i, name: 'Botanical Rosewater' },
+      { regex: /\b(clay|kaolin|bentonite|charcoal|mud)\b/i, name: 'Purifying Mineral Clay' },
+      { regex: /\b(spf|sunscreen|uv|zinc|titanium)\b/i, name: 'Broad-Spectrum UV Shield' }
+    ];
+
+    for (const rule of activeRules) {
+      if (rule.regex.test(corpus)) addActive(rule.name);
+    }
+
+    if (keyActives.length === 0) {
+      if (ritualStep === 'Makeup & Artistry') {
+        addActive('Luminous Mineral Pigments');
+        addActive('Weightless Breathable Wear');
+      } else if (ritualStep === 'Beauty Tool & Spa') {
+        addActive('Lymphatic Micro-Circulation');
+        addActive('Artisan Spa Craft');
+      } else {
+        addActive('Hydrating Botanical Complex');
+        addActive('pH-Balanced Conditioning');
+      }
+    }
+  }
+
+  // 6. Enrich legacy flat tags array so search & tag queries work seamlessly
+  const baseTags = extractCleanTags(cleanCat, cleanTitle);
+  const mergedTags = [...new Set([
+    ...baseTags,
+    ...customTagsList.map(t => t.toLowerCase()),
+    ...skinTypes.map(t => t.toLowerCase()),
+    ...skinConcerns.map(c => c.toLowerCase())
+  ])];
+
+  return {
+    skinTypes,
+    skinConcerns,
+    sensitivitySafe,
+    sensitivityLabel,
+    ritualStep,
+    keyActives,
+    tags: mergedTags
+  };
+};
+
+// Backfills structured Blueprint labels onto all existing products in MongoDB
+const backfillProductBlueprintLabels = async (forceAll = false) => {
+  try {
+    const query = forceAll
+      ? {}
+      : {
+          $or: [
+            { skinTypes: { $exists: false } },
+            { skinTypes: { $size: 0 } },
+            { skinConcerns: { $exists: false } },
+            { skinConcerns: { $size: 0 } },
+            { ritualStep: { $exists: false } },
+            { ritualStep: '' }
+          ]
+        };
+
+    const productsToUpdate = await Product.find(query).lean();
+    if (!productsToUpdate.length) {
+      return { updatedCount: 0, totalCount: await Product.countDocuments() };
+    }
+
+    let updatedCount = 0;
+    const bulkOps = [];
+
+    for (const prod of productsToUpdate) {
+      const catName = prod.rawCjData?.categoryName || (Array.isArray(prod.tags) ? prod.tags.join(' ') : '');
+      const classified = classifyProductForBlueprint(
+        prod.title,
+        catName,
+        prod.description,
+        forceAll ? { tags: prod.tags } : {
+          skinTypes: prod.skinTypes,
+          skinConcerns: prod.skinConcerns,
+          sensitivitySafe: prod.sensitivitySafe,
+          sensitivityLabel: prod.sensitivityLabel,
+          ritualStep: prod.ritualStep,
+          keyActives: prod.keyActives,
+          tags: prod.tags
+        }
+      );
+
+      bulkOps.push({
+        updateOne: {
+          filter: { _id: prod._id },
+          update: {
+            $set: {
+              skinTypes: classified.skinTypes,
+              skinConcerns: classified.skinConcerns,
+              sensitivitySafe: classified.sensitivitySafe,
+              sensitivityLabel: classified.sensitivityLabel,
+              ritualStep: classified.ritualStep,
+              keyActives: classified.keyActives,
+              tags: classified.tags
+            }
+          }
+        }
+      });
+      updatedCount++;
+    }
+
+    if (bulkOps.length > 0) {
+      await Product.bulkWrite(bulkOps);
+      console.log(`🏷️ Labeled ${updatedCount} boutique product(s) with Skin Types, Skin Conditions & Ritual Steps.`);
+    }
+
+    const totalCount = await Product.countDocuments();
+    return { updatedCount, totalCount };
+  } catch (err) {
+    console.error('⚠️ Error backfilling product blueprint labels:', err.message);
+    return { updatedCount: 0, totalCount: 0, error: err.message };
+  }
+};
+
+// Synthesizes a rich, personalized Beauty Blueprint Dossier from the member's 10 quiz answers
+const generateBlueprintAnalysis = (bp = {}) => {
+  const skinType = String(bp.skinType || 'Normal').trim();
+  const primaryGoal = String(bp.primaryGoal || 'Hydration').trim();
+  const climate = String(bp.climate || 'Temperate').trim();
+  const skinSensitivity = String(bp.skinSensitivity || 'Moderate').trim();
+  const complexion = String(bp.complexion || 'Medium').trim();
+  const undertone = String(bp.undertone || 'Neutral').trim();
+  const eyeColor = String(bp.eyeColor || 'Brown').trim();
+  const faceShape = String(bp.faceShape || 'Oval').trim();
+  const makeupVibe = String(bp.makeupVibe || 'Soft Glam').trim();
+  const routineFocus = String(bp.routineFocus || 'Balanced').trim();
+
+  // 1. Archetype Title & Executive Diagnostic Summary
+  const archetypeMap = {
+    'Dry_Hydration': 'The Velvet Moisture Sanctuary',
+    'Dry_Anti-Aging': 'The Cashmere Youth Elixir',
+    'Dry_Brightening': 'The Dewy Rosewater Luminary',
+    'Dry_Acne/Texture': 'The Silk Barrier Clarifier',
+    'Oily_Acne/Texture': 'The Clarifying Satin Refiner',
+    'Oily_Hydration': 'The Weightless Hydro-Balance Ritual',
+    'Oily_Anti-Aging': 'The Sculpted Velvet Renewal',
+    'Oily_Brightening': 'The Glass-Skin Radiance Edit',
+    'Combination_Hydration': 'The Harmonious Dual-Zone Sanctuary',
+    'Combination_Acne/Texture': 'The Balanced Pore & Texture Edit',
+    'Combination_Anti-Aging': 'The Ageless Equilibrium Ritual',
+    'Combination_Brightening': 'The Luminous Equilibrium Protocol',
+    'Normal_Hydration': 'The Porcelain Dew Sanctuary',
+    'Normal_Anti-Aging': 'The Timeless Cellular Radiance Ritual',
+    'Normal_Brightening': 'The Golden Hour Luminosity Edit',
+    'Normal_Acne/Texture': 'The Polished Silk Refinement'
+  };
+
+  const archetypeTitle =
+    archetypeMap[`${skinType}_${primaryGoal}`] ||
+    `The Bespoke ${skinType} & ${primaryGoal} Sanctuary`;
+
+  const climateDescriptions = {
+    'Dry': 'your arid, low-humidity environment continuously pulls moisture from the epidermis (transepidermal water loss), requiring humectants sealed beneath barrier lipids',
+    'Humid': 'your humid climate amplifies surface sebum and sweat, calling for breathable, gel-serum hydration and non-comedogenic pore refinement',
+    'Cold': 'your cold, harsh climate stresses the lipid barrier and triggers micro-chapping, requiring ceramide-rich cushioning and soothing protection',
+    'Temperate': 'your temperate climate supports balanced cellular turnover when paired with consistent morning antioxidant protection and evening hydration'
+  };
+
+  const sensitivityDescriptions = {
+    'High': 'Because your skin has High Sensitivity, every step prioritizes calming barrier protection (`Gentle • High-Sensitivity Safe` labels) over aggressive acids.',
+    'Moderate': 'With Moderate Sensitivity, your skin thrives on buffered actives paired with soothing Centella, rosewater, and barrier-supporting ceramides.',
+    'Low': 'Your resilient, Low-Sensitivity canvas tolerates both gentle daily hydrators and targeted resurfacing or cellular-renewal actives.'
+  };
+
+  const executiveSummary =
+    `Your diagnostic profile reveals a ${skinType} skin temperament focused on ${primaryGoal}. ` +
+    `Because ${climateDescriptions[climate] || climateDescriptions['Temperate']}, your ritual is architected to deliver ${primaryGoal.toLowerCase()} without overwhelming your natural barrier. ` +
+    `${sensitivityDescriptions[skinSensitivity] || sensitivityDescriptions['Moderate']}`;
+
+  // 2. Recommended Boutique Product Labels (for instant cross-referencing in the Boutique)
+  const targetSkinTypes = [skinType, 'All Skin Types'];
+  const targetSkinConcerns = [primaryGoal];
+  if (skinSensitivity === 'High' || skinSensitivity === 'Moderate' || climate === 'Dry' || climate === 'Cold') {
+    if (!targetSkinConcerns.includes('Barrier & Soothing')) targetSkinConcerns.push('Barrier & Soothing');
+  }
+  if ((skinType === 'Dry' || climate === 'Dry' || climate === 'Cold') && !targetSkinConcerns.includes('Hydration')) {
+    targetSkinConcerns.push('Hydration');
+  }
+  if (!targetSkinConcerns.includes('Luminous Makeup')) {
+    targetSkinConcerns.push('Luminous Makeup');
+  }
+
+  const sensitivityBadge =
+    skinSensitivity === 'High'
+      ? 'Gentle • High-Sensitivity Safe'
+      : skinSensitivity === 'Moderate'
+      ? 'Gentle • Barrier Balanced'
+      : 'All Formulas & Actives Compatible';
+
+  const allBadges = [
+    {
+      label: `${skinType} Skin`,
+      category: 'Skin Type',
+      filterType: 'skinType',
+      filterValue: skinType,
+      description: `Formulated specifically for ${skinType.toLowerCase()} skin behavior.`
+    },
+    {
+      label: primaryGoal,
+      category: 'Primary Condition',
+      filterType: 'skinConcern',
+      filterValue: primaryGoal,
+      description: `Directly targets your primary vision: ${primaryGoal}.`
+    },
+    ...(targetSkinConcerns.includes('Barrier & Soothing') && primaryGoal !== 'Barrier & Soothing'
+      ? [{
+          label: 'Barrier & Soothing',
+          category: 'Sensitivity & Climate Care',
+          filterType: 'skinConcern',
+          filterValue: 'Barrier & Soothing',
+          description: `Protects your ${skinSensitivity.toLowerCase()}-sensitivity skin in a ${climate.toLowerCase()} climate.`
+        }]
+      : []),
+    ...(targetSkinConcerns.includes('Hydration') && primaryGoal !== 'Hydration'
+      ? [{
+          label: 'Hydration',
+          category: 'Moisture Balance',
+          filterType: 'skinConcern',
+          filterValue: 'Hydration',
+          description: `Prevents dehydration and tightness in ${climate.toLowerCase()} conditions.`
+        }]
+      : []),
+    {
+      label: sensitivityBadge,
+      category: 'Sensitivity Safety',
+      filterType: 'sensitivity',
+      filterValue: skinSensitivity === 'High' ? 'safe' : 'all',
+      description: skinSensitivity === 'High'
+        ? 'Look for products marked Gentle • High-Sensitivity Safe.'
+        : 'Compatible with your skin reactivity threshold.'
+    }
+  ];
+
+  // 3. Hero Ingredients to Seek vs. Avoid
+  const heroIngredients = [];
+  const addHero = (name, benefit, targetConcern) => {
+    if (!heroIngredients.some(h => h.name === name) && heroIngredients.length < 5) {
+      heroIngredients.push({ name, benefit, targetConcern });
+    }
+  };
+
+  if (primaryGoal === 'Hydration' || skinType === 'Dry' || climate === 'Dry') {
+    addHero('Multi-Molecular Hyaluronic Acid', 'Draws moisture deep into thirsty skin layers for instant plumping and softness.', 'Hydration');
+    addHero('Barrier Ceramides & Squalane', 'Seals the lipid barrier so arid air cannot strip away your natural hydration.', 'Barrier & Soothing');
+  }
+  if (primaryGoal === 'Anti-Aging') {
+    addHero('Bio-Active Peptides & Collagen', 'Supports firmness, bounce, and smooths the appearance of fine expression lines.', 'Anti-Aging');
+    addHero(
+      skinSensitivity === 'High' ? 'Bakuchiol & Gentle Botanical Renewal' : 'Encapsulated Retinol / Retinoid Complex',
+      skinSensitivity === 'High'
+        ? 'Delivers retinol-like cellular renewal without redness or peeling for sensitive skin.'
+        : 'Accelerates evening cellular turnover to refine wrinkles and elasticity.',
+      'Anti-Aging'
+    );
+  }
+  if (primaryGoal === 'Acne/Texture' || skinType === 'Oily' || skinType === 'Combination') {
+    addHero('Niacinamide (Vitamin B3)', 'Balances sebum production, visibly tightens enlarged pores, and calms redness.', 'Acne/Texture');
+    addHero(
+      skinSensitivity === 'High' ? 'Purifying Kaolin Clay & Tea Tree Hydrosol' : 'Salicylic Acid (BHA) & Gentle AHA',
+      skinSensitivity === 'High'
+        ? 'Draws out congestion gently without stripping your delicate moisture barrier.'
+        : 'Dissolves pore-clogging oil and smooths uneven surface texture.',
+      'Acne/Texture'
+    );
+  }
+  if (primaryGoal === 'Brightening') {
+    addHero('Stabilized Vitamin C Complex', 'Neutralizes dullness, brightens dark spots, and boosts natural luminosity.', 'Brightening');
+    addHero('Botanical Rosewater & Licorice Root', 'Evens out skin tone while keeping the complexion calm and dewy.', 'Brightening');
+  }
+  if (skinSensitivity === 'High' || skinSensitivity === 'Moderate' || heroIngredients.length < 4) {
+    addHero('Centella Asiatica (Cica) & Aloe', 'Calms reactivity, reduces visible redness, and reinforces skin resilience.', 'Barrier & Soothing');
+    addHero('Hydrolyzed Collagen & Vitamin E', 'Cushions the complexion against environmental stress and free radicals.', 'Hydration');
+  }
+
+  const avoidIngredients = [];
+  if (skinSensitivity === 'High') {
+    avoidIngredients.push(
+      { name: 'High-Percentage Unbuffered Glycolic / Peel Acids', reason: 'Can compromise a high-sensitivity lipid barrier and trigger stinging or flushing.' },
+      { name: 'Coarse Physical Nut/Shell Scrubs', reason: 'Creates micro-tears on reactive skin; opt for silky gel cleansers or enzyme care instead.' },
+      { name: 'Drying Denatured Alcohol Toners', reason: 'Strips protective surface lipids and accelerates redness.' }
+    );
+  } else if (skinType === 'Dry' || climate === 'Dry' || climate === 'Cold') {
+    avoidIngredients.push(
+      { name: 'High-Sulfate Stripping Foam Cleansers', reason: 'Leaves dry or cold-exposed skin feeling tight and depleted.' },
+      { name: 'Unsealed Clay Masks Used Daily', reason: 'Absorbs essential surface oils unless followed immediately by a rich hydrating serum.' },
+      { name: 'Alcohol-Heavy Setting Sprays', reason: 'Can dehydrate your complexion canvas throughout the day.' }
+    );
+  } else if (skinType === 'Oily' || climate === 'Humid') {
+    avoidIngredients.push(
+      { name: 'Heavy Occlusive Petrolatum Balms (Daytime)', reason: 'Can trap heat and excess sebum in humid environments.' },
+      { name: 'Pore-Congesting Coconut Oil Bases', reason: 'May congest T-zone pores on oily or combination temperaments.' },
+      { name: 'Over-Exfoliating Multiple Times Daily', reason: 'Triggers rebound oil production when the barrier feels stripped.' }
+    );
+  } else {
+    avoidIngredients.push(
+      { name: 'Stacking Retinol + Strong Exfoliating Acids in the Same Night', reason: 'Can disrupt your balanced barrier; alternate renewal nights with hydration nights.' },
+      { name: 'Harsh Alkaline Bar Soaps', reason: 'Disrupts your natural acid mantle pH.' },
+      { name: 'Skipping Morning UV / Antioxidant Protection', reason: 'Allows daily environmental UV exposure to undo brightening and firming progress.' }
+    );
+  }
+
+  // 4. Bespoke AM & PM Ritual Architecture (Tailored to routineFocus: Minimalist=3, Balanced=4, Luxurious=5)
+  const stepLimit = routineFocus === 'Minimalist' ? 3 : routineFocus === 'Balanced' ? 4 : 5;
+
+  const fullAmSteps = [
+    {
+      stepNumber: 1,
+      ritualStep: 'Step 1: Cleanser',
+      title: skinType === 'Dry' || skinSensitivity === 'High' ? 'Gentle Barrier Awakening Cleanse' : 'Purifying Morning Refresh Cleanse',
+      instruction: `Cleanse with lukewarm water to refresh your ${skinType.toLowerCase()} canvas without stripping essential morning lipids.`,
+      lookForLabel: 'Step 1: Cleanser'
+    },
+    {
+      stepNumber: 2,
+      ritualStep: 'Step 2: Toner & Mist',
+      title: 'pH-Balancing Botanical Prep Mist',
+      instruction: `Mist or press into damp skin to prime your epidermis and counter ${climate.toLowerCase()}-climate dehydration.`,
+      lookForLabel: 'Step 2: Toner & Mist'
+    },
+    {
+      stepNumber: 3,
+      ritualStep: 'Step 3: Serum & Essence',
+      title: `Targeted ${primaryGoal} Day Serum`,
+      instruction: `Press 2–3 drops of a ${primaryGoal.toLowerCase()} serum into face and neck to deliver concentrated daytime actives.`,
+      lookForLabel: 'Step 3: Serum & Essence'
+    },
+    {
+      stepNumber: 4,
+      ritualStep: 'Step 4: Moisturizer & Cream',
+      title: skinType === 'Oily' || climate === 'Humid' ? 'Weightless Hydro-Lock Emulsion' : 'Velvet Barrier-Sealing Day Cream',
+      instruction: `Lock in your serum and cushion your ${skinSensitivity.toLowerCase()}-sensitivity barrier for smooth makeup prep.`,
+      lookForLabel: 'Step 4: Moisturizer & Cream'
+    },
+    {
+      stepNumber: 5,
+      ritualStep: 'Step 5: Eye, Lip & SPF',
+      title: 'Luminous Eye, Lip & UV Sanctuary Shield',
+      instruction: 'Tap brightening care around the orbital bone, nourish lips, and seal with broad-spectrum UV protection.',
+      lookForLabel: 'Step 5: Eye, Lip & SPF'
+    }
+  ];
+
+  const fullPmSteps = [
+    {
+      stepNumber: 1,
+      ritualStep: 'Step 1: Cleanser',
+      title: 'Evening Melt & Pore Detox Cleanse',
+      instruction: `Dissolve daily SPF, ${makeupVibe.toLowerCase()} makeup, and environmental impurities thoroughly yet gently.`,
+      lookForLabel: 'Step 1: Cleanser'
+    },
+    {
+      stepNumber: 2,
+      ritualStep: 'Step 2: Toner & Mist',
+      title: 'Soothing Hydration Drench',
+      instruction: 'Replenish moisture immediately after cleansing so evening recovery actives absorb evenly.',
+      lookForLabel: 'Step 2: Toner & Mist'
+    },
+    {
+      stepNumber: 3,
+      ritualStep: 'Step 3: Serum & Essence',
+      title: `Overnight ${primaryGoal} & Cellular Repair Elixir`,
+      instruction: `Apply your targeted ${primaryGoal.toLowerCase()} treatment while skin permeability peaks during sleep.`,
+      lookForLabel: 'Step 3: Serum & Essence'
+    },
+    {
+      stepNumber: 4,
+      ritualStep: 'Step 4: Moisturizer & Cream',
+      title: 'Restorative Night Sanctuary Cream',
+      instruction: `Seal in overnight nutrients and prevent moisture loss in your ${climate.toLowerCase()} environment.`,
+      lookForLabel: 'Step 4: Moisturizer & Cream'
+    },
+    {
+      stepNumber: 5,
+      ritualStep: 'Beauty Tool & Spa',
+      title: 'Eye/Lip Sleeping Mask & Gua Sha Lymphatic Ritual',
+      instruction: 'Finish with nourishing eye/lip care and 2 minutes of upward facial massage to release tension and sculpt.',
+      lookForLabel: 'Beauty Tool & Spa'
+    }
+  ];
+
+  const selectStepsByFocus = (steps) => {
+    if (stepLimit === 3) {
+      // Cleanser, Serum, Moisturizer
+      return [steps[0], steps[2], steps[3]].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+    }
+    if (stepLimit === 4) {
+      // Cleanser, Toner/Mist, Serum, Moisturizer
+      return [steps[0], steps[1], steps[2], steps[3]].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+    }
+    return steps;
+  };
+
+  const amRitual = selectStepsByFocus(fullAmSteps);
+  const pmRitual = selectStepsByFocus(fullPmSteps);
+
+  // 5. Complexion, Undertone, Eye Color & Facial Silhouette Artistry Guide
+  const undertoneHarmony = {
+    'Cool': {
+      base: `Choose ${complexion} foundations and concealers with rosy, pink, or cool-neutral undertones so your base never looks yellow or brassy.`,
+      blushLip: 'Berry, rose-petal pink, cool mauve, cherry, and plum lip oils and blushes illuminate your natural cool undertone.'
+    },
+    'Warm': {
+      base: `Select ${complexion} complexion products with golden, peach, or warm-honey undertones to harmonize with your natural warmth.`,
+      blushLip: 'Warm terracotta, apricot, coral,honey-nude, and bronze-gold highlighters make your complexion glow effortlessly.'
+    },
+    'Neutral': {
+      base: `Look for balanced ${complexion} neutral shades that bridge rose and golden pigments without pulling too pink or too orange.`,
+      blushLip: 'Soft rosewood, dusty peach,champagne pearl, and berry-nude tones flatter your versatile neutral canvas.'
+    }
+  };
+
+  const eyeHarmony = {
+    'Brown': 'Rich bronze, champagne gold, warm plum, and espresso liners intensify the depth and warmth of your brown eyes.',
+    'Blue': 'Warm copper, toasted terracotta, champagne-peach, and bronze eyeshadows create striking contrast that makes blue eyes pop.',
+    'Green': 'Rose-gold, mulberry, garnet, and softtaupe shimmers spotlight the emerald and hazel flecks in your eyes.'
+  };
+
+  const faceShapeGuide = {
+    'Oval': 'Your balanced oval silhouette shines with soft blush swept along the apples of the cheeks toward the temples and a touch of highlighter on the high cheekbones.',
+    'Round': 'Create lifted dimension by sweeping bronzer slightly beneath the cheekbones toward the temples and focusing highlighter along the center bridge and brow bone.',
+    'Square/Heart': 'Soften angles by diffusing blush in a rounded upward sweep on the cheeks and adding a luminous kiss of highlighter to the cheekbones and Cupid’s bow.'
+  };
+
+  const vibeGuide = {
+    'Natural': 'Focus on skin-first "Barely There" luminosity: sheer hydrating tints, brushed-up brows, a swipe of nourishing lip oil, and dewy cream highlighter.',
+    'Soft Glam': 'Build "Elevated Everyday Elegance": seamless satin-finish complexion, softly defined lash line, diffused rose/peach cheek drape, and a plush glossed lip.',
+    'Full Glam': 'Embrace "Sculpted High-Impact Artistry": primed long-wear base, multi-dimensional eye shadow placement, sculpted contour, and a statement defined lip.'
+  };
+
+  const selectedUndertone = undertoneHarmony[undertone] || undertoneHarmony['Neutral'];
+
+  const artistryProfile = {
+    headline: `${complexion} Canvas • ${undertone} Undertone • ${makeupVibe} Artistry`,
+    foundationAndBase: selectedUndertone.base,
+    blushAndLipHarmony: selectedUndertone.blushLip,
+    eyeEnhancement: eyeHarmony[eyeColor] || eyeHarmony['Brown'],
+    sculptingPlacement: faceShapeGuide[faceShape] || faceShapeGuide['Oval'],
+    signatureFinish: vibeGuide[makeupVibe] || vibeGuide['Soft Glam']
+  };
+
+  return {
+    archetypeTitle,
+    executiveSummary,
+    recommendedLabels: {
+      skinTypes: targetSkinTypes,
+      skinConcerns: targetSkinConcerns,
+      sensitivityBadge,
+      climateContext: `${climate} Climate Care`,
+      routineTier: `${routineFocus} (${stepLimit}-Step Ritual)`,
+      allBadges
+    },
+    heroIngredients,
+    avoidIngredients,
+    amRitual,
+    pmRitual,
+    artistryProfile,
+    generatedAt: new Date().toISOString()
+  };
+};
+
+// Backfills blueprintAnalysis onto any existing Consultation documents in MongoDB
+const backfillConsultationAnalyses = async () => {
+  try {
+    const consultations = await Consultation.find({}).lean();
+    let updatedCount = 0;
+    for (const c of consultations) {
+      if (!c.blueprintAnalysis || !c.blueprintAnalysis.archetypeTitle) {
+        const analysis = generateBlueprintAnalysis(c);
+        await Consultation.findByIdAndUpdate(c._id, { $set: { blueprintAnalysis: analysis } });
+        updatedCount++;
+      }
+    }
+    if (updatedCount > 0) {
+      console.log(`✨ Generated rich Blueprint Dossier analysis for ${updatedCount} existing member consultation(s).`);
+    }
+    return updatedCount;
+  } catch (err) {
+    console.warn('⚠️ Error backfilling consultation analyses:', err.message);
+    return 0;
+  }
+};
+
 // Purges any previously synced CJ products in MongoDB that fail the strict Health & Beauty filter,
 // while preserving Susan's manually added custom boutique products.
 const purgeNonBeautyCjProducts = async () => {
@@ -974,13 +1681,21 @@ const syncCJCatalog = async (options = {}) => {
               imageUrl: img
             }];
 
+        const blueprintLabels = classifyProductForBlueprint(title, category, desc);
+
         await Product.findOneAndUpdate(
           { title },
           {
             title,
             description: desc,
             imageUrl: img,
-            tags: extractCleanTags(category, title),
+            tags: blueprintLabels.tags,
+            skinTypes: blueprintLabels.skinTypes,
+            skinConcerns: blueprintLabels.skinConcerns,
+            sensitivitySafe: blueprintLabels.sensitivitySafe,
+            sensitivityLabel: blueprintLabels.sensitivityLabel,
+            ritualStep: blueprintLabels.ritualStep,
+            keyActives: blueprintLabels.keyActives,
             variants: mappedVariants,
             rawCjData: { ...item, categoryName: category || item.categoryName }
           },
@@ -1052,6 +1767,7 @@ const syncCJCatalog = async (options = {}) => {
       }
     }
 
+    await backfillProductBlueprintLabels(false);
     const totalInDb = await Product.countDocuments();
     console.log(`🚀 CJ Beauty & Skincare sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Beauty & Skincare items (${totalInDb} total active in boutique).`);
     return { status: 'completed', purgedCount, syncedCount: totalProcessed, activeTotal: totalInDb };
@@ -1910,8 +2626,21 @@ app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (
 app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const users = await User.find({}, 'name email membershipTier recommendedProducts createdAt').sort({ createdAt: -1 });
-    const blueprints = await Consultation.find({}).populate('userId', 'name email recommendedProducts').sort({ createdAt: -1 });
+    const rawBlueprints = await Consultation.find({}).populate('userId', 'name email recommendedProducts').sort({ createdAt: -1 });
     const orders = await Order.find({}).sort({ createdAt: -1 });
+
+    // Ensure every blueprint has its synthesized blueprintAnalysis attached
+    const blueprints = await Promise.all(
+      rawBlueprints.map(async (bpDoc) => {
+        const bpObj = bpDoc.toObject ? bpDoc.toObject() : bpDoc;
+        if (!bpObj.blueprintAnalysis || !bpObj.blueprintAnalysis.archetypeTitle) {
+          const analysis = generateBlueprintAnalysis(bpObj);
+          await Consultation.findByIdAndUpdate(bpObj._id, { $set: { blueprintAnalysis: analysis } }).catch(() => {});
+          bpObj.blueprintAnalysis = analysis;
+        }
+        return bpObj;
+      })
+    );
     
     res.status(200).json({ 
         users, 
@@ -2002,6 +2731,7 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
       message: customMessage
     });
     await newInboxItem.save();
+    await Product.findByIdAndUpdate(product._id, { $inc: { curatedCount: 1 } }).catch(() => {});
     const populatedInboxItem = await InboxItem.findById(newInboxItem._id).populate('productId');
 
     res.status(200).json({
@@ -2014,6 +2744,1084 @@ app.post('/api/admin/users/:userId/recommend', authenticateToken, requireAdmin, 
     res.status(500).json({ error: 'Failed to push recommendation' });
   }
 });
+
+// ---------------- SITE ANALYTICS, EVENT INGESTION & CURATION INTELLIGENCE ENGINE (ANALYTICS PHASE 1) ---------------- //
+
+// Helper to increment Product.purchaseCount when an order is created or paid
+const incrementProductPurchaseCountsForOrder = async (orderDoc) => {
+  try {
+    const items = Array.isArray(orderDoc?.items) ? orderDoc.items : [];
+    if (items.length === 0) return;
+
+    for (const item of items) {
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const pid = item._id || item.productId;
+      const sku = String(item.sku || '').trim();
+      const title = String(item.title || item.displayTitle || '').trim();
+
+      if (pid && mongoose.Types.ObjectId.isValid(String(pid))) {
+        await Product.findByIdAndUpdate(pid, { $inc: { purchaseCount: qty } }).catch(() => {});
+      } else if (sku) {
+        await Product.findOneAndUpdate(
+          { 'variants.sku': sku },
+          { $inc: { purchaseCount: qty } }
+        ).catch(() => {});
+      } else if (title) {
+        await Product.findOneAndUpdate(
+          { title: new RegExp(`^${escapeRegex(title)}$`, 'i') },
+          { $inc: { purchaseCount: qty } }
+        ).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Could not increment product purchase counts:', err.message);
+  }
+};
+
+// Non-destructive startup backfill so existing Order items, InboxItem curations, and User recommendations
+// populate baseline purchaseCount and curatedCount on Product documents automatically.
+const backfillAnalyticsBaseline = async () => {
+  try {
+    const [allProducts, allOrders, allInboxItems, allUsers, allEvents] = await Promise.all([
+      Product.find({}).select('_id title variants viewCount cartAddCount purchaseCount curatedCount lastViewedAt').lean(),
+      Order.find({}).select('items status totalAmount createdAt').lean(),
+      InboxItem.find({}).select('productId createdAt').lean(),
+      User.find({}).select('recommendedProducts').lean(),
+      AnalyticsEvent.find({ eventType: { $in: ['PRODUCT_VIEW', 'ADD_TO_CART'] } })
+        .select('eventType productId productTitle createdAt')
+        .lean()
+    ]);
+
+    if (!allProducts.length) return { updatedProducts: 0 };
+
+    const productById = {};
+    const productBySku = {};
+    const productByTitle = {};
+
+    for (const p of allProducts) {
+      const idStr = String(p._id);
+      productById[idStr] = p;
+      if (p.title) {
+        productByTitle[String(p.title).toLowerCase().trim()] = p;
+      }
+      for (const v of (Array.isArray(p.variants) ? p.variants : [])) {
+        if (v?.sku) {
+          productBySku[String(v.sku).toLowerCase().trim()] = p;
+        }
+      }
+    }
+
+    const resolveProdId = (rawId, rawSku, rawTitle) => {
+      if (rawId && productById[String(rawId)]) return String(rawId);
+      if (rawSku && productBySku[String(rawSku).toLowerCase().trim()]) {
+        return String(productBySku[String(rawSku).toLowerCase().trim()]._id);
+      }
+      if (rawTitle && productByTitle[String(rawTitle).toLowerCase().trim()]) {
+        return String(productByTitle[String(rawTitle).toLowerCase().trim()]._id);
+      }
+      return null;
+    };
+
+    const purchaseMap = {};
+    const curatedMap = {};
+    const eventViewMap = {};
+    const eventCartMap = {};
+    const lastViewedMap = {};
+
+    // 1. Sum historical order line items (excluding cancelled/refunded orders)
+    for (const ord of allOrders) {
+      const st = String(ord.status || '').toUpperCase();
+      if (['CANCELLED', 'CANCELED', 'REFUNDED'].includes(st)) continue;
+      for (const item of (Array.isArray(ord.items) ? ord.items : [])) {
+        const pid = resolveProdId(item._id || item.productId, item.sku, item.title || item.displayTitle);
+        if (pid) {
+          const qty = Math.max(1, Number(item.quantity) || 1);
+          purchaseMap[pid] = (purchaseMap[pid] || 0) + qty;
+        }
+      }
+    }
+
+    // 2. Sum InboxItem curations + User.recommendedProducts references
+    for (const inb of allInboxItems) {
+      const pid = inb.productId ? String(inb.productId) : null;
+      if (pid && productById[pid]) {
+        curatedMap[pid] = (curatedMap[pid] || 0) + 1;
+      }
+    }
+    for (const u of allUsers) {
+      for (const recId of (Array.isArray(u.recommendedProducts) ? u.recommendedProducts : [])) {
+        const pid = String(recId?._id || recId || '');
+        if (pid && productById[pid]) {
+          curatedMap[pid] = Math.max(curatedMap[pid] || 0, 1);
+        }
+      }
+    }
+
+    // 3. Sum tracked PRODUCT_VIEW & ADD_TO_CART events
+    for (const ev of allEvents) {
+      const pid = resolveProdId(ev.productId, null, ev.productTitle);
+      if (!pid) continue;
+      if (ev.eventType === 'PRODUCT_VIEW') {
+        eventViewMap[pid] = (eventViewMap[pid] || 0) + 1;
+        const evTime = ev.createdAt ? new Date(ev.createdAt) : null;
+        if (evTime && (!lastViewedMap[pid] || evTime > lastViewedMap[pid])) {
+          lastViewedMap[pid] = evTime;
+        }
+      } else if (ev.eventType === 'ADD_TO_CART') {
+        eventCartMap[pid] = (eventCartMap[pid] || 0) + 1;
+      }
+    }
+
+    const bulkOps = [];
+    for (const p of allProducts) {
+      const pid = String(p._id);
+      const nextPurchase = Math.max(Number(p.purchaseCount || 0), purchaseMap[pid] || 0);
+      const nextCurated = Math.max(Number(p.curatedCount || 0), curatedMap[pid] || 0);
+      const nextView = Math.max(Number(p.viewCount || 0), eventViewMap[pid] || 0);
+      const nextCart = Math.max(Number(p.cartAddCount || 0), eventCartMap[pid] || 0);
+      const nextLastViewed = lastViewedMap[pid] || p.lastViewedAt || null;
+
+      if (
+        nextPurchase !== Number(p.purchaseCount || 0) ||
+        nextCurated !== Number(p.curatedCount || 0) ||
+        nextView !== Number(p.viewCount || 0) ||
+        nextCart !== Number(p.cartAddCount || 0) ||
+        (nextLastViewed && !p.lastViewedAt)
+      ) {
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: p._id },
+            update: {
+              $set: {
+                purchaseCount: nextPurchase,
+                curatedCount: nextCurated,
+                viewCount: nextView,
+                cartAddCount: nextCart,
+                lastViewedAt: nextLastViewed
+              }
+            }
+          }
+        });
+      }
+    }
+
+    if (bulkOps.length > 0) {
+      await Product.bulkWrite(bulkOps);
+      console.log(`📊 Backfilled analytics counters on ${bulkOps.length} boutique product(s).`);
+    }
+    return { updatedProducts: bulkOps.length };
+  } catch (err) {
+    console.warn('⚠️ Error in backfillAnalyticsBaseline:', err.message);
+    return { updatedProducts: 0, error: err.message };
+  }
+};
+
+// Public & Member Non-Blocking Event Ingestion Endpoint
+app.post('/api/analytics/track', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const rawType = String(body.eventType || 'PAGE_VIEW').toUpperCase().trim();
+    const eventType = VALID_ANALYTICS_EVENT_TYPES.includes(rawType) ? rawType : 'PAGE_VIEW';
+
+    // Optionally decode JWT token if present to attach member identity without blocking guests
+    let userId = body.userId && mongoose.Types.ObjectId.isValid(String(body.userId)) ? body.userId : null;
+    let userEmail = body.userEmail ? normalizeEmail(body.userEmail) : '';
+    let membershipTier = body.membershipTier ? String(body.membershipTier).toLowerCase().trim() : '';
+
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+        if (decoded?._id && mongoose.Types.ObjectId.isValid(String(decoded._id))) {
+          const uDoc = await User.findById(decoded._id).select('_id email membershipTier role').lean();
+          if (uDoc) {
+            userId = uDoc._id;
+            userEmail = uDoc.email || userEmail;
+            membershipTier = uDoc.membershipTier || membershipTier || 'member';
+          }
+        }
+      } catch (jwtErr) {
+        // Ignore expired/invalid tokens on public telemetry
+      }
+    }
+
+    if (!membershipTier) {
+      membershipTier = userId || userEmail ? 'member' : 'guest';
+    }
+
+    let resolvedProductId =
+      body.productId && mongoose.Types.ObjectId.isValid(String(body.productId))
+        ? body.productId
+        : null;
+    let resolvedProductTitle = String(body.productTitle || body.title || '').trim();
+    let resolvedRitualStep = String(body.ritualStep || '').trim();
+
+    // If productId or productTitle is provided on product/cart events, atomically update Product counters
+    if (eventType === 'PRODUCT_VIEW' || eventType === 'ADD_TO_CART') {
+      let targetProduct = null;
+      if (resolvedProductId) {
+        targetProduct = await Product.findById(resolvedProductId).select('_id title ritualStep').lean();
+      } else if (resolvedProductTitle) {
+        targetProduct = await Product.findOne({
+          title: new RegExp(`^${escapeRegex(resolvedProductTitle)}$`, 'i')
+        }).select('_id title ritualStep').lean();
+      }
+
+      if (targetProduct) {
+        resolvedProductId = targetProduct._id;
+        resolvedProductTitle = targetProduct.title || resolvedProductTitle;
+        resolvedRitualStep = targetProduct.ritualStep || resolvedRitualStep;
+
+        if (eventType === 'PRODUCT_VIEW') {
+          await Product.findByIdAndUpdate(targetProduct._id, {
+            $inc: { viewCount: 1 },
+            $set: { lastViewedAt: new Date() }
+          }).catch(() => {});
+        } else if (eventType === 'ADD_TO_CART') {
+          await Product.findByIdAndUpdate(targetProduct._id, {
+            $inc: { cartAddCount: 1 }
+          }).catch(() => {});
+        }
+      }
+    }
+
+    const sessionId = String(body.sessionId || req.ip || 'anon_session').trim().slice(0, 120);
+    const page = String(body.page || '').trim().slice(0, 160);
+    const filterType = String(body.filterType || '').trim().slice(0, 80);
+    const filterValue = String(body.filterValue || '').trim().slice(0, 120);
+    const searchQuery = String(body.searchQuery || '').trim().slice(0, 160);
+    const cartValueUsd = Number(parseFloat(body.cartValueUsd || 0).toFixed(2)) || 0;
+
+    const eventDoc = new AnalyticsEvent({
+      eventType,
+      page,
+      sessionId,
+      userId,
+      userEmail,
+      membershipTier,
+      productId: resolvedProductId,
+      productTitle: resolvedProductTitle,
+      ritualStep: resolvedRitualStep,
+      filterType,
+      filterValue,
+      searchQuery,
+      cartValueUsd,
+      metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {}
+    });
+
+    await eventDoc.save();
+    return res.status(201).json({ tracked: true, eventId: eventDoc._id });
+  } catch (err) {
+    // Never break client UX if telemetry encounters an unexpected edge case
+    console.warn('⚠️ Telemetry ingestion warning:', err.message);
+    return res.status(200).json({ tracked: false });
+  }
+});
+
+// Helper to get YYYY-MM-DD in US Central Time (America/Chicago)
+const toDateKeyCT = (dateVal) => {
+  const d = dateVal instanceof Date ? dateVal : new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(d);
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  return `${map.year}-${map.month}-${map.day}`;
+};
+
+// Comprehensive Executive Site Analytics & Curation Intelligence Aggregator
+const buildSiteAnalyticsTelemetry = async ({ range = '30d' } = {}) => {
+  const cleanRange = String(range || '30d').toLowerCase().trim();
+  const rangeDays =
+    cleanRange === '7d' ? 7 :
+    cleanRange === '90d' ? 90 :
+    cleanRange === 'all' ? 365 : 30;
+
+  const now = new Date();
+  const cutoffDate = cleanRange === 'all'
+    ? new Date(0)
+    : new Date(now.getTime() - rangeDays * 24 * 60 * 60 * 1000);
+
+  const [
+    eventsInWindow,
+    recentEventsRaw,
+    allProducts,
+    allOrders,
+    allConsultations,
+    allUsers,
+    allInboxItems
+  ] = await Promise.all([
+    AnalyticsEvent.find(cleanRange === 'all' ? {} : { createdAt: { $gte: cutoffDate } })
+      .sort({ createdAt: -1 })
+      .lean(),
+    AnalyticsEvent.find({})
+      .sort({ createdAt: -1 })
+      .limit(35)
+      .lean(),
+    Product.find({}).lean(),
+    Order.find({}).sort({ createdAt: -1 }).lean(),
+    Consultation.find({}).populate('userId', 'name email membershipTier').lean(),
+    User.find({ role: { $ne: 'admin' } }).select('_id name email membershipTier recommendedProducts createdAt').lean(),
+    InboxItem.find({}).lean()
+  ]);
+
+  // 1. Overview KPIs & Visitor Session Breakdown
+  const uniqueSessionsSet = new Set();
+  const memberSessionsSet = new Set();
+  const guestSessionsSet = new Set();
+
+  let totalPageViews = 0;
+  let productViewsEventCount = 0;
+  let cartAdditionsEventCount = 0;
+  let removeFromCartCount = 0;
+  let checkoutsInitiatedCount = 0;
+  let quizStartsCount = 0;
+  let quizCompletionsEventCount = 0;
+  let memberEventsCount = 0;
+  let guestEventsCount = 0;
+
+  const pageStatsMap = {};
+  const filterUsageMap = {};
+  const searchKeywordsMap = {};
+  const windowProdViewsMap = {};
+  const windowProdCartsMap = {};
+
+  for (const ev of eventsInWindow) {
+    const sid = ev.sessionId || String(ev._id);
+    uniqueSessionsSet.add(sid);
+
+    const isMemberEvent = Boolean(
+      ev.userId ||
+      (ev.membershipTier && !['guest', 'anonymous', ''].includes(String(ev.membershipTier).toLowerCase()))
+    );
+    if (isMemberEvent) {
+      memberSessionsSet.add(sid);
+      memberEventsCount++;
+    } else {
+      guestSessionsSet.add(sid);
+      guestEventsCount++;
+    }
+
+    if (ev.eventType === 'PAGE_VIEW') {
+      totalPageViews++;
+      const pageLabel = String(ev.page || 'Public Landing Porch').trim() || 'Public Landing Porch';
+      if (!pageStatsMap[pageLabel]) {
+        pageStatsMap[pageLabel] = { page: pageLabel, views: 0, sessions: new Set(), memberViews: 0, guestViews: 0 };
+      }
+      pageStatsMap[pageLabel].views++;
+      pageStatsMap[pageLabel].sessions.add(sid);
+      if (isMemberEvent) pageStatsMap[pageLabel].memberViews++;
+      else pageStatsMap[pageLabel].guestViews++;
+    } else if (ev.eventType === 'PRODUCT_VIEW') {
+      productViewsEventCount++;
+      if (ev.productId) {
+        const pid = String(ev.productId);
+        windowProdViewsMap[pid] = (windowProdViewsMap[pid] || 0) + 1;
+      }
+    } else if (ev.eventType === 'ADD_TO_CART') {
+      cartAdditionsEventCount++;
+      if (ev.productId) {
+        const pid = String(ev.productId);
+        windowProdCartsMap[pid] = (windowProdCartsMap[pid] || 0) + 1;
+      }
+    } else if (ev.eventType === 'REMOVE_FROM_CART') {
+      removeFromCartCount++;
+    } else if (ev.eventType === 'CHECKOUT_INITIATED') {
+      checkoutsInitiatedCount++;
+    } else if (ev.eventType === 'QUIZ_STARTED') {
+      quizStartsCount++;
+    } else if (ev.eventType === 'QUIZ_COMPLETED') {
+      quizCompletionsEventCount++;
+    } else if (ev.eventType === 'FILTER_USED') {
+      const fType = String(ev.filterType || 'Boutique Filter').trim();
+      const fVal = String(ev.filterValue || 'All').trim();
+      if (fVal && fVal.toLowerCase() !== 'all') {
+        const key = `${fType}: ${fVal}`;
+        filterUsageMap[key] = (filterUsageMap[key] || 0) + 1;
+      }
+    } else if (ev.eventType === 'SEARCH_QUERY') {
+      const q = String(ev.searchQuery || '').toLowerCase().trim();
+      if (q && q.length >= 2) {
+        searchKeywordsMap[q] = (searchKeywordsMap[q] || 0) + 1;
+      }
+    }
+  }
+
+  // Combine event counters with Product document counters so baseline metrics are never lower than Product totals
+  const totalProductViewsCatalog = allProducts.reduce((sum, p) => sum + Number(p.viewCount || 0), 0);
+  const totalCartAddsCatalog = allProducts.reduce((sum, p) => sum + Number(p.cartAddCount || 0), 0);
+
+  const effectiveProductViews = cleanRange === 'all'
+    ? Math.max(productViewsEventCount, totalProductViewsCatalog)
+    : (productViewsEventCount || totalProductViewsCatalog);
+
+  const effectiveCartAdditions = cleanRange === 'all'
+    ? Math.max(cartAdditionsEventCount, totalCartAddsCatalog)
+    : (cartAdditionsEventCount || totalCartAddsCatalog);
+
+  const ordersInWindow = allOrders.filter(o =>
+    cleanRange === 'all' ? true : (o.createdAt && new Date(o.createdAt) >= cutoffDate)
+  );
+  const paidOrdersInWindow = ordersInWindow.filter(o => {
+    const st = String(o.status || '').toUpperCase();
+    return !['PENDING', 'CANCELLED', 'CANCELED', 'REFUNDED'].includes(st);
+  });
+
+  const paidOrdersCount = paidOrdersInWindow.length;
+  const totalOrdersCount = ordersInWindow.length;
+  const paidRevenueUsd = Number(
+    paidOrdersInWindow.reduce((sum, o) => sum + Number(o.totalAmount || 0), 0).toFixed(2)
+  );
+
+  const uniqueVisitors = Math.max(uniqueSessionsSet.size, totalPageViews > 0 ? 1 : 0);
+  const effectiveCheckoutsInitiated = Math.max(checkoutsInitiatedCount, totalOrdersCount);
+
+  const conversionRatePct = uniqueVisitors > 0
+    ? Number(((paidOrdersCount / uniqueVisitors) * 100).toFixed(1))
+    : (paidOrdersCount > 0 ? 100 : 0);
+
+  const totalBlueprintsCompleted = allConsultations.length;
+  const effectiveQuizStarts = Math.max(quizStartsCount, quizCompletionsEventCount, totalBlueprintsCompleted);
+  const effectiveQuizCompletions = Math.max(quizCompletionsEventCount, totalBlueprintsCompleted);
+  const quizCompletionRatePct = effectiveQuizStarts > 0
+    ? Number(Math.min(100, (effectiveQuizCompletions / effectiveQuizStarts) * 100).toFixed(1))
+    : 0;
+
+  const totalTrackedEvents = memberEventsCount + guestEventsCount;
+  const memberTrafficSharePct = totalTrackedEvents > 0
+    ? Number(((memberEventsCount / totalTrackedEvents) * 100).toFixed(1))
+    : 50;
+  const guestTrafficSharePct = totalTrackedEvents > 0
+    ? Number((100 - memberTrafficSharePct).toFixed(1))
+    : 50;
+
+  // 2. Daily Traffic & Engagement Series (last N days, capped at 30 bars for clean visualization)
+  const chartDaysCount = cleanRange === '7d' ? 7 : cleanRange === '90d' ? 30 : 14;
+  const dailyMap = {};
+  const dailySeries = [];
+
+  for (let i = chartDaysCount - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const dateKey = toDateKeyCT(d);
+    const label = d.toLocaleDateString('en-US', {
+      timeZone: 'America/Chicago',
+      month: 'short',
+      day: 'numeric'
+    });
+    const entry = {
+      dateStr: dateKey,
+      label,
+      pageViews: 0,
+      productViews: 0,
+      cartAdds: 0,
+      orders: 0
+    };
+    dailyMap[dateKey] = entry;
+    dailySeries.push(entry);
+  }
+
+  for (const ev of eventsInWindow) {
+    const key = toDateKeyCT(ev.createdAt);
+    const bucket = dailyMap[key];
+    if (!bucket) continue;
+    if (ev.eventType === 'PAGE_VIEW') bucket.pageViews++;
+    else if (ev.eventType === 'PRODUCT_VIEW') bucket.productViews++;
+    else if (ev.eventType === 'ADD_TO_CART') bucket.cartAdds++;
+  }
+
+  for (const ord of ordersInWindow) {
+    const key = toDateKeyCT(ord.createdAt);
+    const bucket = dailyMap[key];
+    if (bucket) bucket.orders++;
+  }
+
+  // 3. Top Viewed Pages & Member Sanctuary Tabs
+  const topPages = Object.values(pageStatsMap)
+    .map(item => ({
+      page: item.page,
+      views: item.views,
+      uniqueSessions: item.sessions.size,
+      memberViews: item.memberViews,
+      guestViews: item.guestViews,
+      sharePct: totalPageViews > 0 ? Number(((item.views / totalPageViews) * 100).toFixed(1)) : 0
+    }))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, 12);
+
+  // 4. Product Performance Leaderboard & Curation Insight Badges
+  const orderRevenueByProductMap = {};
+  const orderUnitsByProductMap = {};
+
+  for (const ord of allOrders) {
+    const st = String(ord.status || '').toUpperCase();
+    if (['CANCELLED', 'CANCELED', 'REFUNDED'].includes(st)) continue;
+    for (const item of (Array.isArray(ord.items) ? ord.items : [])) {
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const price = Number(item.price || 0);
+      const itemTitle = String(item.title || item.displayTitle || '').toLowerCase().trim();
+      const itemSku = String(item.sku || '').toLowerCase().trim();
+
+      const matchedProd = allProducts.find(p => {
+        if (item._id && String(p._id) === String(item._id)) return true;
+        if (item.productId && String(p._id) === String(item.productId)) return true;
+        if (itemTitle && String(p.title || '').toLowerCase().trim() === itemTitle) return true;
+        if (itemSku && Array.isArray(p.variants) && p.variants.some(v => String(v.sku || '').toLowerCase().trim() === itemSku)) {
+          return true;
+        }
+        return false;
+      });
+
+      if (matchedProd) {
+        const pid = String(matchedProd._id);
+        orderUnitsByProductMap[pid] = (orderUnitsByProductMap[pid] || 0) + qty;
+        orderRevenueByProductMap[pid] = Number(((orderRevenueByProductMap[pid] || 0) + price * qty).toFixed(2));
+      }
+    }
+  }
+
+  const productLeaderboard = allProducts
+    .map(prod => {
+      const pid = String(prod._id);
+      const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
+      const viewCount = Math.max(Number(prod.viewCount || 0), windowProdViewsMap[pid] || 0);
+      const cartAddCount = Math.max(Number(prod.cartAddCount || 0), windowProdCartsMap[pid] || 0);
+      const purchaseCount = Math.max(Number(prod.purchaseCount || 0), orderUnitsByProductMap[pid] || 0);
+      const curatedCount = Number(prod.curatedCount || 0);
+      const revenueUsd = orderRevenueByProductMap[pid] !== undefined
+        ? orderRevenueByProductMap[pid]
+        : Number((purchaseCount * price).toFixed(2));
+
+      const viewToCartRatePct = viewCount > 0
+        ? Number(Math.min(100, (cartAddCount / viewCount) * 100).toFixed(1))
+        : (cartAddCount > 0 ? 100 : 0);
+
+      const cartToOrderRatePct = cartAddCount > 0
+        ? Number(Math.min(100, (purchaseCount / cartAddCount) * 100).toFixed(1))
+        : (purchaseCount > 0 ? 100 : 0);
+
+      // Automated Curation Insight Badge for Susan
+      let curationInsightBadge = '🌱 Needs Visibility • Curate to Members';
+      let badgeTone = 'neutral';
+      if (purchaseCount >= 2 || (purchaseCount >= 1 && cartAddCount >= 2)) {
+        curationInsightBadge = '🔥 High-Demand Best-Seller';
+        badgeTone = 'hot';
+      } else if (viewCount >= 4 && cartAddCount === 0 && purchaseCount === 0) {
+        curationInsightBadge = '👀 High Views / Low Bag • Tune Price or Curate';
+        badgeTone = 'warning';
+      } else if (viewToCartRatePct >= 25 && (cartAddCount >= 1 || purchaseCount >= 1)) {
+        curationInsightBadge = '💎 High-Converting Gem • Push in Curation';
+        badgeTone = 'gem';
+      } else if (curatedCount >= 2 && viewCount <= 1) {
+        curationInsightBadge = '💌 Curated by Susan • Awaiting Member Views';
+        badgeTone = 'curated';
+      } else if (viewCount >= 1) {
+        curationInsightBadge = '✨ Active Shopper Interest';
+        badgeTone = 'active';
+      }
+
+      const engagementScore =
+        (purchaseCount * 35) +
+        (cartAddCount * 15) +
+        (viewCount * 4) +
+        (curatedCount * 8);
+
+      return {
+        _id: pid,
+        title: prod.title || 'Untitled Product',
+        imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
+        price: Number(price.toFixed(2)),
+        ritualStep: prod.ritualStep || 'Step 3: Serum & Essence',
+        skinTypes: Array.isArray(prod.skinTypes) ? prod.skinTypes : [],
+        skinConcerns: Array.isArray(prod.skinConcerns) ? prod.skinConcerns : [],
+        sensitivitySafe: prod.sensitivitySafe !== false,
+        sensitivityLabel: prod.sensitivityLabel || 'Gentle • High-Sensitivity Safe',
+        viewCount,
+        cartAddCount,
+        purchaseCount,
+        curatedCount,
+        revenueUsd,
+        viewToCartRatePct,
+        cartToOrderRatePct,
+        curationInsightBadge,
+        badgeTone,
+        engagementScore,
+        lastViewedAt: prod.lastViewedAt || null
+      };
+    })
+    .sort((a, b) => b.engagementScore - a.engagementScore || b.viewCount - a.viewCount);
+
+  // 5. Curation Intelligence: Member Blueprint Demand vs. Active Catalog Supply Matrix
+  const totalBlueprints = allConsultations.length;
+  const totalCatalog = allProducts.length;
+
+  const skinTypeOptions = ['Normal', 'Dry', 'Oily', 'Combination'];
+  const concernOptions = ['Hydration', 'Anti-Aging', 'Acne/Texture', 'Brightening', 'Barrier & Soothing', 'Luminous Makeup'];
+  const sensitivityOptions = ['High', 'Moderate', 'Low'];
+  const vibeOptions = ['Natural', 'Soft Glam', 'Full Glam'];
+
+  const skinTypeMatrix = skinTypeOptions.map(st => {
+    const memberCount = allConsultations.filter(c => String(c.skinType || '').toLowerCase() === st.toLowerCase()).length;
+    const memberSharePct = totalBlueprints > 0 ? Number(((memberCount / totalBlueprints) * 100).toFixed(1)) : 0;
+    const productCount = allProducts.filter(p =>
+      Array.isArray(p.skinTypes) &&
+      p.skinTypes.some(x => x.toLowerCase() === st.toLowerCase() || x.toLowerCase() === 'all skin types')
+    ).length;
+    const catalogSharePct = totalCatalog > 0 ? Number(((productCount / totalCatalog) * 100).toFixed(1)) : 0;
+    const gapScore = Number((memberSharePct - catalogSharePct).toFixed(1));
+    return {
+      trait: `${st} Skin`,
+      rawTrait: st,
+      category: 'Skin Type',
+      memberCount,
+      memberSharePct,
+      productCount,
+      catalogSharePct,
+      gapScore,
+      status: gapScore > 15 ? '⚠️ High Demand / Expand Catalog' : '✓ Well Stocked'
+    };
+  });
+
+  const skinConcernMatrix = concernOptions.map(sc => {
+    const memberCount = allConsultations.filter(c => {
+      if (String(c.primaryGoal || '').toLowerCase() === sc.toLowerCase()) return true;
+      if (sc === 'Barrier & Soothing' && ['high', 'moderate'].includes(String(c.skinSensitivity || '').toLowerCase())) return true;
+      if (sc === 'Luminous Makeup' && c.makeupVibe) return true;
+      return false;
+    }).length;
+    const memberSharePct = totalBlueprints > 0 ? Number(((memberCount / totalBlueprints) * 100).toFixed(1)) : 0;
+    const productCount = allProducts.filter(p =>
+      Array.isArray(p.skinConcerns) &&
+      p.skinConcerns.some(x => x.toLowerCase() === sc.toLowerCase())
+    ).length;
+    const catalogSharePct = totalCatalog > 0 ? Number(((productCount / totalCatalog) * 100).toFixed(1)) : 0;
+    const gapScore = Number((memberSharePct - catalogSharePct).toFixed(1));
+    return {
+      trait: sc,
+      rawTrait: sc,
+      category: 'Primary Skin Goal / Condition',
+      memberCount,
+      memberSharePct,
+      productCount,
+      catalogSharePct,
+      gapScore,
+      status:
+        productCount < 3 && memberCount > 0
+          ? '🚨 Low Catalog Supply — Sync or Add Products'
+          : gapScore > 15
+          ? '⚠️ High Member Demand — Curate More'
+          : '✓ Balanced Supply'
+    };
+  });
+
+  const sensitivityMatrix = sensitivityOptions.map(sens => {
+    const memberCount = allConsultations.filter(c => String(c.skinSensitivity || '').toLowerCase() === sens.toLowerCase()).length;
+    const memberSharePct = totalBlueprints > 0 ? Number(((memberCount / totalBlueprints) * 100).toFixed(1)) : 0;
+    const productCount = sens === 'High'
+      ? allProducts.filter(p => p.sensitivitySafe !== false).length
+      : allProducts.length;
+    const catalogSharePct = totalCatalog > 0 ? Number(((productCount / totalCatalog) * 100).toFixed(1)) : 0;
+    return {
+      trait: `${sens} Sensitivity`,
+      rawTrait: sens,
+      category: 'Skin Sensitivity',
+      memberCount,
+      memberSharePct,
+      productCount,
+      catalogSharePct,
+      gapScore: Number((memberSharePct - catalogSharePct).toFixed(1)),
+      status: sens === 'High' && productCount < Math.ceil(totalCatalog * 0.5)
+        ? '⚠️ Add More Gentle / Cica Formulas'
+        : '✓ Safe Coverage'
+    };
+  });
+
+  const makeupVibeMatrix = vibeOptions.map(vb => {
+    const memberCount = allConsultations.filter(c => String(c.makeupVibe || '').toLowerCase() === vb.toLowerCase()).length;
+    const memberSharePct = totalBlueprints > 0 ? Number(((memberCount / totalBlueprints) * 100).toFixed(1)) : 0;
+    const makeupProductsCount = allProducts.filter(p => p.ritualStep === 'Makeup & Artistry').length;
+    return {
+      trait: `${vb} Aesthetic`,
+      rawTrait: vb,
+      category: 'Signature Aesthetic',
+      memberCount,
+      memberSharePct,
+      productCount: makeupProductsCount,
+      catalogSharePct: totalCatalog > 0 ? Number(((makeupProductsCount / totalCatalog) * 100).toFixed(1)) : 0
+    };
+  });
+
+  // Identify top actionable curation recommendations for Susan
+  const curationRecommendations = [];
+  const topDesiredConcern = [...skinConcernMatrix].sort((a, b) => b.memberCount - a.memberCount)[0];
+  if (topDesiredConcern && topDesiredConcern.memberCount > 0) {
+    curationRecommendations.push(
+      `🎯 Top Member Goal: ${topDesiredConcern.memberCount} member Blueprint(s) (${topDesiredConcern.memberSharePct}%) target "${topDesiredConcern.trait}", supported by ${topDesiredConcern.productCount} active Boutique products.`
+    );
+  }
+  const underservedConcerns = skinConcernMatrix.filter(c => c.gapScore > 12 || (c.memberCount > 0 && c.productCount < 3));
+  if (underservedConcerns.length > 0) {
+    curationRecommendations.push(
+      `🛍️ Catalog Opportunity: Consider adding or syncing more products for ${underservedConcerns.map(u => `"${u.trait}" (${u.productCount} in stock)`).join(', ')}.`
+    );
+  }
+  const uncuratedMembers = allUsers.filter(u => !Array.isArray(u.recommendedProducts) || u.recommendedProducts.length === 0);
+  if (uncuratedMembers.length > 0) {
+    curationRecommendations.push(
+      `💌 Personal Curation Queue: ${uncuratedMembers.length} registered member(s) (${uncuratedMembers.slice(0, 3).map(u => u.name).join(', ')}) have 0 hand-pushed products in their Sanctuary Inbox.`
+    );
+  }
+
+  // 6. Boutique Conversion Funnel & Search/Filter Trends
+  const boutiquePageViews = Object.values(pageStatsMap)
+    .filter(p => /boutique/i.test(p.page))
+    .reduce((sum, p) => sum + p.views, 0);
+
+  const funnelSiteVisits = Math.max(totalPageViews, uniqueVisitors, effectiveProductViews);
+  const funnelBoutiqueViews = Math.max(boutiquePageViews, effectiveProductViews);
+
+  const conversionFunnel = [
+    {
+      stage: '1. Total Site & Sanctuary Views',
+      count: funnelSiteVisits,
+      pctOfTop: 100
+    },
+    {
+      stage: '2. Boutique Browsing Views',
+      count: funnelBoutiqueViews,
+      pctOfTop: funnelSiteVisits > 0 ? Number(Math.min(100, (funnelBoutiqueViews / funnelSiteVisits) * 100).toFixed(1)) : 0
+    },
+    {
+      stage: '3. Product Detail Modal Opens',
+      count: effectiveProductViews,
+      pctOfTop: funnelSiteVisits > 0 ? Number(Math.min(100, (effectiveProductViews / funnelSiteVisits) * 100).toFixed(1)) : 0
+    },
+    {
+      stage: '4. Added to Ritual Bag',
+      count: effectiveCartAdditions,
+      pctOfTop: funnelSiteVisits > 0 ? Number(Math.min(100, (effectiveCartAdditions / funnelSiteVisits) * 100).toFixed(1)) : 0
+    },
+    {
+      stage: '5. Completed & Paid Orders',
+      count: paidOrdersCount,
+      pctOfTop: funnelSiteVisits > 0 ? Number(Math.min(100, (paidOrdersCount / funnelSiteVisits) * 100).toFixed(1)) : 0
+    }
+  ];
+
+  const topFilters = Object.entries(filterUsageMap)
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12);
+
+  const topSearches = Object.entries(searchKeywordsMap)
+    .map(([keyword, count]) => ({ keyword, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12);
+
+  // 7. Recent Visitor & Member Activity Stream (in US Central Time)
+  const recentEvents = recentEventsRaw.map(ev => ({
+    _id: String(ev._id),
+    eventType: ev.eventType,
+    page: ev.page || '',
+    userEmail: ev.userEmail || '',
+    membershipTier: ev.membershipTier || 'guest',
+    productId: ev.productId ? String(ev.productId) : '',
+    productTitle: ev.productTitle || '',
+    ritualStep: ev.ritualStep || '',
+    filterType: ev.filterType || '',
+    filterValue: ev.filterValue || '',
+    searchQuery: ev.searchQuery || '',
+    cartValueUsd: Number(ev.cartValueUsd || 0),
+    isDemo: Boolean(ev.metadata?.isDemo),
+    createdAt: ev.createdAt,
+    timestampCT: formatCentralDateTime(ev.createdAt)
+  }));
+
+  return {
+    range: cleanRange,
+    overview: {
+      totalPageViews,
+      uniqueVisitors,
+      memberSessions: memberSessionsSet.size,
+      guestSessions: guestSessionsSet.size,
+      memberVsGuestRatio: `${memberTrafficSharePct}% Member / ${guestTrafficSharePct}% Guest`,
+      memberTrafficSharePct,
+      guestTrafficSharePct,
+      productViews: effectiveProductViews,
+      cartAdditions: effectiveCartAdditions,
+      removeFromCartCount,
+      checkoutsInitiated: effectiveCheckoutsInitiated,
+      paidOrdersCount,
+      totalOrdersCount,
+      paidRevenueUsd,
+      conversionRatePct,
+      quizStarts: effectiveQuizStarts,
+      quizCompletions: effectiveQuizCompletions,
+      quizCompletionRatePct,
+      totalCurationsSent: allInboxItems.length,
+      totalActiveProducts: totalCatalog,
+      totalMembersCount: allUsers.length
+    },
+    dailyTrafficSeries: dailySeries,
+    topPages,
+    conversionFunnel,
+    productLeaderboard: productLeaderboard.slice(0, 40),
+    blueprintDemandVsSupply: {
+      totalBlueprints,
+      totalCatalog,
+      skinTypes: skinTypeMatrix,
+      skinConcerns: skinConcernMatrix,
+      sensitivities: sensitivityMatrix,
+      makeupVibes: makeupVibeMatrix,
+      curationRecommendations,
+      uncuratedMembers: uncuratedMembers.slice(0, 10).map(u => ({
+        _id: String(u._id),
+        name: u.name,
+        email: u.email,
+        membershipTier: u.membershipTier || 'luminary'
+      }))
+    },
+    filterAndSearchTrends: {
+      topFilters,
+      topSearches
+    },
+    recentEvents,
+    updatedAt: new Date().toISOString(),
+    updatedAtCT: formatCentralDateTime(new Date())
+  };
+};
+
+// Admin Endpoint: Fetch Comprehensive Site Analytics & Curation Intelligence
+app.get('/api/admin/analytics', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const telemetry = await buildSiteAnalyticsTelemetry({ range });
+    res.status(200).json(telemetry);
+  } catch (error) {
+    console.error('Admin Analytics Aggregation Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to aggregate site analytics.' });
+  }
+});
+
+// Admin Endpoint: Seed Realistic Sample Traffic or Clear Demo Events (for 1-click chart previewing)
+const handleAdminAnalyticsSeedOrClear = async (req, res) => {
+  try {
+    const action = String(req.body?.action || 'seed').toLowerCase().trim();
+
+    if (action === 'clear_demo' || action === 'clear') {
+      const deleted = await AnalyticsEvent.deleteMany({ 'metadata.isDemo': true });
+      await Product.updateMany({}, { $set: { viewCount: 0, cartAddCount: 0, purchaseCount: 0, curatedCount: 0 } });
+      await backfillAnalyticsBaseline();
+      const telemetry = await buildSiteAnalyticsTelemetry({ range: req.body?.range || '30d' });
+      return res.status(200).json({
+        message: `Cleared ${deleted.deletedCount || 0} sample preview events and restored live baseline counters ✧`,
+        telemetry
+      });
+    }
+
+    const products = await Product.find({}).limit(24).lean();
+    const users = await User.find({ role: { $ne: 'admin' } }).limit(8).lean();
+
+    const pagesPool = [
+      { page: 'Public Landing Porch', weight: 18 },
+      { page: 'Public Boutique', weight: 14 },
+      { page: 'Member Sanctuary: Boutique', weight: 16 },
+      { page: 'Member Sanctuary: Blueprint', weight: 13 },
+      { page: 'Paid Membership Tiers', weight: 9 },
+      { page: 'Member Sanctuary: Inbox', weight: 7 },
+      { page: 'Member Sanctuary: Consultations', weight: 6 },
+      { page: 'Blueprint Quiz Step 1', weight: 5 },
+      { page: 'Member Sign In', weight: 6 }
+    ];
+
+    const filterSamples = [
+      { filterType: 'Blueprint Match', filterValue: 'Best Match for My Blueprint' },
+      { filterType: 'Skin Condition', filterValue: 'Hydration' },
+      { filterType: 'Skin Condition', filterValue: 'Anti-Aging' },
+      { filterType: 'Skin Condition', filterValue: 'Brightening' },
+      { filterType: 'Skin Type', filterValue: 'Dry' },
+      { filterType: 'Skin Type', filterValue: 'Combination' },
+      { filterType: 'Sensitivity', filterValue: 'High-Sensitivity Safe Only' },
+      { filterType: 'Ritual Step', filterValue: 'Step 3: Serum & Essence' }
+    ];
+
+    const searchSamples = [
+      'hyaluronic acid',
+      'vitamin c serum',
+      'barrier cream',
+      'eye patch',
+      'lip oil',
+      'peptide',
+      'gentle cleanser'
+    ];
+
+    const nowMs = Date.now();
+    const demoEvents = [];
+    const prodViewIncrements = {};
+    const prodCartIncrements = {};
+
+    // Generate 14 days of realistic boutique traffic
+    for (let dayOffset = 13; dayOffset >= 0; dayOffset--) {
+      const dayBaseMs = nowMs - dayOffset * 24 * 60 * 60 * 1000;
+      const sessionsToday = 4 + ((13 - dayOffset) % 5) + (dayOffset < 4 ? 3 : 0);
+
+      for (let s = 0; s < sessionsToday; s++) {
+        const sessionId = `demo_sess_${dayOffset}_${s}_${Math.random().toString(36).slice(2, 6)}`;
+        const isMember = s % 2 === 0 && users.length > 0;
+        const memberObj = isMember ? users[(dayOffset + s) % users.length] : null;
+        const eventTime = (minsAfter) => new Date(dayBaseMs - (s * 1800000) + minsAfter * 60000);
+
+        // 1. Landing or Sanctuary Page View
+        const primaryPage = pagesPool[(dayOffset + s) % pagesPool.length].page;
+        demoEvents.push({
+          eventType: 'PAGE_VIEW',
+          page: primaryPage,
+          sessionId,
+          userId: memberObj?._id || null,
+          userEmail: memberObj?.email || '',
+          membershipTier: memberObj?.membershipTier || 'guest',
+          metadata: { isDemo: true },
+          createdAt: eventTime(1)
+        });
+
+        // 2. Secondary Boutique Page View
+        const secondPage = isMember ? 'Member Sanctuary: Boutique' : 'Public Boutique';
+        demoEvents.push({
+          eventType: 'PAGE_VIEW',
+          page: secondPage,
+          sessionId,
+          userId: memberObj?._id || null,
+          userEmail: memberObj?.email || '',
+          membershipTier: memberObj?.membershipTier || 'guest',
+          metadata: { isDemo: true },
+          createdAt: eventTime(3)
+        });
+
+        // 3. Filter or Search interaction
+        if (s % 2 === 0) {
+          const f = filterSamples[(dayOffset + s) % filterSamples.length];
+          demoEvents.push({
+            eventType: 'FILTER_USED',
+            page: secondPage,
+            sessionId,
+            userId: memberObj?._id || null,
+            userEmail: memberObj?.email || '',
+            membershipTier: memberObj?.membershipTier || 'guest',
+            filterType: f.filterType,
+            filterValue: f.filterValue,
+            metadata: { isDemo: true },
+            createdAt: eventTime(4)
+          });
+        } else if (s % 3 === 0) {
+          const kw = searchSamples[(dayOffset + s) % searchSamples.length];
+          demoEvents.push({
+            eventType: 'SEARCH_QUERY',
+            page: secondPage,
+            sessionId,
+            userId: memberObj?._id || null,
+            userEmail: memberObj?.email || '',
+            membershipTier: memberObj?.membershipTier || 'guest',
+            searchQuery: kw,
+            metadata: { isDemo: true },
+            createdAt: eventTime(4)
+          });
+        }
+
+        // 4. Product Detail View & Add to Cart
+        if (products.length > 0) {
+          const p1 = products[(dayOffset * 2 + s) % products.length];
+          const p1Id = String(p1._id);
+          prodViewIncrements[p1Id] = (prodViewIncrements[p1Id] || 0) + 1;
+
+          demoEvents.push({
+            eventType: 'PRODUCT_VIEW',
+            page: secondPage,
+            sessionId,
+            userId: memberObj?._id || null,
+            userEmail: memberObj?.email || '',
+            membershipTier: memberObj?.membershipTier || 'guest',
+            productId: p1._id,
+            productTitle: p1.title,
+            ritualStep: p1.ritualStep || 'Step 3: Serum & Essence',
+            metadata: { isDemo: true },
+            createdAt: eventTime(6)
+          });
+
+          if ((dayOffset + s) % 3 !== 0) {
+            const pPrice = Number(p1.variants?.[0]?.price ?? p1.price ?? 48);
+            prodCartIncrements[p1Id] = (prodCartIncrements[p1Id] || 0) + 1;
+            demoEvents.push({
+              eventType: 'ADD_TO_CART',
+              page: secondPage,
+              sessionId,
+              userId: memberObj?._id || null,
+              userEmail: memberObj?.email || '',
+              membershipTier: memberObj?.membershipTier || 'guest',
+              productId: p1._id,
+              productTitle: p1.title,
+              ritualStep: p1.ritualStep || 'Step 3: Serum & Essence',
+              cartValueUsd: pPrice,
+              metadata: { isDemo: true },
+              createdAt: eventTime(8)
+            });
+
+            if (s === 0 && dayOffset % 2 === 0) {
+              demoEvents.push({
+                eventType: 'CHECKOUT_INITIATED',
+                page: secondPage,
+                sessionId,
+                userId: memberObj?._id || null,
+                userEmail: memberObj?.email || '',
+                membershipTier: memberObj?.membershipTier || 'guest',
+                cartValueUsd: pPrice,
+                metadata: { isDemo: true },
+                createdAt: eventTime(10)
+              });
+            }
+          }
+        }
+      }
+    }
+
+    await AnalyticsEvent.insertMany(demoEvents);
+
+    const bulkProdUpdates = [];
+    for (const [pid, incViews] of Object.entries(prodViewIncrements)) {
+      const incCarts = prodCartIncrements[pid] || 0;
+      bulkProdUpdates.push({
+        updateOne: {
+          filter: { _id: pid },
+          update: {
+            $inc: { viewCount: incViews, cartAddCount: incCarts },
+            $set: { lastViewedAt: new Date() }
+          }
+        }
+      });
+    }
+    if (bulkProdUpdates.length > 0) {
+      await Product.bulkWrite(bulkProdUpdates);
+    }
+
+    const telemetry = await buildSiteAnalyticsTelemetry({ range: req.body?.range || '30d' });
+    res.status(200).json({
+      message: `Populated ${demoEvents.length} sample boutique telemetry events across 14 days for your Analytics charts! ✧`,
+      seededCount: demoEvents.length,
+      telemetry
+    });
+  } catch (error) {
+    console.error('Seed Analytics Demo Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to seed sample analytics traffic.' });
+  }
+};
+
+app.post('/api/admin/analytics/seed-demo', authenticateToken, requireAdmin, handleAdminAnalyticsSeedOrClear);
+app.post('/api/admin/analytics/seed-sample', authenticateToken, requireAdmin, handleAdminAnalyticsSeedOrClear);
 
 // ---------------- ODIE PERSISTENT MEMORY & CHAT HISTORY ENGINE ---------------- //
 
@@ -2175,7 +3983,7 @@ app.delete('/api/admin/odie/history', authenticateToken, requireAdmin, async (re
   }
 });
 
-// ---------------- AI ASSISTANT ROUTE (9 EXECUTIVE BOUTIQUE & FINANCIAL TOOLS) ---------------- //
+// ---------------- ODIE AI ASSISTANT ROUTE (15 EXECUTIVE BOUTIQUE, MEMORY, DIAGNOSTIC & TREASURY TOOLS) ---------------- //
 const GEMINI_MODEL = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.8-flash';
 
 const getGeminiClient = () => {
@@ -2198,14 +4006,15 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
   try {
     const { message, history } = req.body;
     if (!message || !String(message).trim()) {
-      return res.status(400).json({ error: 'Please enter a message for the AI Assistant.' });
+      return res.status(400).json({ error: 'Please enter a message for Odie.' });
     }
 
     const { ai, Type } = getGeminiClient();
+    await ensureDefaultOdieMemories();
 
-    // Gather live boutique, calendar, and financial/order pipeline context for Susan's Executive Assistant
-    const [rawCatalog, rawUsers, blueprints, rawAppointments, financialTelemetry] = await Promise.all([
-      Product.find({}).select('_id title variants tags imageUrl').sort({ _id: -1 }).limit(180).lean(),
+    // Gather live boutique, calendar, financial/order pipeline, site analytics, and Odie's persistent Memory Bank + Chat History
+    const [rawCatalog, rawUsers, blueprints, rawAppointments, financialTelemetry, analyticsTelemetry, odieMemories, storedChatHistory] = await Promise.all([
+      Product.find({}).select('_id title variants tags skinTypes skinConcerns sensitivitySafe sensitivityLabel ritualStep keyActives viewCount cartAddCount purchaseCount curatedCount imageUrl').sort({ _id: -1 }).limit(180).lean(),
       User.find({}).select('_id name email membershipTier role').sort({ createdAt: -1 }).limit(100).lean(),
       Consultation.find({})
         .populate('userId', '_id name email membershipTier')
@@ -2217,15 +4026,46 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
         .sort({ startTime: 1 })
         .limit(60)
         .lean(),
-      buildFinancialAndOrderTelemetry({ syncCjOrders: false }).catch(() => null)
+      buildFinancialAndOrderTelemetry({ syncCjOrders: false }).catch(() => null),
+      buildSiteAnalyticsTelemetry({ range: '30d' }).catch(() => null),
+      OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean(),
+      OdieChatHistory.find({}).sort({ createdAt: -1 }).limit(30).lean()
     ]);
 
     const catalog = rawCatalog.map(prod => ({
       _id: String(prod._id),
       title: prod.title,
       price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
+      skinTypes: prod.skinTypes || [],
+      skinConcerns: prod.skinConcerns || [],
+      ritualStep: prod.ritualStep || 'Step 3: Serum & Essence',
+      sensitivityLabel: prod.sensitivityLabel || 'Gentle • High-Sensitivity Safe',
+      viewCount: Number(prod.viewCount || 0),
+      cartAddCount: Number(prod.cartAddCount || 0),
+      purchaseCount: Number(prod.purchaseCount || 0),
+      curatedCount: Number(prod.curatedCount || 0),
       tags: prod.tags || []
     }));
+
+    const analyticsContextSummary = analyticsTelemetry
+      ? {
+          overview: analyticsTelemetry.overview,
+          topPages: (analyticsTelemetry.topPages || []).slice(0, 6),
+          topProducts: (analyticsTelemetry.productLeaderboard || []).slice(0, 10).map(p => ({
+            _id: p._id,
+            title: p.title,
+            price: p.price,
+            viewCount: p.viewCount,
+            cartAddCount: p.cartAddCount,
+            purchaseCount: p.purchaseCount,
+            curatedCount: p.curatedCount,
+            curationInsightBadge: p.curationInsightBadge
+          })),
+          curationRecommendations: analyticsTelemetry.blueprintDemandVsSupply?.curationRecommendations || [],
+          topFilters: (analyticsTelemetry.filterAndSearchTrends?.topFilters || []).slice(0, 5),
+          topSearches: (analyticsTelemetry.filterAndSearchTrends?.topSearches || []).slice(0, 5)
+        }
+      : { note: 'Analytics telemetry unavailable' };
 
     const members = rawUsers.map(u => ({
       _id: String(u._id),
@@ -2244,6 +4084,15 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
       notes: appt.notes || '',
       meetingLink: appt.meetingLink || '',
       reminderSent: Boolean(appt.reminderSentAt)
+    }));
+
+    const formattedMemories = odieMemories.map(mem => ({
+      _id: String(mem._id),
+      category: mem.category,
+      key: mem.key,
+      content: mem.content,
+      pinned: Boolean(mem.pinned),
+      updatedAt: mem.updatedAt
     }));
 
     const financialContextSummary = financialTelemetry
@@ -2272,6 +4121,7 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
             projectedNext30DaysTotal: financialTelemetry.futureProjections?.projectedNext30DaysTotal,
             scheduledMemberBoxes: (financialTelemetry.futureProjections?.scheduledMemberBoxes || []).slice(0, 15)
           },
+          recentTransfers: (financialTelemetry.recentTransfers || []).slice(0, 10),
           recentOrders: (financialTelemetry.orderPipeline?.all || []).slice(0, 30).map(o => ({
             _id: o._id,
             shortId: o.shortId,
@@ -2291,11 +4141,15 @@ app.post('/api/admin/ai-chat', authenticateToken, requireAdmin, async (req, res)
 
     const currentCentralTimeStr = formatCentralDateTime(new Date());
 
-    const systemInstruction = `You are Susan's elite Executive AI Assistant for "Susan's Beauty Consulting" boutique.
+    const systemInstruction = `Your name is Odie. You are Susan's loyal, warm, and sharp Executive AI Assistant for "Susan's Beauty Consulting" boutique.
+Always identify yourself as Odie whenever Susan greets you or asks who you are.
 Current US Central Time (Kansas — America/Chicago): ${currentCentralTimeStr}.
 Primary Admin IONOS Mailbox: ${getPrimaryAdminEmail()}.
 
-You have 9 direct executive tools to manage the boutique, finances, and order pipeline on Susan's behalf:
+Odie's Persistent Long-Term Memory Bank (${formattedMemories.length} stored facts, rules & preferences — use rememberFact to save new facts or forgetFact to remove outdated ones):
+${JSON.stringify(formattedMemories)}
+
+You have 17 direct executive tools to manage the boutique, site analytics & curation intelligence, your persistent memory bank, system diagnostics, and Stripe/CJ treasury on Susan's behalf:
 1. addProduct: Add a new custom beauty or skincare product to the boutique catalog.
 2. updateProduct: Edit an existing product's title, price, description, imageUrl, or tags by its _id.
 3. deleteProduct: Permanently remove a product from the boutique catalog by its _id.
@@ -2305,6 +4159,17 @@ You have 9 direct executive tools to manage the boutique, finances, and order pi
 7. sendAppointmentReminder: Immediately send a 1-on-1 consultation reminder email (with video room link) to both the client and Susan.
 8. getFinancialAndOrderSummary: Retrieve live Stripe Account Balance, CJ Dropshipping Wallet Balance, Past/Present/Future order pipeline breakdown, and optionally sync live CJ order tracking numbers.
 9. updateOrderStatus: Update any customer order's status (Pending, PAID_PROCESSING, SHIPPED, DELIVERED, COMPLETED, CANCELLED, REFUNDED), tracking number, or courier, and optionally email the customer an instant update.
+10. rememberFact: Save or update a persistent fact, preference, VIP client note, financial goal, or business rule in Odie's long-term MongoDB Memory Bank.
+11. forgetFact: Delete a stored memory from Odie's long-term Memory Bank by its memoryId or key.
+12. runSystemDiagnostics: Run the 6-point unified system diagnostic suite (MongoDB, Stripe & CJ Webhooks, Stripe Treasury, CJ Dropshipping Wallet, IONOS SMTP, and Odie Brain) and optionally dispatch a live test email.
+13. syncOrCleanCjCatalog: Run a live CJ Dropshipping Health & Beauty catalog sync or purge non-beauty items.
+14. executeStripeMoneyDump: Initiate a Stripe "Money Dump" payout to Susan's bank account (supports full available balance or custom USD amount, standard/instant method, and Smart CJ Wholesale Reserve).
+15. transferStripeToCj: Execute the Stripe -> CJ Dropshipping Treasury Bridge to earmark wholesale funds from Stripe and automatically pay open CJ Dropshipping orders from Susan's CJ Wallet.
+16. reclassifyProductBlueprintLabels: Scan and label all boutique products with their matching Skin Types (Dry, Oily, Combination, Normal, All Skin Types), Skin Conditions/Concerns (Hydration, Anti-Aging, Acne/Texture, Brightening, Barrier & Soothing, Luminous Makeup), Sensitivity Safety, Key Actives, and Ritual Step.
+17. getSiteAnalyticsAndCurationInsights: Retrieve live site traffic, page views, most viewed/carted/purchased products, conversion funnel rates, and Member Blueprint demand vs. catalog supply gaps to help Susan curate and grow the boutique.
+
+Live Site Analytics & Curation Intelligence Snapshot (30d):
+${JSON.stringify(analyticsContextSummary)}
 
 Live Financial & Past/Present/Future Order Pipeline Snapshot:
 ${JSON.stringify(financialContextSummary)}
@@ -2321,12 +4186,16 @@ ${JSON.stringify(blueprints)}
 Scheduled Consultations (${upcomingAppointments.length} active — use _id for sendAppointmentReminder):
 ${JSON.stringify(upcomingAppointments)}
 
-Always execute the appropriate tool when Susan asks you to check/refresh her Stripe or CJ balances, inspect Past/Present/Future orders, update an order's status or tracking number, add/edit/remove a product, send an email, curate a product for a member, schedule a consultation, or send a consultation reminder. Maintain a graceful, warm, and executive tone.`;
+Always execute the appropriate tool when Susan asks you to remember or forget a fact, run diagnostics or test webhooks/email, sync the CJ catalog, execute a Stripe money dump, move money from Stripe to CJ Dropshipping, check/refresh her Stripe or CJ balances, inspect Past/Present/Future orders, update an order's status or tracking number, add/edit/remove a product, send an email, curate a product for a member, schedule a consultation, or send a consultation reminder. Maintain a graceful, warm, loyal, and executive tone as Odie.`;
 
-    // Build a clean, alternating multi-turn contents array that ignores error bubbles
+    // Build a clean, alternating multi-turn contents array from client history or stored MongoDB OdieChatHistory
+    const sourceHistory = (Array.isArray(history) && history.length > 0)
+      ? history
+      : storedChatHistory.slice().reverse();
+
     const contents = [];
-    if (Array.isArray(history)) {
-      for (const msg of history) {
+    if (Array.isArray(sourceHistory)) {
+      for (const msg of sourceHistory) {
         if (!msg || !msg.text || String(msg.text).startsWith('⚠️')) continue;
         const role = msg.role === 'user' ? 'user' : 'model';
         const text = String(msg.text).trim();
@@ -2346,6 +4215,15 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
     } else {
       contents.push({ role: 'user', parts: [{ text: cleanMessage }] });
     }
+
+    // Persist Susan's incoming message to OdieChatHistory
+    const adminEmail = normalizeEmail(req.user?.email || getPrimaryAdminEmail());
+    await new OdieChatHistory({
+      adminEmail,
+      role: 'user',
+      text: cleanMessage,
+      actionsTaken: []
+    }).save().catch(err => console.warn('⚠️ Could not log user chat history:', err.message));
 
     const executiveBoutiqueTools = {
       functionDeclarations: [
@@ -2472,6 +4350,121 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             },
             required: ['orderId', 'status']
           }
+        },
+        {
+          name: 'rememberFact',
+          description: "Saves or updates an important fact, preference, VIP client note, financial goal, or business rule in Odie's persistent MongoDB Memory Bank.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              key: { type: Type.STRING, description: 'Short label/title for the memory (e.g., "VIP Gift Rule" or "Preferred Payout Day")' },
+              content: { type: Type.STRING, description: 'Full detail of the fact, preference, or instruction to remember permanently' },
+              category: {
+                type: Type.STRING,
+                description: 'Memory category: preference, business_rule, vip_client, financial_goal, or general'
+              },
+              pinned: { type: Type.BOOLEAN, description: 'Whether to pin this memory to the top of Odie Memory Bank (default true)' }
+            },
+            required: ['key', 'content']
+          }
+        },
+        {
+          name: 'forgetFact',
+          description: "Removes a memory entry from Odie's persistent Memory Bank by its MongoDB _id or key.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              memoryId: { type: Type.STRING, description: 'Exact MongoDB _id of the memory entry to remove (optional if key is provided)' },
+              key: { type: Type.STRING, description: 'Key/title of the memory entry to remove (optional if memoryId is provided)' }
+            }
+          }
+        },
+        {
+          name: 'runSystemDiagnostics',
+          description: 'Runs the full 6-point boutique diagnostic test suite (MongoDB, Stripe & CJ Webhooks, Stripe Balance API, CJ Dropshipping Wallet API, IONOS SMTP Email, and Odie AI Brain).',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              sendLiveTestEmail: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to also dispatch a live diagnostic test email via IONOS SMTP to Susan.'
+              },
+              testEmailRecipient: {
+                type: Type.STRING,
+                description: 'Optional email address to receive the live test email (defaults to Susan primary admin email).'
+              }
+            }
+          }
+        },
+        {
+          name: 'syncOrCleanCjCatalog',
+          description: 'Runs the CJ Dropshipping Health & Beauty catalog sync or purges non-beauty items from MongoDB.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              purgeOnly: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to only purge non-beauty items without fetching new CJ products; false for full sync.'
+              }
+            }
+          }
+        },
+        {
+          name: 'executeStripeMoneyDump',
+          description: "Initiates a Stripe 'Money Dump' bank payout from Susan's available Stripe balance to her linked bank account.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              amountUsd: { type: Type.NUMBER, description: 'Custom USD amount to payout (omit or set fullAvailableDump=true to dump full available balance)' },
+              fullAvailableDump: { type: Type.BOOLEAN, description: 'Set to true to sweep the entire available Stripe balance' },
+              reserveForActiveOrders: { type: Type.BOOLEAN, description: 'Set to true to hold back enough funds to cover active unshipped CJ wholesale orders' },
+              method: { type: Type.STRING, description: 'Payout speed: "standard" or "instant"' },
+              notes: { type: Type.STRING, description: 'Optional note for the Treasury Transfer ledger' }
+            }
+          }
+        },
+        {
+          name: 'transferStripeToCj',
+          description: "Moves/earmarks wholesale funds from Stripe for CJ Dropshipping and automatically pays open unpaid CJ orders using Susan's CJ Wallet balance.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              amountUsd: { type: Type.NUMBER, description: 'USD amount to allocate from Stripe to CJ wholesale (defaults to active unshipped wholesale cost)' },
+              allocateFromStripe: { type: Type.BOOLEAN, description: 'Set to true to initiate a dedicated Stripe wholesale payout earmark' },
+              payUnpaidCjOrders: { type: Type.BOOLEAN, description: 'Set to true to automatically pay open CJ Dropshipping orders via CJ Wallet API' },
+              notes: { type: Type.STRING, description: 'Optional note for the Treasury Transfer ledger' }
+            }
+          }
+        },
+        {
+          name: 'reclassifyProductBlueprintLabels',
+          description: 'Re-scans and labels all boutique products with structured Skin Types, Skin Conditions/Concerns, Sensitivity Safety, Key Actives, and Ritual Steps so members can match products to their Beauty Blueprint.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              forceAll: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to re-classify every product in the catalog (default true).'
+              }
+            }
+          }
+        },
+        {
+          name: 'getSiteAnalyticsAndCurationInsights',
+          description: 'Retrieves comprehensive site analytics including page views, unique visitors, most viewed/carted/purchased products, conversion funnel metrics, shopper search/filter trends, and Member Blueprint demand vs. inventory supply gaps.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              range: {
+                type: Type.STRING,
+                description: 'Time window to analyze: "7d", "30d", "90d", or "all" (default "30d").'
+              },
+              seedSampleIfEmpty: {
+                type: Type.BOOLEAN,
+                description: 'Set to true only if Susan explicitly asks to seed sample preview traffic.'
+              }
+            }
+          }
         }
       ]
     };
@@ -2488,13 +4481,13 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const summaries = [];
-      const payload = { actionsTaken: [] };
+      const payload = { actionsTaken: [], assistantName: 'Odie' };
 
       for (const call of response.functionCalls) {
         const args = call.args || {};
 
         if (call.name === 'addProduct') {
-          const cleanTitle = String(args.title || '').trim();
+          const cleanTitle = String(args.title || '').trim() || 'Susan Bespoke Essential';
           const cleanPrice = parseFloat(args.price) || 0;
           const cleanDesc = String(args.description || '').trim();
           const cleanImg = String(args.imageUrl || '').trim();
@@ -2502,11 +4495,19 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             ? String(args.tags).split(',').map(t => t.trim()).filter(Boolean)
             : ['beauty', 'skincare'];
 
+          const classified = classifyProductForBlueprint(cleanTitle, tagList.join(' '), cleanDesc, { tags: tagList });
+
           const created = new Product({
-            title: cleanTitle || 'Susan Bespoke Essential',
+            title: cleanTitle,
             description: cleanDesc,
             imageUrl: cleanImg,
-            tags: tagList,
+            tags: classified.tags,
+            skinTypes: classified.skinTypes,
+            skinConcerns: classified.skinConcerns,
+            sensitivitySafe: classified.sensitivitySafe,
+            sensitivityLabel: classified.sensitivityLabel,
+            ritualStep: classified.ritualStep,
+            keyActives: classified.keyActives,
             variants: [{
               sku: `CUSTOM-${Date.now()}`,
               variantName: 'Standard',
@@ -2517,7 +4518,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
           await created.save();
           payload.addedProduct = created;
           payload.actionsTaken.push('addProduct');
-          summaries.push(`✧ Added "${created.title}" ($${cleanPrice.toFixed(2)}) to the boutique inventory.`);
+          summaries.push(`✧ Odie added "${created.title}" ($${cleanPrice.toFixed(2)}) [Best for: ${classified.skinTypes.join(', ')} | Targets: ${classified.skinConcerns.join(', ')}] to the boutique inventory.`);
         }
 
         else if (call.name === 'updateProduct') {
@@ -2542,6 +4543,20 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
                 ? args.tags
                 : String(args.tags).split(',').map(t => t.trim()).filter(Boolean);
             }
+            const classified = classifyProductForBlueprint(
+              prod.title,
+              prod.rawCjData?.categoryName || (prod.tags || []).join(' '),
+              prod.description,
+              { tags: prod.tags }
+            );
+            prod.tags = classified.tags;
+            prod.skinTypes = classified.skinTypes;
+            prod.skinConcerns = classified.skinConcerns;
+            prod.sensitivitySafe = classified.sensitivitySafe;
+            prod.sensitivityLabel = classified.sensitivityLabel;
+            prod.ritualStep = classified.ritualStep;
+            prod.keyActives = classified.keyActives;
+
             const parsedPrice = args.price !== undefined ? parseFloat(args.price) : NaN;
             if (prod.variants && prod.variants.length > 0) {
               if (!isNaN(parsedPrice) && parsedPrice >= 0) {
@@ -2562,7 +4577,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             payload.updatedProduct = prod;
             payload.actionsTaken.push('updateProduct');
             const updatedPrice = Number(prod.variants?.[0]?.price ?? 0).toFixed(2);
-            summaries.push(`✧ Updated "${prod.title}" ($${updatedPrice}) in the boutique catalog.`);
+            summaries.push(`✧ Odie updated "${prod.title}" ($${updatedPrice}) and refreshed its Blueprint skin-condition labels.`);
           }
         }
 
@@ -2574,7 +4589,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
           if (deleted) {
             payload.deletedProductId = String(pid);
             payload.actionsTaken.push('deleteProduct');
-            summaries.push(`✧ Permanently removed "${deleted.title}" from the boutique database.`);
+            summaries.push(`✧ Odie permanently removed "${deleted.title}" from the boutique database.`);
           } else {
             summaries.push(`✧ Could not find a product with ID "${pid}" in the database.`);
           }
@@ -2600,7 +4615,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             const newLog = await new EmailLog({ to: cleanTo, subject: cleanSubject, body: cleanBody }).save();
             payload.sentEmailLog = newLog;
             payload.actionsTaken.push('sendCustomerEmail');
-            summaries.push(`✧ Dispatched email "${cleanSubject}" to ${cleanTo} and logged it in Sent Messages.`);
+            summaries.push(`✧ Odie dispatched email "${cleanSubject}" to ${cleanTo} and logged it in Sent Messages.`);
           }
         }
 
@@ -2629,13 +4644,14 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
               productId: product._id,
               message: customNote
             }).save();
+            await Product.findByIdAndUpdate(product._id, { $inc: { curatedCount: 1 } }).catch(() => {});
             payload.curatedRecommendation = {
               userId: String(member._id),
               productId: String(product._id),
               inboxItemId: String(inboxItem._id)
             };
             payload.actionsTaken.push('curateProductForMember');
-            summaries.push(`✧ Pushed "${product.title}" to ${member.name}'s Sanctuary Inbox & Beauty Blueprint with your note.`);
+            summaries.push(`✧ Odie pushed "${product.title}" to ${member.name}'s Sanctuary Inbox & Beauty Blueprint with your note.`);
           }
         }
 
@@ -2695,7 +4711,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
 
               payload.scheduledAppointment = populatedAppt;
               payload.actionsTaken.push('scheduleConsultation');
-              summaries.push(`✧ Scheduled a 1-on-1 consultation with ${clientUser.name} for ${formatCentralDateTime(start)} and emailed their Video Sanctuary link.`);
+              summaries.push(`✧ Odie scheduled a 1-on-1 consultation with ${clientUser.name} for ${formatCentralDateTime(start)} and emailed their Video Sanctuary link.`);
             }
           }
         }
@@ -2708,7 +4724,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             const reminderResult = await dispatchAppointmentReminder(aid, 'ai');
             payload.remindedAppointmentId = String(aid);
             payload.actionsTaken.push('sendAppointmentReminder');
-            summaries.push(`✧ Sent 1-on-1 consultation reminder email to ${reminderResult.clientEmail || 'client'} and to your inbox for ${reminderResult.formattedTime}.`);
+            summaries.push(`✧ Odie sent a 1-on-1 consultation reminder email to ${reminderResult.clientEmail || 'client'} and to your inbox for ${reminderResult.formattedTime}.`);
           }
         }
 
@@ -2725,7 +4741,7 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
           const fp = freshTelemetry.futureProjections || {};
 
           summaries.push(
-            `✧ Live Executive Financial & Order Pipeline Brief:\n` +
+            `✧ Odie's Live Executive Financial & Order Pipeline Brief:\n` +
             `• Stripe Balance (${sb.mode || 'TEST'}): $${Number(sb.availableUsd || 0).toFixed(2)} Available | $${Number(sb.pendingUsd || 0).toFixed(2)} Pending\n` +
             `• CJ Dropshipping Wallet: $${Number(cjb.availableUsd || 0).toFixed(2)} Available (${cjb.walletCoversActiveOrders ? 'Covers all active unshipped orders ✓' : 'Needs top-up for active orders ⚠️'})\n` +
             `• Order Pipeline: ${counts.past || 0} Past (Completed/Delivered) | ${counts.present || 0} Present (Paid/In-Transit) | ${counts.future || 0} Future Carts + ${counts.scheduledMemberBoxes || 0} Upcoming Member Ritual Boxes\n` +
@@ -2773,30 +4789,191 @@ Always execute the appropriate tool when Susan asks you to check/refresh her Str
             payload.updatedOrder = ord;
             payload.actionsTaken.push('updateOrderStatus');
             summaries.push(
-              `✧ Updated Order #${String(ord._id).slice(-6).toUpperCase()} (${ord.customerEmail}) to "${ord.status}"` +
+              `✧ Odie updated Order #${String(ord._id).slice(-6).toUpperCase()} (${ord.customerEmail}) to "${ord.status}"` +
               `${ord.tracking_code ? ` with tracking ${ord.tracking_code}` : ''}` +
               `${notified ? ' and emailed the customer.' : '.'}`
             );
           }
         }
+
+        else if (call.name === 'rememberFact') {
+          const savedMem = await upsertOdieMemoryFact({
+            key: args.key || 'Susan Executive Note',
+            content: args.content || '',
+            category: args.category || 'general',
+            source: 'odie_auto',
+            pinned: args.pinned !== undefined ? Boolean(args.pinned) : true
+          });
+          payload.savedMemory = savedMem;
+          payload.actionsTaken.push('rememberFact');
+          summaries.push(`🧠 Odie saved to long-term memory [${savedMem.category}]: "${savedMem.key}" — ${savedMem.content}`);
+        }
+
+        else if (call.name === 'forgetFact') {
+          let removedMem = null;
+          if (args.memoryId && mongoose.Types.ObjectId.isValid(String(args.memoryId))) {
+            removedMem = await OdieMemory.findByIdAndDelete(args.memoryId);
+          } else if (args.key && String(args.key).trim()) {
+            removedMem = await OdieMemory.findOneAndDelete({
+              key: new RegExp(`^${escapeRegex(String(args.key).trim())}$`, 'i')
+            });
+          }
+          payload.actionsTaken.push('forgetFact');
+          if (removedMem) {
+            summaries.push(`🧠 Odie removed "${removedMem.key}" from the long-term Memory Bank.`);
+          } else {
+            summaries.push(`🧠 Could not find a matching memory entry to remove.`);
+          }
+        }
+
+        else if (call.name === 'runSystemDiagnostics') {
+          const diagReport = await runFullSystemDiagnosticsSuite({
+            sendLiveTestEmail: Boolean(args.sendLiveTestEmail),
+            testEmailRecipient: args.testEmailRecipient || ''
+          });
+          payload.diagnosticsReport = diagReport;
+          payload.actionsTaken.push('runSystemDiagnostics');
+          const checkLines = (diagReport.checksList || []).map(
+            c => `• ${c.passed ? '✅' : '⚠️'} ${c.name}: ${c.details}`
+          );
+          summaries.push(
+            `🧪 ${diagReport.message}\n` + checkLines.join('\n')
+          );
+        }
+
+        else if (call.name === 'syncOrCleanCjCatalog') {
+          const purgeOnly = Boolean(args.purgeOnly);
+          if (purgeOnly) {
+            const purgedCount = await purgeNonBeautyCjProducts();
+            const activeTotal = await Product.countDocuments();
+            payload.actionsTaken.push('syncOrCleanCjCatalog');
+            summaries.push(`🧹 Odie cleaned the catalog: purged ${purgedCount} non-beauty CJ items (${activeTotal} verified items active).`);
+          } else {
+            const syncRes = await syncCJCatalog({});
+            payload.actionsTaken.push('syncOrCleanCjCatalog');
+            summaries.push(`🔄 Odie completed CJ Beauty & Skincare sync: purged ${syncRes.purgedCount || 0} non-beauty items and synced ${syncRes.syncedCount || 0} beauty products (${syncRes.activeTotal || 0} total active).`);
+          }
+        }
+
+        else if (call.name === 'executeStripeMoneyDump') {
+          try {
+            const dumpRes = await executeStripeMoneyDump({
+              amountUsd: args.amountUsd,
+              fullAvailableDump: Boolean(args.fullAvailableDump),
+              reserveForActiveOrders: args.reserveForActiveOrders !== undefined ? Boolean(args.reserveForActiveOrders) : true,
+              method: args.method || 'standard',
+              notes: args.notes || 'Triggered by Odie AI on Susan command',
+              triggeredBy: 'odie'
+            });
+            payload.stripeMoneyDumpResult = dumpRes;
+            payload.financialTelemetry = dumpRes.telemetry;
+            payload.actionsTaken.push('executeStripeMoneyDump');
+            summaries.push(dumpRes.message);
+          } catch (dumpErr) {
+            summaries.push(`⚠️ Odie could not complete the Stripe Money Dump: ${dumpErr.message}`);
+          }
+        }
+
+        else if (call.name === 'transferStripeToCj') {
+          try {
+            const bridgeRes = await executeStripeToCjBridge({
+              amountUsd: args.amountUsd,
+              allocateFromStripe: args.allocateFromStripe !== undefined ? Boolean(args.allocateFromStripe) : true,
+              payUnpaidCjOrders: args.payUnpaidCjOrders !== undefined ? Boolean(args.payUnpaidCjOrders) : true,
+              notes: args.notes || 'Triggered by Odie AI on Susan command',
+              triggeredBy: 'odie'
+            });
+            payload.stripeToCjResult = bridgeRes;
+            payload.financialTelemetry = bridgeRes.telemetry;
+            payload.actionsTaken.push('transferStripeToCj');
+            summaries.push(bridgeRes.message);
+          } catch (bridgeErr) {
+            summaries.push(`⚠️ Odie could not complete the Stripe -> CJ transfer bridge: ${bridgeErr.message}`);
+          }
+        }
+
+        else if (call.name === 'reclassifyProductBlueprintLabels') {
+          const forceAll = args.forceAll !== undefined ? Boolean(args.forceAll) : true;
+          const labelResult = await backfillProductBlueprintLabels(forceAll);
+          await backfillConsultationAnalyses();
+          payload.reclassifiedProducts = labelResult;
+          payload.actionsTaken.push('reclassifyProductBlueprintLabels');
+          summaries.push(
+            `🏷️ Odie classified and labeled ${labelResult.updatedCount || 0} boutique product(s) (${labelResult.totalCount || 0} total active) with Skin Types, Skin Conditions, Sensitivity Safety, Key Actives, and Ritual Steps!`
+          );
+        }
+
+        else if (call.name === 'getSiteAnalyticsAndCurationInsights') {
+          const range = args.range || '30d';
+          const siteAnalytics = await buildSiteAnalyticsTelemetry({ range });
+          payload.siteAnalytics = siteAnalytics;
+          payload.actionsTaken.push('getSiteAnalyticsAndCurationInsights');
+
+          const ov = siteAnalytics.overview || {};
+          const topProds = (siteAnalytics.productLeaderboard || []).slice(0, 5);
+          const topPagesList = (siteAnalytics.topPages || []).slice(0, 4);
+          const recs = siteAnalytics.blueprintDemandVsSupply?.curationRecommendations || [];
+
+          const topProdsText = topProds.length > 0
+            ? topProds.map((p, idx) => `  ${idx + 1}. ${p.title} ($${p.price}) — ${p.viewCount} views, ${p.cartAddCount} bag adds, ${p.purchaseCount} sold [${p.curationInsightBadge}]`).join('\n')
+            : '  • No product views recorded yet.';
+
+          const topPagesText = topPagesList.length > 0
+            ? topPagesList.map(pg => `${pg.page} (${pg.views} views)`).join(' • ')
+            : 'No page views recorded yet';
+
+          summaries.push(
+            `📊 Odie's Executive Site Analytics & Curation Brief (${range}):\n` +
+            `• Traffic & Sessions: ${ov.totalPageViews || 0} Page Views across ${ov.uniqueVisitors || 0} Unique Sessions (${ov.memberVsGuestRatio || '50% Member / 50% Guest'})\n` +
+            `• Top Viewed Pages: ${topPagesText}\n` +
+            `• Boutique Funnel: ${ov.productViews || 0} Product Detail Opens → ${ov.cartAdditions || 0} Bag Additions → ${ov.paidOrdersCount || 0} Paid Orders (${ov.conversionRatePct || 0}% Conversion)\n` +
+            `• Blueprint Quiz Funnel: ${ov.quizCompletions || 0}/${ov.quizStarts || 0} Completed (${ov.quizCompletionRatePct || 0}% Completion Rate)\n` +
+            `• Top Engaging Products:\n${topProdsText}` +
+            (recs.length > 0 ? `\n• Curation Intelligence Notes:\n  - ${recs.join('\n  - ')}` : '')
+          );
+        }
       }
 
+      const finalActionReply = summaries.join('\n\n') || '✧ Odie completed your request, Susan.';
+      await new OdieChatHistory({
+        adminEmail,
+        role: 'model',
+        text: finalActionReply,
+        actionsTaken: payload.actionsTaken
+      }).save().catch(() => {});
+
+      const latestMemories = await OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean();
+
       return res.status(200).json({
-        response: summaries.join('\n\n') || '✧ Completed your request, Susan.',
+        response: finalActionReply,
+        memories: latestMemories,
         ...payload
       });
     }
 
     const replyText = (response && typeof response.text === 'string' && response.text.trim())
       ? response.text.trim()
-      : "I'm here, Susan ✧ Could you rephrase that request for me?";
+      : "I'm right here, Susan ✧ Could you rephrase that request for Odie?";
 
-    res.status(200).json({ response: replyText });
+    await new OdieChatHistory({
+      adminEmail,
+      role: 'model',
+      text: replyText,
+      actionsTaken: []
+    }).save().catch(() => {});
+
+    const latestMemories = await OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean();
+
+    res.status(200).json({
+      assistantName: 'Odie',
+      response: replyText,
+      memories: latestMemories
+    });
 
   } catch (error) {
-    console.error("AI Chat Error:", error);
+    console.error("Odie AI Chat Error:", error);
     res.status(500).json({ 
-      error: error?.message || 'Failed to communicate with AI Assistant.' 
+      error: error?.message || 'Failed to communicate with Odie AI Assistant.' 
     });
   }
 });
@@ -3403,17 +5580,62 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
   }
 });
 
-// ---------------- MANUAL INVENTORY ROUTES ---------------- //
+// ---------------- MANUAL INVENTORY & BLUEPRINT LABELING ROUTES ---------------- //
+
+app.post('/api/admin/products/reclassify-labels', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const forceAll = req.body?.forceAll !== undefined ? Boolean(req.body.forceAll) : true;
+    const result = await backfillProductBlueprintLabels(forceAll);
+    await backfillConsultationAnalyses();
+    const products = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: `Labeled ${result.updatedCount || 0} product(s) with Skin Types, Skin Conditions & Ritual Steps (${products.length} total active) ✧`,
+      ...result,
+      products
+    });
+  } catch (error) {
+    console.error('Reclassify Product Labels Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to reclassify product Blueprint labels.' });
+  }
+});
 
 app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { title, description, imageUrl, price, tags } = req.body;
+    const {
+      title,
+      description,
+      imageUrl,
+      price,
+      tags,
+      skinTypes,
+      skinConcerns,
+      sensitivitySafe,
+      sensitivityLabel,
+      ritualStep,
+      keyActives
+    } = req.body || {};
+
+    const classified = classifyProductForBlueprint(title, '', description, {
+      tags,
+      skinTypes,
+      skinConcerns,
+      sensitivitySafe,
+      sensitivityLabel,
+      ritualStep,
+      keyActives
+    });
     
     const newProduct = new Product({
       title,
       description,
       imageUrl,
-      tags: tags ? tags.split(',').map(t => t.trim()) : [],
+      tags: classified.tags,
+      skinTypes: classified.skinTypes,
+      skinConcerns: classified.skinConcerns,
+      sensitivitySafe: classified.sensitivitySafe,
+      sensitivityLabel: classified.sensitivityLabel,
+      ritualStep: classified.ritualStep,
+      keyActives: classified.keyActives,
       variants: [{
         sku: `CUSTOM-${Date.now()}`,
         variantName: 'Standard',
@@ -3431,21 +5653,50 @@ app.post('/api/admin/products', authenticateToken, requireAdmin, async (req, res
 
 app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { title, description, imageUrl, price, tags } = req.body;
+    const {
+      title,
+      description,
+      imageUrl,
+      price,
+      tags,
+      skinTypes,
+      skinConcerns,
+      sensitivitySafe,
+      sensitivityLabel,
+      ritualStep,
+      keyActives
+    } = req.body || {};
     const product = await Product.findById(req.params.id);
     
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
-    product.title = title;
-    product.description = description;
-    product.imageUrl = imageUrl;
-    
-    if (tags) {
-      product.tags = Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim());
-    }
+    if (title !== undefined) product.title = title;
+    if (description !== undefined) product.description = description;
+    if (imageUrl !== undefined) product.imageUrl = imageUrl;
+
+    const catName = product.rawCjData?.categoryName || '';
+    const classified = classifyProductForBlueprint(product.title, catName, product.description, {
+      tags: tags !== undefined ? tags : product.tags,
+      skinTypes,
+      skinConcerns,
+      sensitivitySafe,
+      sensitivityLabel,
+      ritualStep,
+      keyActives
+    });
+
+    product.tags = classified.tags;
+    product.skinTypes = classified.skinTypes;
+    product.skinConcerns = classified.skinConcerns;
+    product.sensitivitySafe = classified.sensitivitySafe;
+    product.sensitivityLabel = classified.sensitivityLabel;
+    product.ritualStep = classified.ritualStep;
+    product.keyActives = classified.keyActives;
 
     if (product.variants && product.variants.length > 0) {
-      product.variants[0].price = parseFloat(price) || product.variants[0].price;
+      if (price !== undefined && !isNaN(parseFloat(price))) {
+        product.variants[0].price = parseFloat(price);
+      }
       if (imageUrl) product.variants[0].imageUrl = imageUrl;
     } else {
       product.variants = [{ 
@@ -3474,8 +5725,20 @@ app.delete('/api/admin/products/:id', authenticateToken, requireAdmin, async (re
 
 app.get('/api/products', async (req, res) => {
   try {
-    const { category } = req.query;
-    const filter = category ? { tags: new RegExp(`^${category}$`, 'i') } : {};
+    const { category, skinType, skinConcern, ritualStep } = req.query;
+    const filter = {};
+    if (category) {
+      filter.tags = new RegExp(`^${escapeRegex(category)}$`, 'i');
+    }
+    if (skinType && skinType !== 'All') {
+      filter.skinTypes = { $in: [new RegExp(`^${escapeRegex(skinType)}$`, 'i'), 'All Skin Types'] };
+    }
+    if (skinConcern && skinConcern !== 'All') {
+      filter.skinConcerns = new RegExp(`^${escapeRegex(skinConcern)}$`, 'i');
+    }
+    if (ritualStep && ritualStep !== 'All') {
+      filter.ritualStep = new RegExp(escapeRegex(ritualStep), 'i');
+    }
     const products = await Product.find(filter);
     res.status(200).json(products);
   } catch (error) {
@@ -3690,9 +5953,17 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
 app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
   try {
     const existingBlueprint = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 }).lean();
+    if (existingBlueprint && (!existingBlueprint.blueprintAnalysis || !existingBlueprint.blueprintAnalysis.archetypeTitle)) {
+      const generatedAnalysis = generateBlueprintAnalysis(existingBlueprint);
+      await Consultation.findByIdAndUpdate(existingBlueprint._id, {
+        $set: { blueprintAnalysis: generatedAnalysis }
+      }).catch(() => {});
+      existingBlueprint.blueprintAnalysis = generatedAnalysis;
+    }
     res.status(200).json({
       hasCompletedQuiz: Boolean(existingBlueprint),
-      blueprint: existingBlueprint || null
+      blueprint: existingBlueprint || null,
+      blueprintAnalysis: existingBlueprint?.blueprintAnalysis || null
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch member blueprint status' });
@@ -3704,15 +5975,23 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
     // Enforce one-time-only Blueprint Quiz per member account
     const existingConsultation = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 });
     if (existingConsultation) {
+      if (!existingConsultation.blueprintAnalysis || !existingConsultation.blueprintAnalysis.archetypeTitle) {
+        existingConsultation.blueprintAnalysis = generateBlueprintAnalysis(existingConsultation);
+        await existingConsultation.save().catch(() => {});
+      }
       return res.status(403).json({
         error: 'Your Beauty Blueprint is a one-time personal curation and is permanently locked to your membership profile.',
-        blueprint: existingConsultation
+        blueprint: existingConsultation,
+        blueprintAnalysis: existingConsultation.blueprintAnalysis
       });
     }
 
+    const blueprintAnalysis = generateBlueprintAnalysis(req.body || {});
+
     const newConsultation = new Consultation({
       ...req.body,
-      userId: req.user._id
+      userId: req.user._id,
+      blueprintAnalysis
     });
     const savedConsultation = await newConsultation.save();
 
@@ -3720,11 +5999,19 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
     try {
       const { ai, Type } = getGeminiClient();
       
-      const rawCatalog = await Product.find({}).select('_id title variants tags description').limit(150).lean();
+      const rawCatalog = await Product.find({})
+        .select('_id title variants tags skinTypes skinConcerns sensitivitySafe sensitivityLabel ritualStep keyActives description')
+        .limit(150)
+        .lean();
       const catalog = rawCatalog.map(prod => ({
         _id: prod._id,
         title: prod.title,
         price: Number(prod.variants?.[0]?.price ?? prod.price ?? 0).toFixed(2),
+        skinTypes: prod.skinTypes || [],
+        skinConcerns: prod.skinConcerns || [],
+        sensitivitySafe: prod.sensitivitySafe !== false,
+        ritualStep: prod.ritualStep || 'Step 3: Serum & Essence',
+        keyActives: prod.keyActives || [],
         tags: prod.tags || [],
         description: typeof prod.description === 'string'
           ? prod.description.replace(/<[^>]*>?/gm, '').slice(0, 160)
@@ -3772,7 +6059,27 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
       console.log(`✨ AI Curation complete for user ${req.user._id}. Recommended ${recommendedIds.length} items.`);
       
     } catch (aiError) {
-      console.error("⚠️ AI Curation failed. Consultation saved, but recommendations skipped:", aiError.message);
+      console.error("⚠️ AI Curation fallback triggered (using deterministic Blueprint matcher):", aiError.message);
+      try {
+        const allProds = await Product.find({}).limit(150).lean();
+        const scored = allProds.map(p => {
+          let score = 0;
+          const st = Array.isArray(p.skinTypes) ? p.skinTypes : [];
+          const sc = Array.isArray(p.skinConcerns) ? p.skinConcerns : [];
+          if (st.includes(savedConsultation.skinType)) score += 4;
+          else if (st.includes('All Skin Types')) score += 2;
+          if (sc.includes(savedConsultation.primaryGoal)) score += 5;
+          if (savedConsultation.skinSensitivity === 'High' && p.sensitivitySafe === false) score -= 5;
+          if ((savedConsultation.skinSensitivity === 'High' || savedConsultation.skinSensitivity === 'Moderate') && sc.includes('Barrier & Soothing')) score += 2;
+          return { id: p._id, score };
+        }).sort((a, b) => b.score - a.score);
+        const fallbackIds = scored.slice(0, 4).map(s => s.id);
+        if (fallbackIds.length > 0) {
+          await User.findByIdAndUpdate(req.user._id, {
+            $set: { recommendedProducts: fallbackIds }
+          });
+        }
+      } catch (fallbackErr) {}
     }
     // --------------------------------------------------------
 
@@ -4057,6 +6364,7 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
           order.customerEmail = rawEmail !== 'Customer' ? String(rawEmail).toLowerCase().trim() : 'Customer';
           order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || {});
           await order.save();
+          await incrementProductPurchaseCountsForOrder(order);
 
           if (order.customerEmail !== 'Customer') {
             const receiptHtml = `
@@ -4597,6 +6905,9 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     await ensureDefaultOdieMemories();
+    await backfillProductBlueprintLabels(false);
+    await backfillConsultationAnalyses();
+    await backfillAnalyticsBaseline();
     
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');

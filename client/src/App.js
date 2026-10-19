@@ -4,6 +4,68 @@ import logo from "./susans-logo.png";
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
+// ---------------- ANALYTICS PHASE 2: SILENT CLIENT-SIDE TELEMETRY ENGINE ---------------- //
+
+const getAnalyticsSessionId = () => {
+  try {
+    let sid = sessionStorage.getItem('sbc_analytics_session_id');
+    if (!sid) {
+      sid = `sbc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
+      sessionStorage.setItem('sbc_analytics_session_id', sid);
+    }
+    return sid;
+  } catch (e) {
+    return 'sbc_anon_session';
+  }
+};
+
+const trackSiteEvent = (eventType, payload = {}) => {
+  try {
+    if (!eventType) return;
+    const sessionId = getAnalyticsSessionId();
+    const token = localStorage.getItem('token');
+    let savedUser = null;
+    try {
+      const rawUser = localStorage.getItem('authUser');
+      if (rawUser) savedUser = JSON.parse(rawUser);
+    } catch (e) {}
+
+    // Skip tracking admin portal activity as shopper traffic
+    if (savedUser && (savedUser.role === 'admin' || savedUser.membershipTier === 'admin')) {
+      return;
+    }
+
+    const bodyPayload = {
+      eventType: String(eventType).toUpperCase().trim(),
+      sessionId,
+      page: payload.page || '',
+      userId: payload.userId || savedUser?.id || savedUser?._id || null,
+      userEmail: payload.userEmail || savedUser?.email || '',
+      membershipTier: payload.membershipTier || savedUser?.membershipTier || (token ? 'member' : 'guest'),
+      productId: payload.productId || null,
+      productTitle: payload.productTitle || '',
+      ritualStep: payload.ritualStep || '',
+      filterType: payload.filterType || '',
+      filterValue: payload.filterValue !== undefined ? String(payload.filterValue) : '',
+      searchQuery: payload.searchQuery || '',
+      cartValueUsd: Number(payload.cartValueUsd || 0),
+      metadata: payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+    };
+
+    fetch(`${API_BASE_URL}/api/analytics/track`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(bodyPayload),
+      keepalive: true
+    }).catch(() => {});
+  } catch (err) {
+    // Fail-safe: telemetry never interrupts UI
+  }
+};
+
 // ---------------- COMPONENTS ---------------- //
 
 const FallingSparkles = () => {
@@ -166,7 +228,1200 @@ const BlueprintCard = ({ label, value }) => (
   </div>
 );
 
-const ProductDetailModal = ({ product, onClose, onAddToCart }) => {
+// ---------------- BLUEPRINT PHASE 2: PRODUCT METADATA & LIVE COMPATIBILITY ENGINE ---------------- //
+
+const BLUEPRINT_SKIN_TYPE_OPTIONS = ['Normal', 'Dry', 'Oily', 'Combination', 'All Skin Types'];
+const BLUEPRINT_CONCERN_OPTIONS = [
+  'Hydration',
+  'Anti-Aging',
+  'Acne/Texture',
+  'Brightening',
+  'Barrier & Soothing',
+  'Luminous Makeup'
+];
+const BLUEPRINT_RITUAL_STEP_OPTIONS = [
+  'Step 1: Cleanser',
+  'Step 2: Toner & Mist',
+  'Step 3: Serum & Essence',
+  'Step 4: Moisturizer & Cream',
+  'Step 5: Eye, Lip & SPF',
+  'Makeup & Artistry',
+  'Beauty Tool & Spa'
+];
+
+const parseBlueprintList = (val) => {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.map(v => String(v || '').trim()).filter(Boolean);
+  return String(val).split(',').map(v => v.trim()).filter(Boolean);
+};
+
+// Guarantees every product has structured skinTypes, skinConcerns, ritualStep, sensitivitySafe, sensitivityLabel, and keyActives
+const deriveProductBlueprintMeta = (product = {}) => {
+  const cleanTitle = String(product?.title || '').trim();
+  const cleanCat = String(product?.rawCjData?.categoryName || '').trim();
+  const rawDesc = product?.description || product?.rawCjData?.description || '';
+  const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, ' ').slice(0, 800) : '';
+  const tagList = parseBlueprintList(product?.tags);
+  const corpus = `${cleanTitle} ${cleanCat} ${cleanDesc} ${tagList.join(' ')}`.toLowerCase();
+
+  // 1. Ritual Step
+  let ritualStep = String(product?.ritualStep || product?.essentialSlotLabel || '').trim();
+  if (!ritualStep) {
+    if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
+      ritualStep = 'Makeup & Artistry';
+    } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
+      ritualStep = 'Beauty Tool & Spa';
+    } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
+      ritualStep = 'Step 1: Cleanser';
+    } else if (/\b(toner|facial mist|face mist|rosewater|hydrosol|essence water|toning|refining water|balancing water)\b/i.test(corpus)) {
+      ritualStep = 'Step 2: Toner & Mist';
+    } else if (/\b(eye cream|eye patch|eye patches|eye mask|eye serum|eye gel|under eye|lip balm|lip mask|lip oil|lip scrub|lip plumper|lip sleeping|sunscreen|sunblock|spf|uv protection)\b/i.test(corpus)) {
+      ritualStep = 'Step 5: Eye, Lip & SPF';
+    } else if (/\b(moisturizer|moisturizing|face cream|night cream|day cream|neck cream|barrier cream|lotion|body lotion|body butter|body cream|emulsion|gel cream|balm|sleeping mask|ointment)\b/i.test(corpus)) {
+      ritualStep = 'Step 4: Moisturizer & Cream';
+    } else {
+      ritualStep = 'Step 3: Serum & Essence';
+    }
+  }
+
+  // 2. Skin Concerns / Conditions
+  let skinConcerns = parseBlueprintList(product?.skinConcerns);
+  const addConcern = (c) => {
+    if (c && !skinConcerns.includes(c)) skinConcerns.push(c);
+  };
+  if (skinConcerns.length === 0) {
+    if (/\b(hydrat|hyaluronic|moisture|moisturiz|dry|plump|dewy|water|squalane|glycerin|aloe|snail|mucin|hydrogel|lotion|cream|balm|mist|lip oil|lip balm)\b/i.test(corpus)) {
+      addConcern('Hydration');
+    }
+    if (/\b(anti-aging|anti aging|anti-wrinkle|wrinkle|fine line|firming|lifting|retinol|retinoid|peptide|collagen|elasticity|youth|age-defying|bakuchiol|eye cream|neck|gua sha|jade roller|led mask|massager)\b/i.test(corpus)) {
+      addConcern('Anti-Aging');
+    }
+    if (/\b(acne|blemish|pimple|pore|blackhead|salicylic|bha|aha|pha|glycolic|lactic|exfoliat|scrub|peel|clay|mud|charcoal|tea tree|niacinamide|nicotinamide|oil control|mattif|sebum|purifying|cleanser|scrubber)\b/i.test(corpus)) {
+      addConcern('Acne/Texture');
+    }
+    if (/\b(brighten|whitening|vitamin c|ascorbic|dark spot|hyperpigmentation|even tone|glow|radiance|radiant|luminous|kojic|turmeric|arbutin|pearl|illuminat|niacinamide)\b/i.test(corpus)) {
+      addConcern('Brightening');
+    }
+    if (/\b(sensitive|soothing|calming|barrier|ceramide|centella|cica|aloe|chamomile|rose|panthenol|allantoin|redness|repair|gentle|fragrance-free|micellar|oat)\b/i.test(corpus)) {
+      addConcern('Barrier & Soothing');
+    }
+    if (ritualStep === 'Makeup & Artistry' || /\b(makeup|cosmetic|foundation|concealer|blush|highlighter|lipstick|lip gloss|eyeshadow|mascara|eyeliner|brow|contour|powder|palette)\b/i.test(corpus)) {
+      addConcern('Luminous Makeup');
+    }
+    if (skinConcerns.length === 0) {
+      if (ritualStep === 'Step 1: Cleanser') {
+        addConcern('Acne/Texture');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 2: Toner & Mist' || ritualStep === 'Step 4: Moisturizer & Cream') {
+        addConcern('Hydration');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 5: Eye, Lip & SPF' || ritualStep === 'Beauty Tool & Spa') {
+        addConcern('Hydration');
+        addConcern('Anti-Aging');
+      } else {
+        addConcern('Hydration');
+        addConcern('Brightening');
+      }
+    }
+  }
+
+  // 3. Best-Fit Skin Types
+  let skinTypes = parseBlueprintList(product?.skinTypes);
+  const addSkinType = (st) => {
+    if (st && !skinTypes.includes(st)) skinTypes.push(st);
+  };
+  if (skinTypes.length === 0) {
+    if (/\b(dry skin|thirsty|dehydrated|rich cream|nourishing|hydrating|hyaluronic|ceramide|squalane|shea|argan|balm|facial oil|sleeping mask|moisture|night cream|lip oil|lip balm)\b/i.test(corpus) || skinConcerns.includes('Hydration')) {
+      addSkinType('Dry');
+    }
+    if (/\b(oily skin|oil control|mattifying|matte|sebum|salicylic|bha|clay|mud|charcoal|pore|blackhead|tea tree|acne|blemish|pimple|foaming|gel cleanser|lightweight|water gel|setting powder|loose powder)\b/i.test(corpus) || skinConcerns.includes('Acne/Texture')) {
+      addSkinType('Oily');
+    }
+    if (/\b(combination skin|balancing|niacinamide|toner|mist|serum|essence|gel cream|lotion|sheet mask|micellar|vitamin c|cleanser)\b/i.test(corpus) || (skinTypes.includes('Dry') && skinTypes.includes('Oily'))) {
+      addSkinType('Combination');
+    }
+    if (/\b(normal skin|all skin|daily|gentle|balanced|vitamin c|peptide|collagen|brightening|eye|lip|sunscreen|spf)\b/i.test(corpus) || skinConcerns.includes('Brightening') || skinConcerns.includes('Anti-Aging')) {
+      addSkinType('Normal');
+    }
+    if (
+      ritualStep === 'Makeup & Artistry' ||
+      ritualStep === 'Beauty Tool & Spa' ||
+      ritualStep === 'Step 5: Eye, Lip & SPF' ||
+      skinTypes.length === 0 ||
+      skinTypes.length >= 3
+    ) {
+      if (skinTypes.length === 0) {
+        addSkinType('Normal');
+        addSkinType('Dry');
+        addSkinType('Combination');
+        addSkinType('Oily');
+      }
+      addSkinType('All Skin Types');
+    } else if (skinTypes.length === 1) {
+      if (skinTypes[0] === 'Dry') addSkinType('Normal');
+      else if (skinTypes[0] === 'Oily') addSkinType('Combination');
+      else if (skinTypes[0] === 'Combination') addSkinType('Normal');
+      else if (skinTypes[0] === 'Normal') addSkinType('All Skin Types');
+    }
+  }
+
+  // 4. Sensitivity Profile
+  const hasPotentActives = /\b(retinol|retinoid|aha|bha|pha|glycolic|salicylic|lactic acid|peel|peeling|scrub|exfoliant|exfoliating|microneedle|derma roller)\b/i.test(corpus);
+  const sensitivitySafe = product?.sensitivitySafe !== undefined
+    ? Boolean(product.sensitivitySafe)
+    : !hasPotentActives;
+  const sensitivityLabel = (product?.sensitivityLabel && String(product.sensitivityLabel).trim())
+    ? String(product.sensitivityLabel).trim()
+    : (sensitivitySafe
+        ? 'Gentle • High-Sensitivity Safe'
+        : 'Active Formula • Best for Low/Moderate Sensitivity');
+
+  // 5. Key Actives
+  let keyActives = parseBlueprintList(product?.keyActives);
+  const addActive = (act) => {
+    if (act && !keyActives.includes(act) && keyActives.length < 4) keyActives.push(act);
+  };
+  if (keyActives.length === 0) {
+    const activeRules = [
+      { regex: /\b(hyaluronic|sodium hyaluronate)\b/i, name: 'Hyaluronic Acid' },
+      { regex: /\b(ceramide)\b/i, name: 'Barrier Ceramides' },
+      { regex: /\b(niacinamide|nicotinamide|vitamin b3)\b/i, name: 'Niacinamide (B3)' },
+      { regex: /\b(vitamin c|ascorbic)\b/i, name: 'Vitamin C Complex' },
+      { regex: /\b(peptide|matrixyl|argireline)\b/i, name: 'Firming Peptides' },
+      { regex: /\b(collagen)\b/i, name: 'Hydrolyzed Collagen' },
+      { regex: /\b(retinol|retinoid|bakuchiol)\b/i, name: 'Retinol / Cellular Renewal' },
+      { regex: /\b(salicylic|bha|tea tree)\b/i, name: 'Clarifying BHA / Tea Tree' },
+      { regex: /\b(glycolic|lactic|aha|pha|exfoli)\b/i, name: 'Smoothing AHA Complex' },
+      { regex: /\b(centella|cica|aloe|chamomile|calendula|green tea)\b/i, name: 'Soothing Botanical Cica' },
+      { regex: /\b(squalane|argan|rosehip|jojoba|shea|vitamin e)\b/i, name: 'Nourishing Lipid Oils' },
+      { regex: /\b(snail|mucin)\b/i, name: 'Snail Mucin Filtrate' },
+      { regex: /\b(rose|rosewater)\b/i, name: 'Botanical Rosewater' },
+      { regex: /\b(clay|kaolin|bentonite|charcoal|mud)\b/i, name: 'Purifying Mineral Clay' },
+      { regex: /\b(spf|sunscreen|uv|zinc|titanium)\b/i, name: 'Broad-Spectrum UV Shield' }
+    ];
+    for (const rule of activeRules) {
+      if (rule.regex.test(corpus)) addActive(rule.name);
+    }
+    if (keyActives.length === 0) {
+      if (ritualStep === 'Makeup & Artistry') {
+        addActive('Luminous Mineral Pigments');
+        addActive('Weightless Breathable Wear');
+      } else if (ritualStep === 'Beauty Tool & Spa') {
+        addActive('Lymphatic Micro-Circulation');
+        addActive('Artisan Spa Craft');
+      } else {
+        addActive('Hydrating Botanical Complex');
+        addActive('pH-Balanced Conditioning');
+      }
+    }
+  }
+
+  return {
+    skinTypes,
+    skinConcerns,
+    ritualStep,
+    sensitivitySafe,
+    sensitivityLabel,
+    keyActives
+  };
+};
+
+// Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
+const evaluateBlueprintMatch = (product = {}, quizAnswers = null, hasCompletedQuiz = null) => {
+  const meta = deriveProductBlueprintMeta(product);
+
+  let activeAnswers = quizAnswers;
+  let activeCompleted = hasCompletedQuiz;
+
+  if (!activeAnswers || typeof activeAnswers !== 'object' || !activeAnswers.skinType) {
+    try {
+      const stored = localStorage.getItem('quizAnswers');
+      if (stored) activeAnswers = JSON.parse(stored);
+    } catch (e) {}
+  }
+  if (activeCompleted === null || activeCompleted === undefined) {
+    try {
+      activeCompleted = localStorage.getItem('hasCompletedQuiz') === 'true';
+    } catch (e) {
+      activeCompleted = false;
+    }
+  }
+
+  const userSkinType = String(activeAnswers?.skinType || '').trim();
+  const userGoal = String(activeAnswers?.primaryGoal || '').trim();
+  const userClimate = String(activeAnswers?.climate || '').trim();
+  const userSensitivity = String(activeAnswers?.skinSensitivity || '').trim();
+  const userVibe = String(activeAnswers?.makeupVibe || '').trim();
+
+  const hasValidBlueprint = Boolean(activeCompleted && (userSkinType || userGoal));
+
+  if (!hasValidBlueprint) {
+    return {
+      ...meta,
+      hasValidBlueprint: false,
+      isMatch: false,
+      matchScore: 0,
+      matchedTraits: [],
+      cautionNote: '',
+      matchesSkinTypePill: () => false,
+      matchesConcernPill: () => false
+    };
+  }
+
+  const matchedTraits = [];
+  let score = 52;
+
+  const exactSkinMatch = Boolean(
+    userSkinType && meta.skinTypes.some(st => st.toLowerCase() === userSkinType.toLowerCase())
+  );
+  const universalSkinMatch = meta.skinTypes.some(st => st.toLowerCase() === 'all skin types');
+
+  if (exactSkinMatch) {
+    score += 22;
+    matchedTraits.push(`✓ Ideal for ${userSkinType} Skin`);
+  } else if (universalSkinMatch) {
+    score += 14;
+    matchedTraits.push(`✓ Balanced for ${userSkinType} & All Skin Types`);
+  }
+
+  const exactGoalMatch = Boolean(
+    userGoal && meta.skinConcerns.some(sc => sc.toLowerCase() === userGoal.toLowerCase())
+  );
+  if (exactGoalMatch) {
+    score += 24;
+    matchedTraits.push(`✓ Targets ${userGoal}`);
+  }
+
+  const needsBarrierCare =
+    userSensitivity === 'High' ||
+    userSensitivity === 'Moderate' ||
+    userClimate === 'Dry' ||
+    userClimate === 'Cold';
+  const hasBarrierConcern = meta.skinConcerns.some(sc => sc.toLowerCase() === 'barrier & soothing');
+  if (needsBarrierCare && hasBarrierConcern) {
+    score += 10;
+    matchedTraits.push(`✓ Calms ${userSensitivity || 'Sensitive'} Barrier (${userClimate || 'Daily'} Climate)`);
+  }
+
+  const needsClimateHydration =
+    (userClimate === 'Dry' || userClimate === 'Cold' || userSkinType === 'Dry') &&
+    userGoal !== 'Hydration';
+  const hasHydrationConcern = meta.skinConcerns.some(sc => sc.toLowerCase() === 'hydration');
+  if (needsClimateHydration && hasHydrationConcern) {
+    score += 8;
+    matchedTraits.push(`✓ Counters ${userClimate || 'Dry'} Climate Dehydration`);
+  }
+
+  if (meta.ritualStep === 'Makeup & Artistry' && userVibe) {
+    score += 15;
+    matchedTraits.push(`✓ Complements ${userVibe} Aesthetic`);
+  }
+
+  let cautionNote = '';
+  if (userSensitivity === 'High') {
+    if (meta.sensitivitySafe) {
+      score += 8;
+      matchedTraits.push('✓ Gentle • High-Sensitivity Safe');
+    } else {
+      score -= 22;
+      cautionNote = 'Contains potent resurfacing or active ingredients — patch test and buffer with a barrier cream for High-Sensitivity skin.';
+    }
+  } else if (meta.sensitivitySafe) {
+    score += 4;
+  }
+
+  const clampedScore = Math.max(45, Math.min(99, score));
+  const isMatch =
+    !cautionNote &&
+    (exactGoalMatch ||
+      (exactSkinMatch && (hasBarrierConcern || hasHydrationConcern)) ||
+      (meta.ritualStep === 'Makeup & Artistry' && Boolean(userVibe)) ||
+      clampedScore >= 82);
+
+  const matchesSkinTypePill = (pillText = '') => {
+    const clean = String(pillText || '').toLowerCase().trim();
+    if (!userSkinType) return false;
+    return clean === userSkinType.toLowerCase() || (exactSkinMatch === false && clean === 'all skin types');
+  };
+
+  const matchesConcernPill = (pillText = '') => {
+    const clean = String(pillText || '').toLowerCase().trim();
+    if (userGoal && clean === userGoal.toLowerCase()) return true;
+    if (needsBarrierCare && clean === 'barrier & soothing') return true;
+    if (needsClimateHydration && clean === 'hydration') return true;
+    if (userVibe && clean === 'luminous makeup') return true;
+    return false;
+  };
+
+  return {
+    ...meta,
+    hasValidBlueprint: true,
+    userSkinType,
+    userGoal,
+    userClimate,
+    userSensitivity,
+    userVibe,
+    isMatch,
+    matchScore: clampedScore,
+    matchedTraits,
+    cautionNote,
+    matchesSkinTypePill,
+    matchesConcernPill
+  };
+};
+
+// ---------------- BLUEPRINT PHASE 3: CLIENT-SIDE DIAGNOSTIC DOSSIER GENERATOR ---------------- //
+
+const generateClientBlueprintDossier = (bp = {}, serverAnalysis = null) => {
+  if (
+    serverAnalysis &&
+    typeof serverAnalysis === 'object' &&
+    serverAnalysis.archetypeTitle &&
+    Array.isArray(serverAnalysis.amRitual) &&
+    serverAnalysis.amRitual.length > 0
+  ) {
+    return serverAnalysis;
+  }
+
+  const skinType = String(bp?.skinType || 'Normal').trim();
+  const primaryGoal = String(bp?.primaryGoal || 'Hydration').trim();
+  const climate = String(bp?.climate || 'Temperate').trim();
+  const skinSensitivity = String(bp?.skinSensitivity || 'Moderate').trim();
+  const complexion = String(bp?.complexion || 'Medium').trim();
+  const undertone = String(bp?.undertone || 'Neutral').trim();
+  const eyeColor = String(bp?.eyeColor || 'Brown').trim();
+  const faceShape = String(bp?.faceShape || 'Oval').trim();
+  const makeupVibe = String(bp?.makeupVibe || 'Soft Glam').trim();
+  const routineFocus = String(bp?.routineFocus || 'Balanced').trim();
+
+  const archetypeMap = {
+    'Dry_Hydration': 'The Velvet Moisture Sanctuary',
+    'Dry_Anti-Aging': 'The Cashmere Youth Elixir',
+    'Dry_Brightening': 'The Dewy Rosewater Luminary',
+    'Dry_Acne/Texture': 'The Silk Barrier Clarifier',
+    'Oily_Acne/Texture': 'The Clarifying Satin Refiner',
+    'Oily_Hydration': 'The Weightless Hydro-Balance Ritual',
+    'Oily_Anti-Aging': 'The Sculpted Velvet Renewal',
+    'Oily_Brightening': 'The Glass-Skin Radiance Edit',
+    'Combination_Hydration': 'The Harmonious Dual-Zone Sanctuary',
+    'Combination_Acne/Texture': 'The Balanced Pore & Texture Edit',
+    'Combination_Anti-Aging': 'The Ageless Equilibrium Ritual',
+    'Combination_Brightening': 'The Luminous Equilibrium Protocol',
+    'Normal_Hydration': 'The Porcelain Dew Sanctuary',
+    'Normal_Anti-Aging': 'The Timeless Cellular Radiance Ritual',
+    'Normal_Brightening': 'The Golden Hour Luminosity Edit',
+    'Normal_Acne/Texture': 'The Polished Silk Refinement'
+  };
+
+  const archetypeTitle =
+    archetypeMap[`${skinType}_${primaryGoal}`] ||
+    `The Bespoke ${skinType} & ${primaryGoal} Sanctuary`;
+
+  const climateDescriptions = {
+    'Dry': 'your arid, low-humidity environment continuously pulls moisture from the epidermis (transepidermal water loss), requiring humectants sealed beneath barrier lipids',
+    'Humid': 'your humid climate amplifies surface sebum and sweat, calling for breathable, gel-serum hydration and non-comedogenic pore refinement',
+    'Cold': 'your cold, harsh climate stresses the lipid barrier and triggers micro-chapping, requiring ceramide-rich cushioning and soothing protection',
+    'Temperate': 'your temperate climate supports balanced cellular turnover when paired with consistent morning antioxidant protection and evening hydration'
+  };
+
+  const sensitivityDescriptions = {
+    'High': 'Because your skin has High Sensitivity, every step prioritizes calming barrier protection (Gentle • High-Sensitivity Safe labels) over aggressive acids.',
+    'Moderate': 'With Moderate Sensitivity, your skin thrives on buffered actives paired with soothing Centella, rosewater, and barrier-supporting ceramides.',
+    'Low': 'Your resilient, Low-Sensitivity canvas tolerates both gentle daily hydrators and targeted resurfacing or cellular-renewal actives.'
+  };
+
+  const executiveSummary =
+    `Your diagnostic profile reveals a ${skinType} skin temperament focused on ${primaryGoal}. ` +
+    `Because ${climateDescriptions[climate] || climateDescriptions['Temperate']}, your ritual is architected to deliver ${primaryGoal.toLowerCase()} without overwhelming your natural barrier. ` +
+    `${sensitivityDescriptions[skinSensitivity] || sensitivityDescriptions['Moderate']}`;
+
+  const targetSkinTypes = [skinType, 'All Skin Types'];
+  const targetSkinConcerns = [primaryGoal];
+  if (skinSensitivity === 'High' || skinSensitivity === 'Moderate' || climate === 'Dry' || climate === 'Cold') {
+    if (!targetSkinConcerns.includes('Barrier & Soothing')) targetSkinConcerns.push('Barrier & Soothing');
+  }
+  if ((skinType === 'Dry' || climate === 'Dry' || climate === 'Cold') && !targetSkinConcerns.includes('Hydration')) {
+    targetSkinConcerns.push('Hydration');
+  }
+  if (!targetSkinConcerns.includes('Luminous Makeup')) {
+    targetSkinConcerns.push('Luminous Makeup');
+  }
+
+  const sensitivityBadge =
+    skinSensitivity === 'High'
+      ? 'Gentle • High-Sensitivity Safe'
+      : skinSensitivity === 'Moderate'
+      ? 'Gentle • Barrier Balanced'
+      : 'All Formulas & Actives Compatible';
+
+  const allBadges = [
+    {
+      label: `${skinType} Skin`,
+      category: 'Best for Skin Type',
+      filterType: 'skinType',
+      filterValue: skinType,
+      description: `Formulated specifically for ${skinType.toLowerCase()} skin behavior.`
+    },
+    {
+      label: primaryGoal,
+      category: 'Primary Vision',
+      filterType: 'skinConcern',
+      filterValue: primaryGoal,
+      description: `Directly targets your primary vision: ${primaryGoal}.`
+    },
+    ...(targetSkinConcerns.includes('Barrier & Soothing') && primaryGoal !== 'Barrier & Soothing'
+      ? [{
+          label: 'Barrier & Soothing',
+          category: 'Sensitivity & Climate Care',
+          filterType: 'skinConcern',
+          filterValue: 'Barrier & Soothing',
+          description: `Protects your ${skinSensitivity.toLowerCase()}-sensitivity skin in a ${climate.toLowerCase()} climate.`
+        }]
+      : []),
+    ...(targetSkinConcerns.includes('Hydration') && primaryGoal !== 'Hydration'
+      ? [{
+          label: 'Hydration',
+          category: 'Moisture Balance',
+          filterType: 'skinConcern',
+          filterValue: 'Hydration',
+          description: `Prevents dehydration and tightness in ${climate.toLowerCase()} conditions.`
+        }]
+      : []),
+    {
+      label: sensitivityBadge,
+      category: 'Sensitivity Profile',
+      filterType: 'sensitivity',
+      filterValue: skinSensitivity === 'High' ? 'safe' : 'all',
+      description: skinSensitivity === 'High'
+        ? 'Filters for products marked Gentle • High-Sensitivity Safe.'
+        : 'Compatible with your skin reactivity threshold.'
+    }
+  ];
+
+  const heroIngredients = [];
+  const addHero = (name, benefit, targetConcern) => {
+    if (!heroIngredients.some(h => h.name === name) && heroIngredients.length < 5) {
+      heroIngredients.push({ name, benefit, targetConcern });
+    }
+  };
+
+  if (primaryGoal === 'Hydration' || skinType === 'Dry' || climate === 'Dry') {
+    addHero('Multi-Molecular Hyaluronic Acid', 'Draws moisture deep into thirsty skin layers for instant plumping and softness.', 'Hydration');
+    addHero('Barrier Ceramides & Squalane', 'Seals the lipid barrier so arid air cannot strip away your natural hydration.', 'Barrier & Soothing');
+  }
+  if (primaryGoal === 'Anti-Aging') {
+    addHero('Bio-Active Peptides & Collagen', 'Supports firmness, bounce, and smooths the appearance of fine expression lines.', 'Anti-Aging');
+    addHero(
+      skinSensitivity === 'High' ? 'Bakuchiol & Gentle Botanical Renewal' : 'Encapsulated Retinol / Retinoid Complex',
+      skinSensitivity === 'High'
+        ? 'Delivers retinol-like cellular renewal without redness or peeling for sensitive skin.'
+        : 'Accelerates evening cellular turnover to refine wrinkles and elasticity.',
+      'Anti-Aging'
+    );
+  }
+  if (primaryGoal === 'Acne/Texture' || skinType === 'Oily' || skinType === 'Combination') {
+    addHero('Niacinamide (Vitamin B3)', 'Balances sebum production, visibly tightens enlarged pores, and calms redness.', 'Acne/Texture');
+    addHero(
+      skinSensitivity === 'High' ? 'Purifying Kaolin Clay & Tea Tree Hydrosol' : 'Salicylic Acid (BHA) & Gentle AHA',
+      skinSensitivity === 'High'
+        ? 'Draws out congestion gently without stripping your delicate moisture barrier.'
+        : 'Dissolves pore-clogging oil and smooths uneven surface texture.',
+      'Acne/Texture'
+    );
+  }
+  if (primaryGoal === 'Brightening') {
+    addHero('Stabilized Vitamin C Complex', 'Neutralizes dullness, brightens dark spots, and boosts natural luminosity.', 'Brightening');
+    addHero('Botanical Rosewater & Licorice Root', 'Evens out skin tone while keeping the complexion calm and dewy.', 'Brightening');
+  }
+  if (skinSensitivity === 'High' || skinSensitivity === 'Moderate' || heroIngredients.length < 4) {
+    addHero('Centella Asiatica (Cica) & Aloe', 'Calms reactivity, reduces visible redness, and reinforces skin resilience.', 'Barrier & Soothing');
+    addHero('Hydrolyzed Collagen & Vitamin E', 'Cushions the complexion against environmental stress and free radicals.', 'Hydration');
+  }
+
+  const avoidIngredients = [];
+  if (skinSensitivity === 'High') {
+    avoidIngredients.push(
+      { name: 'High-Percentage Unbuffered Glycolic / Peel Acids', reason: 'Can compromise a high-sensitivity lipid barrier and trigger stinging or flushing.' },
+      { name: 'Coarse Physical Nut/Shell Scrubs', reason: 'Creates micro-tears on reactive skin; opt for silky gel cleansers or enzyme care instead.' },
+      { name: 'Drying Denatured Alcohol Toners', reason: 'Strips protective surface lipids and accelerates redness.' }
+    );
+  } else if (skinType === 'Dry' || climate === 'Dry' || climate === 'Cold') {
+    avoidIngredients.push(
+      { name: 'High-Sulfate Stripping Foam Cleansers', reason: 'Leaves dry or cold-exposed skin feeling tight and depleted.' },
+      { name: 'Unsealed Clay Masks Used Daily', reason: 'Absorbs essential surface oils unless followed immediately by a rich hydrating serum.' },
+      { name: 'Alcohol-Heavy Setting Sprays', reason: 'Can dehydrate your complexion canvas throughout the day.' }
+    );
+  } else if (skinType === 'Oily' || climate === 'Humid') {
+    avoidIngredients.push(
+      { name: 'Heavy Occlusive Petrolatum Balms (Daytime)', reason: 'Can trap heat and excess sebum in humid environments.' },
+      { name: 'Pore-Congesting Coconut Oil Bases', reason: 'May congest T-zone pores on oily or combination temperaments.' },
+      { name: 'Over-Exfoliating Multiple Times Daily', reason: 'Triggers rebound oil production when the barrier feels stripped.' }
+    );
+  } else {
+    avoidIngredients.push(
+      { name: 'Stacking Retinol + Strong Exfoliating Acids in the Same Night', reason: 'Can disrupt your balanced barrier; alternate renewal nights with hydration nights.' },
+      { name: 'Harsh Alkaline Bar Soaps', reason: 'Disrupts your natural acid mantle pH.' },
+      { name: 'Skipping Morning UV / Antioxidant Protection', reason: 'Allows daily environmental UV exposure to undo brightening and firming progress.' }
+    );
+  }
+
+  const stepLimit = routineFocus === 'Minimalist' ? 3 : routineFocus === 'Balanced' ? 4 : 5;
+
+  const fullAmSteps = [
+    {
+      stepNumber: 1,
+      ritualStep: 'Step 1: Cleanser',
+      title: skinType === 'Dry' || skinSensitivity === 'High' ? 'Gentle Barrier Awakening Cleanse' : 'Purifying Morning Refresh Cleanse',
+      instruction: `Cleanse with lukewarm water to refresh your ${skinType.toLowerCase()} canvas without stripping essential morning lipids.`,
+      lookForLabel: 'Step 1: Cleanser'
+    },
+    {
+      stepNumber: 2,
+      ritualStep: 'Step 2: Toner & Mist',
+      title: 'pH-Balancing Botanical Prep Mist',
+      instruction: `Mist or press into damp skin to prime your epidermis and counter ${climate.toLowerCase()}-climate dehydration.`,
+      lookForLabel: 'Step 2: Toner & Mist'
+    },
+    {
+      stepNumber: 3,
+      ritualStep: 'Step 3: Serum & Essence',
+      title: `Targeted ${primaryGoal} Day Serum`,
+      instruction: `Press 2–3 drops of a ${primaryGoal.toLowerCase()} serum into face and neck to deliver concentrated daytime actives.`,
+      lookForLabel: 'Step 3: Serum & Essence'
+    },
+    {
+      stepNumber: 4,
+      ritualStep: 'Step 4: Moisturizer & Cream',
+      title: skinType === 'Oily' || climate === 'Humid' ? 'Weightless Hydro-Lock Emulsion' : 'Velvet Barrier-Sealing Day Cream',
+      instruction: `Lock in your serum and cushion your ${skinSensitivity.toLowerCase()}-sensitivity barrier for smooth makeup prep.`,
+      lookForLabel: 'Step 4: Moisturizer & Cream'
+    },
+    {
+      stepNumber: 5,
+      ritualStep: 'Step 5: Eye, Lip & SPF',
+      title: 'Luminous Eye, Lip & UV Sanctuary Shield',
+      instruction: 'Tap brightening care around the orbital bone, nourish lips, and seal with broad-spectrum UV protection.',
+      lookForLabel: 'Step 5: Eye, Lip & SPF'
+    }
+  ];
+
+  const fullPmSteps = [
+    {
+      stepNumber: 1,
+      ritualStep: 'Step 1: Cleanser',
+      title: 'Evening Melt & Pore Detox Cleanse',
+      instruction: `Dissolve daily SPF, ${makeupVibe.toLowerCase()} makeup, and environmental impurities thoroughly yet gently.`,
+      lookForLabel: 'Step 1: Cleanser'
+    },
+    {
+      stepNumber: 2,
+      ritualStep: 'Step 2: Toner & Mist',
+      title: 'Soothing Hydration Drench',
+      instruction: 'Replenish moisture immediately after cleansing so evening recovery actives absorb evenly.',
+      lookForLabel: 'Step 2: Toner & Mist'
+    },
+    {
+      stepNumber: 3,
+      ritualStep: 'Step 3: Serum & Essence',
+      title: `Overnight ${primaryGoal} & Cellular Repair Elixir`,
+      instruction: `Apply your targeted ${primaryGoal.toLowerCase()} treatment while skin permeability peaks during sleep.`,
+      lookForLabel: 'Step 3: Serum & Essence'
+    },
+    {
+      stepNumber: 4,
+      ritualStep: 'Step 4: Moisturizer & Cream',
+      title: 'Restorative Night Sanctuary Cream',
+      instruction: `Seal in overnight nutrients and prevent moisture loss in your ${climate.toLowerCase()} environment.`,
+      lookForLabel: 'Step 4: Moisturizer & Cream'
+    },
+    {
+      stepNumber: 5,
+      ritualStep: 'Beauty Tool & Spa',
+      title: 'Eye/Lip Sleeping Mask & Gua Sha Lymphatic Ritual',
+      instruction: 'Finish with nourishing eye/lip care and 2 minutes of upward facial massage to release tension and sculpt.',
+      lookForLabel: 'Beauty Tool & Spa'
+    }
+  ];
+
+  const selectStepsByFocus = (steps) => {
+    if (stepLimit === 3) {
+      return [steps[0], steps[2], steps[3]].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+    }
+    if (stepLimit === 4) {
+      return [steps[0], steps[1], steps[2], steps[3]].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+    }
+    return steps;
+  };
+
+  const undertoneHarmony = {
+    'Cool': {
+      base: `Choose ${complexion} foundations and concealers with rosy, pink, or cool-neutral undertones so your base never looks yellow or brassy.`,
+      blushLip: 'Berry, rose-petal pink, cool mauve, cherry, and plum lip oils and blushes illuminate your natural cool undertone.'
+    },
+    'Warm': {
+      base: `Select ${complexion} complexion products with golden, peach, or warm-honey undertones to harmonize with your natural warmth.`,
+      blushLip: 'Warm terracotta, apricot, coral, honey-nude, and bronze-gold highlighters make your complexion glow effortlessly.'
+    },
+    'Neutral': {
+      base: `Look for balanced ${complexion} neutral shades that bridge rose and golden pigments without pulling too pink or too orange.`,
+      blushLip: 'Soft rosewood, dusty peach, champagne pearl, and berry-nude tones flatter your versatile neutral canvas.'
+    }
+  };
+
+  const eyeHarmony = {
+    'Brown': 'Rich bronze, champagne gold, warm plum, and espresso liners intensify the depth and warmth of your brown eyes.',
+    'Blue': 'Warm copper, toasted terracotta, champagne-peach, and bronze eyeshadows create striking contrast that makes blue eyes pop.',
+    'Green': 'Rose-gold, mulberry, garnet, and soft taupe shimmers spotlight the emerald and hazel flecks in your eyes.'
+  };
+
+  const faceShapeGuide = {
+    'Oval': 'Your balanced oval silhouette shines with soft blush swept along the apples of the cheeks toward the temples and a touch of highlighter on the high cheekbones.',
+    'Round': 'Create lifted dimension by sweeping bronzer slightly beneath the cheekbones toward the temples and focusing highlighter along the center bridge and brow bone.',
+    'Square/Heart': 'Soften angles by diffusing blush in a rounded upward sweep on the cheeks and adding a luminous kiss of highlighter to the cheekbones and Cupid’s bow.'
+  };
+
+  const vibeGuide = {
+    'Natural': 'Focus on skin-first "Barely There" luminosity: sheer hydrating tints, brushed-up brows, a swipe of nourishing lip oil, and dewy cream highlighter.',
+    'Soft Glam': 'Build "Elevated Everyday Elegance": seamless satin-finish complexion, softly defined lash line, diffused rose/peach cheek drape, and a plush glossed lip.',
+    'Full Glam': 'Embrace "Sculpted High-Impact Artistry": primed long-wear base, multi-dimensional eyeshadow placement, sculpted contour, and a statement defined lip.'
+  };
+
+  const selectedUndertone = undertoneHarmony[undertone] || undertoneHarmony['Neutral'];
+
+  return {
+    archetypeTitle,
+    executiveSummary,
+    recommendedLabels: {
+      skinTypes: targetSkinTypes,
+      skinConcerns: targetSkinConcerns,
+      sensitivityBadge,
+      climateContext: `${climate} Climate Care`,
+      routineTier: `${routineFocus} (${stepLimit}-Step Ritual)`,
+      allBadges
+    },
+    heroIngredients,
+    avoidIngredients,
+    amRitual: selectStepsByFocus(fullAmSteps),
+    pmRitual: selectStepsByFocus(fullPmSteps),
+    artistryProfile: {
+      headline: `${complexion} Canvas • ${undertone} Undertone • ${makeupVibe} Artistry`,
+      foundationAndBase: selectedUndertone.base,
+      blushAndLipHarmony: selectedUndertone.blushLip,
+      eyeEnhancement: eyeHarmony[eyeColor] || eyeHarmony['Brown'],
+      sculptingPlacement: faceShapeGuide[faceShape] || faceShapeGuide['Oval'],
+      signatureFinish: vibeGuide[makeupVibe] || vibeGuide['Soft Glam']
+    }
+  };
+};
+
+// Reusable Boutique Smart Filter Bar & Filtered Grid (shared by Member Boutique Tab & Public Boutique)
+const BoutiqueSmartFilterSection = ({
+  products = [],
+  quizAnswers = {},
+  hasCompletedQuiz = false,
+  boutiqueFilters,
+  setBoutiqueFilters,
+  onResetFilters,
+  onAddToCart,
+  onCardClick,
+  onGoToBlueprintTab
+}) => {
+  const {
+    onlyBlueprintMatch = false,
+    skinType = 'All',
+    skinConcern = 'All',
+    ritualStep = 'All',
+    onlySensitiveSafe = false,
+    searchQuery = ''
+  } = boutiqueFilters || {};
+
+  const boutiquePageContext = onGoToBlueprintTab ? 'Member Sanctuary: Boutique' : 'Public Boutique';
+
+  // Debounced SEARCH_QUERY telemetry (600ms after user stops typing 2+ characters)
+  useEffect(() => {
+    const trimmed = String(searchQuery || '').trim();
+    if (trimmed.length < 2) return;
+    const timer = setTimeout(() => {
+      trackSiteEvent('SEARCH_QUERY', {
+        page: boutiquePageContext,
+        searchQuery: trimmed
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [searchQuery, boutiquePageContext]);
+
+  const applyAndTrackFilter = (updaterFn, filterType, filterValue) => {
+    setBoutiqueFilters(updaterFn);
+    if (filterType && filterValue && String(filterValue).toLowerCase() !== 'all') {
+      trackSiteEvent('FILTER_USED', {
+        page: boutiquePageContext,
+        filterType,
+        filterValue: String(filterValue)
+      });
+    }
+  };
+
+  const decoratedProducts = products.map(prod => ({
+    product: prod,
+    match: evaluateBlueprintMatch(prod, quizAnswers, hasCompletedQuiz)
+  }));
+
+  const blueprintMatchCount = decoratedProducts.filter(item => item.match.isMatch).length;
+
+  const cleanSearch = String(searchQuery || '').trim().toLowerCase();
+
+  const filteredList = decoratedProducts
+    .filter(({ product, match }) => {
+      if (onlyBlueprintMatch && hasCompletedQuiz && !match.isMatch) {
+        return false;
+      }
+      if (skinType && skinType !== 'All') {
+        const hasSt = match.skinTypes.some(
+          st => st.toLowerCase() === skinType.toLowerCase() || st.toLowerCase() === 'all skin types'
+        );
+        if (!hasSt) return false;
+      }
+      if (skinConcern && skinConcern !== 'All') {
+        const hasSc = match.skinConcerns.some(sc => sc.toLowerCase() === skinConcern.toLowerCase());
+        if (!hasSc) return false;
+      }
+      if (ritualStep && ritualStep !== 'All') {
+        if (String(match.ritualStep || '').toLowerCase() !== ritualStep.toLowerCase()) {
+          return false;
+        }
+      }
+      if (onlySensitiveSafe && !match.sensitivitySafe) {
+        return false;
+      }
+      if (cleanSearch) {
+        const haystack = [
+          product.title || '',
+          product.description || '',
+          match.ritualStep || '',
+          ...(match.skinTypes || []),
+          ...(match.skinConcerns || []),
+          ...(match.keyActives || []),
+          ...(Array.isArray(product.tags) ? product.tags : [])
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(cleanSearch)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (hasCompletedQuiz) {
+        return (Number(b.match.isMatch) - Number(a.match.isMatch)) || (b.match.matchScore - a.match.matchScore);
+      }
+      return 0;
+    });
+
+  const hasActiveFilter =
+    onlyBlueprintMatch ||
+    skinType !== 'All' ||
+    skinConcern !== 'All' ||
+    ritualStep !== 'All' ||
+    onlySensitiveSafe ||
+    Boolean(cleanSearch);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+      {/* ✨ My Blueprint Reference & Smart Filter Bar */}
+      <div style={{
+        backgroundColor: '#FFFFFF',
+        border: '1.5px solid #B38B8F',
+        borderRadius: '20px',
+        padding: '22px 24px',
+        boxShadow: '0 8px 25px rgba(232, 197, 200, 0.2)',
+        textAlign: 'left'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '14px', borderBottom: '1px solid #E8C5C8', paddingBottom: '12px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+              ✨ My Blueprint Reference & Smart Boutique Filter Bar
+            </h3>
+            <p style={{ margin: '3px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              {hasCompletedQuiz
+                ? 'Every product below is cross-referenced against your locked Beauty Blueprint. Click any pill to filter by Skin Type, Condition, or Ritual Step.'
+                : 'Filter our curated boutique by Skin Type, Target Skin Condition, Sensitivity Safety, or Ritual Step.'}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {hasCompletedQuiz && (
+              <button
+                type="button"
+                onClick={() =>
+                  applyAndTrackFilter(
+                    prev => ({
+                      ...prev,
+                      onlyBlueprintMatch: !prev.onlyBlueprintMatch
+                    }),
+                    'Blueprint Match',
+                    !onlyBlueprintMatch ? 'Best Match for My Blueprint' : 'All'
+                  )
+                }
+                style={{
+                  background: onlyBlueprintMatch
+                    ? 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)'
+                    : '#FFF0F2',
+                  color: onlyBlueprintMatch ? '#FFFFFF' : '#5C5454',
+                  border: '1.5px solid #B38B8F',
+                  padding: '8px 16px',
+                  borderRadius: '20px',
+                  fontFamily: "'Cormorant Garamond', serif",
+                  fontSize: '1.05rem',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  boxShadow: onlyBlueprintMatch ? '0 4px 12px rgba(179, 139, 143, 0.35)' : 'none',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {onlyBlueprintMatch
+                  ? `✓ Showing Best Match for My Blueprint (${blueprintMatchCount})`
+                  : `✨ Best Match for My Blueprint (${blueprintMatchCount})`}
+              </button>
+            )}
+
+            {hasActiveFilter && (
+              <button
+                type="button"
+                onClick={onResetFilters}
+                style={{
+                  backgroundColor: '#FFFFFF',
+                  color: '#736A6A',
+                  border: '1px solid #E8C5C8',
+                  padding: '8px 14px',
+                  borderRadius: '20px',
+                  fontFamily: 'sans-serif',
+                  fontSize: '0.82rem',
+                  cursor: 'pointer'
+                }}
+              >
+                ↺ Reset All Filters
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Member's Core Blueprint Summary Badges */}
+        {hasCompletedQuiz && quizAnswers?.skinType && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '8px',
+            backgroundColor: '#FFF9F9',
+            border: '1px solid #E8C5C8',
+            borderRadius: '12px',
+            padding: '10px 14px',
+            marginBottom: '14px'
+          }}>
+            <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#B38B8F', fontFamily: 'sans-serif' }}>
+              🔒 Your Active Blueprint:
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setBoutiqueFilters(prev => ({
+                  ...prev,
+                  skinType: prev.skinType === quizAnswers.skinType ? 'All' : quizAnswers.skinType
+                }))
+              }
+              style={{
+                backgroundColor: skinType === quizAnswers.skinType ? '#F2D4D7' : '#FFFFFF',
+                border: '1px solid #B38B8F',
+                color: '#5C5454',
+                borderRadius: '14px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontFamily: 'sans-serif',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              💧 Skin: {quizAnswers.skinType}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setBoutiqueFilters(prev => ({
+                  ...prev,
+                  skinConcern: prev.skinConcern === quizAnswers.primaryGoal ? 'All' : quizAnswers.primaryGoal
+                }))
+              }
+              style={{
+                backgroundColor: skinConcern === quizAnswers.primaryGoal ? '#F2D4D7' : '#FFFFFF',
+                border: '1px solid #B38B8F',
+                color: '#5C5454',
+                borderRadius: '14px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontFamily: 'sans-serif',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              🎯 Goal: {quizAnswers.primaryGoal}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setBoutiqueFilters(prev => ({
+                  ...prev,
+                  onlySensitiveSafe: !prev.onlySensitiveSafe
+                }))
+              }
+              style={{
+                backgroundColor: onlySensitiveSafe ? '#F6FBF7' : '#FFFFFF',
+                border: onlySensitiveSafe ? '1.5px solid #2E7D32' : '1px solid #E8C5C8',
+                color: onlySensitiveSafe ? '#2E7D32' : '#5C5454',
+                borderRadius: '14px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontFamily: 'sans-serif',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              🛡️ Sensitivity: {quizAnswers.skinSensitivity} {onlySensitiveSafe ? '(Safe-Only ✓)' : ''}
+            </button>
+            <span style={{
+              backgroundColor: '#FFFFFF',
+              border: '1px solid #E8C5C8',
+              color: '#736A6A',
+              borderRadius: '14px',
+              padding: '4px 10px',
+              fontSize: '0.78rem',
+              fontFamily: 'sans-serif'
+            }}>
+              🌤️ Climate: {quizAnswers.climate}
+            </span>
+            <span style={{
+              backgroundColor: '#FFFFFF',
+              border: '1px solid #E8C5C8',
+              color: '#736A6A',
+              borderRadius: '14px',
+              padding: '4px 10px',
+              fontSize: '0.78rem',
+              fontFamily: 'sans-serif'
+            }}>
+              💄 Vibe: {quizAnswers.makeupVibe} ({quizAnswers.undertone} Undertone)
+            </span>
+            {onGoToBlueprintTab && (
+              <button
+                type="button"
+                onClick={onGoToBlueprintTab}
+                style={{
+                  marginLeft: 'auto',
+                  background: 'none',
+                  border: 'none',
+                  color: '#B38B8F',
+                  fontSize: '0.8rem',
+                  fontFamily: 'sans-serif',
+                  fontWeight: 'bold',
+                  textDecoration: 'underline',
+                  cursor: 'pointer'
+                }}
+              >
+                📝 View Full Dossier →
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Search & Sensitivity Toggle Row */}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <input
+            type="text"
+            placeholder="🔍 Search by product name, active ingredient (e.g. Hyaluronic, Vitamin C), or concern..."
+            value={searchQuery}
+            onChange={(e) => setBoutiqueFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
+            style={{
+              flex: '1 1 280px',
+              padding: '10px 15px',
+              borderRadius: '20px',
+              border: '1px solid #E8C5C8',
+              backgroundColor: '#FFF9F9',
+              outline: 'none',
+              fontFamily: 'sans-serif',
+              fontSize: '0.9rem',
+              color: '#5C5454'
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={() =>
+              applyAndTrackFilter(
+                prev => ({ ...prev, onlySensitiveSafe: !prev.onlySensitiveSafe }),
+                'Sensitivity',
+                !onlySensitiveSafe ? 'High-Sensitivity Safe Only' : 'All'
+              )
+            }
+            style={{
+              padding: '9px 15px',
+              borderRadius: '20px',
+              border: onlySensitiveSafe ? '1.5px solid #2E7D32' : '1px solid #E8C5C8',
+              backgroundColor: onlySensitiveSafe ? '#F6FBF7' : '#FFF9F9',
+              color: onlySensitiveSafe ? '#2E7D32' : '#5C5454',
+              fontFamily: 'sans-serif',
+              fontSize: '0.84rem',
+              fontWeight: onlySensitiveSafe ? 'bold' : 'normal',
+              cursor: 'pointer'
+            }}
+          >
+            {onlySensitiveSafe ? '✓ 🛡️ Gentle • High-Sensitivity Safe Only' : '🛡️ Filter: High-Sensitivity Safe Only'}
+          </button>
+        </div>
+
+        {/* Skin Type Filter Pills */}
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', minWidth: '88px' }}>
+            Skin Type:
+          </span>
+          {['All', ...BLUEPRINT_SKIN_TYPE_OPTIONS].map(st => {
+            const active = skinType === st;
+            const isUserTrait = hasCompletedQuiz && quizAnswers?.skinType && st.toLowerCase() === quizAnswers.skinType.toLowerCase();
+            return (
+              <button
+                key={`filter-st-${st}`}
+                type="button"
+                onClick={() => applyAndTrackFilter(prev => ({ ...prev, skinType: st }), 'Skin Type', st)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '15px',
+                  fontSize: '0.78rem',
+                  fontFamily: 'sans-serif',
+                  fontWeight: active || isUserTrait ? 'bold' : 'normal',
+                  backgroundColor: active ? '#F2D4D7' : isUserTrait ? '#FFF0F2' : '#FFF9F9',
+                  color: '#5C5454',
+                  border: active ? '1.5px solid #B38B8F' : isUserTrait ? '1px dashed #B38B8F' : '1px solid #E8C5C8',
+                  cursor: 'pointer'
+                }}
+              >
+                {st === 'All' ? 'All Skin Types' : `${isUserTrait ? '★ ' : ''}${st}`}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Skin Condition / Primary Goal Filter Pills */}
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', minWidth: '88px' }}>
+            Skin Condition:
+          </span>
+          {['All', ...BLUEPRINT_CONCERN_OPTIONS].map(sc => {
+            const active = skinConcern === sc;
+            const isUserGoal = hasCompletedQuiz && quizAnswers?.primaryGoal && sc.toLowerCase() === quizAnswers.primaryGoal.toLowerCase();
+            return (
+              <button
+                key={`filter-sc-${sc}`}
+                type="button"
+                onClick={() => applyAndTrackFilter(prev => ({ ...prev, skinConcern: sc }), 'Skin Condition', sc)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '15px',
+                  fontSize: '0.78rem',
+                  fontFamily: 'sans-serif',
+                  fontWeight: active || isUserGoal ? 'bold' : 'normal',
+                  backgroundColor: active ? '#F2D4D7' : isUserGoal ? '#FFF0F2' : '#FFF9F9',
+                  color: '#5C5454',
+                  border: active ? '1.5px solid #B38B8F' : isUserGoal ? '1px dashed #B38B8F' : '1px solid #E8C5C8',
+                  cursor: 'pointer'
+                }}
+              >
+                {sc === 'All' ? 'All Conditions' : `${isUserGoal ? '★ ' : ''}${sc}`}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Ritual Step Filter Pills */}
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', minWidth: '88px' }}>
+            Ritual Step:
+          </span>
+          {['All', ...BLUEPRINT_RITUAL_STEP_OPTIONS].map(stepOpt => {
+            const active = ritualStep === stepOpt;
+            return (
+              <button
+                key={`filter-step-${stepOpt}`}
+                type="button"
+                onClick={() => applyAndTrackFilter(prev => ({ ...prev, ritualStep: stepOpt }), 'Ritual Step', stepOpt)}
+                style={{
+                  padding: '5px 11px',
+                  borderRadius: '15px',
+                  fontSize: '0.76rem',
+                  fontFamily: 'sans-serif',
+                  fontWeight: active ? 'bold' : 'normal',
+                  backgroundColor: active ? '#5C5454' : '#FFF9F9',
+                  color: active ? '#FFFFFF' : '#5C5454',
+                  border: active ? '1.5px solid #5C5454' : '1px solid #E8C5C8',
+                  cursor: 'pointer'
+                }}
+              >
+                {stepOpt === 'All' ? 'All Steps' : stepOpt}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Results Count Bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '0 4px' }}>
+        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', fontWeight: 'bold' }}>
+          Showing {filteredList.length} of {products.length} Curated Boutique Essentials
+          {onlyBlueprintMatch ? ' (Filtered to Your Blueprint Matches ✧)' : ''}
+        </span>
+        {hasActiveFilter && (
+          <button
+            type="button"
+            onClick={onResetFilters}
+            style={{ background: 'none', border: 'none', color: '#B38B8F', fontFamily: 'sans-serif', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
+          >
+            Show All {products.length} Products
+          </button>
+        )}
+      </div>
+
+      {/* Product Grid */}
+      {products.length === 0 ? (
+        <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>
+          Fetching live boutique inventory...
+        </p>
+      ) : filteredList.length === 0 ? (
+        <div style={{ padding: '40px 25px', textAlign: 'center', backgroundColor: '#FFFFFF', borderRadius: '16px', border: '1px dashed #E8C5C8' }}>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454', margin: '0 0 12px 0' }}>
+            No boutique products matched that exact filter combination.
+          </p>
+          <button
+            type="button"
+            onClick={onResetFilters}
+            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 22px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            Reset Boutique Filters ✧
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
+          {filteredList.map(({ product }) => (
+            <ProductCard
+              key={product._id || product.title}
+              product={product}
+              onAddToCart={onAddToCart}
+              onCardClick={onCardClick}
+              userBlueprint={quizAnswers}
+              hasCompletedQuiz={hasCompletedQuiz}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   if (!product) return null;
@@ -186,24 +1441,45 @@ const ProductDetailModal = ({ product, onClose, onAddToCart }) => {
   const unformattedInfo = typeof rawInfo === 'string' ? rawInfo.replace(/<[^>]*>?/gm, '') : '';
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
 
+  const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
+
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-      backgroundColor: 'rgba(92, 84, 84, 0.5)', zIndex: 1200,
+      backgroundColor: 'rgba(92, 84, 84, 0.55)', backdropFilter: 'blur(3px)', zIndex: 1200,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       animation: 'fadeIn 0.3s ease', padding: '20px', boxSizing: 'border-box'
     }} onClick={onClose}>
       <div style={{
-        backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8',
-        borderRadius: '20px', padding: '30px', maxWidth: '500px', width: '100%',
-        boxShadow: '0 10px 30px rgba(232, 197, 200, 0.4)', position: 'relative',
-        maxHeight: '90vh', overflowY: 'auto'
+        backgroundColor: '#FFF9F9', border: bpMatch.isMatch ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+        borderRadius: '22px', padding: '28px', maxWidth: '560px', width: '100%',
+        boxShadow: '0 12px 36px rgba(92, 84, 84, 0.32)', position: 'relative',
+        maxHeight: '92vh', overflowY: 'auto', textAlign: 'left', boxSizing: 'border-box'
       }} onClick={(e) => e.stopPropagation()}>
         
-        <button onClick={onClose} style={{ position: 'absolute', top: '15px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A' }}>✕</button>
+        <button onClick={onClose} style={{ position: 'absolute', top: '15px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A', zIndex: 5 }}>✕</button>
 
-        <div style={{ width: '100%', height: '240px', backgroundColor: '#FFF0F2', borderRadius: '12px', overflow: 'hidden', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+        <div style={{ width: '100%', height: '240px', backgroundColor: '#FFF0F2', borderRadius: '14px', overflow: 'hidden', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', border: '1px solid #E8C5C8' }}>
           <img src={logo} alt="Susan's Logo" style={{ position: 'absolute', top: '10px', right: '10px', width: '35px', height: '35px', objectFit: 'contain', zIndex: 3, filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }} />
+          <span style={{
+            position: 'absolute', top: '10px', left: '10px',
+            backgroundColor: 'rgba(92, 84, 84, 0.88)', color: '#FFFFFF',
+            padding: '5px 12px', borderRadius: '14px', fontSize: '0.78rem',
+            fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', letterSpacing: '0.5px', zIndex: 3
+          }}>
+            {product.essentialSlotLabel || bpMatch.ritualStep}
+          </span>
+          {bpMatch.isMatch && (
+            <span style={{
+              position: 'absolute', bottom: '10px', left: '10px',
+              background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+              color: '#FFFFFF', padding: '5px 13px', borderRadius: '14px',
+              fontSize: '0.8rem', fontFamily: 'sans-serif', fontWeight: 'bold',
+              boxShadow: '0 3px 10px rgba(179, 139, 143, 0.45)', zIndex: 3
+            }}>
+              ✨ Matches Your Blueprint ({bpMatch.matchScore}% Fit)
+            </span>
+          )}
           {formattedImageUrl ? (
             <img src={formattedImageUrl} alt={title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : (
@@ -211,23 +1487,161 @@ const ProductDetailModal = ({ product, onClose, onAddToCart }) => {
           )}
         </div>
 
-        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: '0 0 10px 0' }}>{title}</h2>
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0', lineHeight: '1.25' }}>{title}</h2>
         
-        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 5px 0' }}>
-          ${parseFloat(itemPrice).toFixed(2)}
-        </p>
-        <p style={{ fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#A89999', margin: '0 0 15px 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
-          ✈️ Ships globally ({shippingTime})
-        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#B38B8F', fontWeight: 'bold', margin: 0 }}>
+            ${parseFloat(itemPrice).toFixed(2)}
+          </p>
+          <p style={{ fontFamily: 'sans-serif', fontSize: '0.85rem', color: '#A89999', margin: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
+            ✈️ Ships globally ({shippingTime})
+          </p>
+        </div>
+
+        {/* Skin Type & Skin Condition Pill Rows */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px', padding: '12px 14px', backgroundColor: '#FFFFFF', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', marginRight: '2px' }}>
+              Best for:
+            </span>
+            {bpMatch.skinTypes.map((st, i) => {
+              const isHighlighted = bpMatch.matchesSkinTypePill(st);
+              return (
+                <span
+                  key={`modal-st-${i}`}
+                  style={{
+                    fontSize: '0.76rem',
+                    fontFamily: 'sans-serif',
+                    padding: '3px 9px',
+                    borderRadius: '12px',
+                    fontWeight: isHighlighted ? 'bold' : '600',
+                    backgroundColor: isHighlighted ? '#F2D4D7' : '#FFF0F2',
+                    color: isHighlighted ? '#5C5454' : '#736A6A',
+                    border: isHighlighted ? '1.5px solid #B38B8F' : '1px solid #E8C5C8'
+                  }}
+                >
+                  {isHighlighted ? `✓ ${st} Skin` : `${st} Skin`}
+                </span>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', marginRight: '2px' }}>
+              Targets:
+            </span>
+            {bpMatch.skinConcerns.map((sc, i) => {
+              const isHighlighted = bpMatch.matchesConcernPill(sc);
+              return (
+                <span
+                  key={`modal-sc-${i}`}
+                  style={{
+                    fontSize: '0.76rem',
+                    fontFamily: 'sans-serif',
+                    padding: '3px 9px',
+                    borderRadius: '12px',
+                    fontWeight: isHighlighted ? 'bold' : '600',
+                    backgroundColor: isHighlighted ? '#F2D4D7' : '#F6FBF7',
+                    color: isHighlighted ? '#5C5454' : '#2E7D32',
+                    border: isHighlighted ? '1.5px solid #B38B8F' : '1px solid #A5D6A7'
+                  }}
+                >
+                  {isHighlighted ? `✨ ${sc}` : sc}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 📝 Blueprint Compatibility Check Box */}
+        <div style={{
+          marginBottom: '18px',
+          padding: '15px 16px',
+          borderRadius: '14px',
+          backgroundColor: bpMatch.isMatch ? '#FFF0F2' : '#FFFFFF',
+          border: bpMatch.isMatch ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+          boxShadow: '0 4px 12px rgba(232, 197, 200, 0.15)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
+              📝 Blueprint Compatibility Check
+            </strong>
+            <span style={{
+              fontSize: '0.75rem',
+              fontFamily: 'sans-serif',
+              fontWeight: 'bold',
+              padding: '3px 9px',
+              borderRadius: '10px',
+              backgroundColor: bpMatch.sensitivitySafe ? '#F6FBF7' : '#FFF8E7',
+              color: bpMatch.sensitivitySafe ? '#2E7D32' : '#B26A00',
+              border: `1px solid ${bpMatch.sensitivitySafe ? '#A5D6A7' : '#FFE082'}`
+            }}>
+              {bpMatch.sensitivitySafe ? '🛡️ ' : '⚡ '}{bpMatch.sensitivityLabel}
+            </span>
+          </div>
+
+          {bpMatch.hasValidBlueprint ? (
+            <div>
+              {bpMatch.matchedTraits.length > 0 ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: bpMatch.cautionNote ? '8px' : '10px' }}>
+                  {bpMatch.matchedTraits.map((trait, idx) => (
+                    <span
+                      key={idx}
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        color: '#5C5454',
+                        border: '1px solid #B38B8F',
+                        borderRadius: '10px',
+                        padding: '4px 10px',
+                        fontSize: '0.78rem',
+                        fontFamily: 'sans-serif',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      {trait}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: '0 0 8px 0', fontSize: '0.84rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                  General boutique essential — formulated primarily for {bpMatch.skinTypes.join(', ')} skin and {bpMatch.skinConcerns.join(', ')}.
+                </p>
+              )}
+
+              {bpMatch.cautionNote && (
+                <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: '#FFF8E7', border: '1px solid #FFE082', color: '#B26A00', fontSize: '0.8rem', fontFamily: 'sans-serif', marginBottom: '8px' }}>
+                  ⚠️ <strong>Sensitivity Note:</strong> {bpMatch.cautionNote}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p style={{ margin: '0 0 8px 0', fontSize: '0.83rem', color: '#8A797A', fontFamily: 'sans-serif', fontStyle: 'italic' }}>
+              Complete your 10-step Beauty Blueprint Quiz in your Member Sanctuary to unlock live personalized compatibility scoring on every product.
+            </p>
+          )}
+
+          {bpMatch.keyActives && bpMatch.keyActives.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', borderTop: '1px dashed #E8C5C8', paddingTop: '8px', marginTop: '4px' }}>
+              <span style={{ fontSize: '0.76rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                Key Actives & Highlights:
+              </span>
+              {bpMatch.keyActives.map((act, idx) => (
+                <span key={idx} style={{ fontSize: '0.74rem', fontFamily: 'sans-serif', backgroundColor: '#FFF9F9', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '2px 8px', fontWeight: 'bold' }}>
+                  ✦ {act}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
         {unformattedInfo && (
-          <p style={{ fontFamily: "'sans-serif'", fontSize: '1rem', color: '#736A6A', lineHeight: '1.6', margin: '0 0 20px 0' }}>
+          <p style={{ fontFamily: 'sans-serif', fontSize: '0.94rem', color: '#736A6A', lineHeight: '1.6', margin: '0 0 18px 0' }}>
             {unformattedInfo}
           </p>
         )}
 
         {hasVariants && product.variants.length > 1 && (
-          <div style={{ marginBottom: '20px' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ marginBottom: '18px' }} onClick={(e) => e.stopPropagation()}>
             <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', marginBottom: '5px' }}>Select Option:</label>
             <select 
               value={selectedVariantIdx} 
@@ -255,7 +1669,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart }) => {
             });
             onClose();
           }}
-          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer', width: '100%', transition: 'all 0.3s ease' }}
+          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer', width: '100%', transition: 'all 0.3s ease' }}
         >
           Add to Ritual ✧
         </button>
@@ -264,7 +1678,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart }) => {
   );
 };
 
-const ProductCard = ({ product, onAddToCart, onCardClick }) => {
+const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasCompletedQuiz }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   const hasVariants = product.variants && product.variants.length > 0;
@@ -280,40 +1694,146 @@ const ProductCard = ({ product, onAddToCart, onCardClick }) => {
   const unformattedInfo = typeof rawInfo === 'string' ? rawInfo.replace(/<[^>]*>?/gm, '') : '';
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
 
+  const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
   const enrichedProduct = { ...product, title, activeVariant };
 
   return (
     <div 
       onClick={() => onCardClick && onCardClick(enrichedProduct)}
-      style={{ backgroundColor: 'rgba(255, 255, 255, 0.85)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '15px', textAlign: 'center', transition: 'transform 0.3s ease, box-shadow 0.3s ease', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', height: '100%', cursor: 'pointer' }}
-      onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-5px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(232, 197, 200, 0.3)'; }}
-      onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 15px rgba(232, 197, 200, 0.15)'; }}
+      style={{
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        border: bpMatch.isMatch ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+        borderRadius: '16px',
+        padding: '15px',
+        textAlign: 'center',
+        transition: 'transform 0.3s ease, box-shadow 0.3s ease',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        boxShadow: bpMatch.isMatch ? '0 6px 20px rgba(179, 139, 143, 0.25)' : '0 4px 15px rgba(232, 197, 200, 0.15)',
+        height: '100%',
+        cursor: 'pointer',
+        position: 'relative',
+        boxSizing: 'border-box'
+      }}
+      onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-5px)'; e.currentTarget.style.boxShadow = '0 10px 26px rgba(179, 139, 143, 0.32)'; }}
+      onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = bpMatch.isMatch ? '0 6px 20px rgba(179, 139, 143, 0.25)' : '0 4px 15px rgba(232, 197, 200, 0.15)'; }}
     >
       <div>
-        <div style={{ width: '100%', height: '180px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+        <div style={{ width: '100%', height: '180px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
           <img src={logo} alt="Susan's Logo" style={{ position: 'absolute', top: '8px', right: '8px', width: '30px', height: '30px', objectFit: 'contain', zIndex: 3, filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }} />
-          {product.essentialSlotLabel && (
-            <span style={{ position: 'absolute', top: '8px', left: '8px', backgroundColor: 'rgba(92, 84, 84, 0.85)', color: '#FFFFFF', padding: '4px 10px', borderRadius: '12px', fontSize: '0.75rem', fontFamily: "'Cormorant Garamond', serif", letterSpacing: '0.5px', zIndex: 2 }}>
-              {product.essentialSlotLabel}
+          <span style={{
+            position: 'absolute',
+            top: '8px',
+            left: '8px',
+            backgroundColor: 'rgba(92, 84, 84, 0.86)',
+            color: '#FFFFFF',
+            padding: '4px 10px',
+            borderRadius: '12px',
+            fontSize: '0.72rem',
+            fontFamily: "'Cormorant Garamond', serif",
+            fontWeight: 'bold',
+            letterSpacing: '0.4px',
+            zIndex: 2
+          }}>
+            {product.essentialSlotLabel || bpMatch.ritualStep}
+          </span>
+
+          {bpMatch.isMatch && (
+            <span style={{
+              position: 'absolute',
+              bottom: '8px',
+              left: '8px',
+              right: '8px',
+              background: 'linear-gradient(135deg, rgba(179, 139, 143, 0.96) 0%, rgba(212, 165, 169, 0.96) 100%)',
+              color: '#FFFFFF',
+              padding: '4px 10px',
+              borderRadius: '10px',
+              fontSize: '0.73rem',
+              fontFamily: 'sans-serif',
+              fontWeight: 'bold',
+              letterSpacing: '0.2px',
+              boxShadow: '0 2px 8px rgba(92, 84, 84, 0.25)',
+              zIndex: 2
+            }}>
+              ✨ Matches Your Blueprint ({bpMatch.matchScore}%)
             </span>
           )}
+
           {formattedImageUrl ? (
             <img src={formattedImageUrl} alt={title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={(e) => { e.target.style.display = 'none'; }} />
           ) : (
             <span style={{ color: '#B38B8F', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic' }}>Susan's Select SKU</span>
           )}
         </div>
-        <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', margin: '0 0 8px 0', minHeight: '45px', lineHeight: '1.3' }}>{title}</h4>
+
+        <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', margin: '0 0 6px 0', minHeight: '42px', lineHeight: '1.28' }}>{title}</h4>
         
-        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 5px 0' }}>
+        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.38rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 4px 0' }}>
           ${parseFloat(itemPrice).toFixed(2)}
         </p>
-        <p style={{ fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#A89999', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+
+        {/* Skin Type & Skin Condition Pill Badges */}
+        <div style={{ textAlign: 'left', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '8px 9px', marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px' }}>
+            <span style={{ fontSize: '0.7rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+              Best for:
+            </span>
+            {bpMatch.skinTypes.slice(0, 3).map((st, idx) => {
+              const isMatchPill = bpMatch.matchesSkinTypePill(st);
+              return (
+                <span
+                  key={`st-${idx}`}
+                  style={{
+                    fontSize: '0.69rem',
+                    fontFamily: 'sans-serif',
+                    padding: '2px 7px',
+                    borderRadius: '9px',
+                    fontWeight: isMatchPill ? 'bold' : 'normal',
+                    backgroundColor: isMatchPill ? '#F2D4D7' : '#FFFFFF',
+                    color: '#5C5454',
+                    border: isMatchPill ? '1.5px solid #B38B8F' : '1px solid #E8C5C8'
+                  }}
+                >
+                  {isMatchPill ? `✓ ${st}` : st}
+                </span>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px' }}>
+            <span style={{ fontSize: '0.7rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+              Targets:
+            </span>
+            {bpMatch.skinConcerns.slice(0, 3).map((sc, idx) => {
+              const isMatchPill = bpMatch.matchesConcernPill(sc);
+              return (
+                <span
+                  key={`sc-${idx}`}
+                  style={{
+                    fontSize: '0.69rem',
+                    fontFamily: 'sans-serif',
+                    padding: '2px 7px',
+                    borderRadius: '9px',
+                    fontWeight: isMatchPill ? 'bold' : 'normal',
+                    backgroundColor: isMatchPill ? '#F2D4D7' : '#F6FBF7',
+                    color: isMatchPill ? '#5C5454' : '#2E7D32',
+                    border: isMatchPill ? '1.5px solid #B38B8F' : '1px solid #A5D6A7'
+                  }}
+                >
+                  {isMatchPill ? `✨ ${sc}` : sc}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        <p style={{ fontFamily: 'sans-serif', fontSize: '0.76rem', color: '#A89999', margin: '0 0 8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
           ✈️ Ships globally ({shippingTime})
         </p>
 
         {unformattedInfo && (
-          <div style={{ fontSize: '0.85rem', color: '#736A6A', marginBottom: '15px', textAlign: 'left', maxHeight: '60px', overflowY: 'auto', fontFamily: 'sans-serif' }}>
+          <div style={{ fontSize: '0.82rem', color: '#736A6A', marginBottom: '12px', textAlign: 'left', maxHeight: '48px', overflowY: 'auto', fontFamily: 'sans-serif' }}>
             {unformattedInfo}
           </div>
         )}
@@ -323,7 +1843,7 @@ const ProductCard = ({ product, onAddToCart, onCardClick }) => {
             <select 
               value={selectedVariantIdx} 
               onChange={(e) => setSelectedVariantIdx(Number(e.target.value))}
-              style={{ width: '100%', padding: '8px', marginBottom: '15px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', backgroundColor: '#FFF9F9', outline: 'none' }}
+              style={{ width: '100%', padding: '8px', marginBottom: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', backgroundColor: '#FFF9F9', outline: 'none' }}
             >
               {product.variants.map((v, idx) => (
                 <option key={v.sku || idx} value={idx}>
@@ -346,7 +1866,7 @@ const ProductCard = ({ product, onAddToCart, onCardClick }) => {
             title: title
           });
         }}
-        style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 15px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: 'pointer', width: '100%', marginTop: 'auto', transition: 'all 0.3s ease' }}
+        style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 15px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: 'auto', transition: 'all 0.3s ease' }}
         onMouseOver={(e) => { e.target.style.backgroundColor = '#FFFFFF'; e.target.style.color = '#B38B8F'; }}
         onMouseOut={(e) => { e.target.style.backgroundColor = '#F2D4D7'; e.target.style.color = '#5C5454'; }}
       >
@@ -1210,18 +2730,22 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
   );
 };
 
-const AdminInventory = ({ onCatalogUpdated }) => {
+const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab }) => {
   const [inventory, setInventory] = useState([]);
-  const [createForm, setCreateForm] = useState({ title: '', price: '', imageUrl: '', description: '', tags: '' });
+  const [createForm, setCreateForm] = useState({
+    title: '',
+    price: '',
+    imageUrl: '',
+    description: '',
+    tags: '',
+    ritualStep: '',
+    skinTypes: [],
+    skinConcerns: []
+  });
   const [editModalData, setEditModalData] = useState(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [isSyncingCj, setIsSyncingCj] = useState(false);
-  const [isCleaningCj, setIsCleaningCj] = useState(false);
-  const [isTestingWebhooks, setIsTestingWebhooks] = useState(false);
-  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [isAutoLabeling, setIsAutoLabeling] = useState(false);
   const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
-  const [webhookReport, setWebhookReport] = useState(null);
-  const [smtpReport, setSmtpReport] = useState(null);
 
   const fetchInventory = async () => {
     try {
@@ -1241,6 +2765,616 @@ const AdminInventory = ({ onCatalogUpdated }) => {
     // eslint-disable-next-line
   }, []);
 
+  const toggleSelectionInArray = (arr = [], item) => {
+    const list = Array.isArray(arr) ? arr : parseBlueprintList(arr);
+    return list.includes(item) ? list.filter(x => x !== item) : [...list, item];
+  };
+
+  const handleAutoLabelAllProducts = async () => {
+    const token = localStorage.getItem('token');
+    setIsAutoLabeling(true);
+    setOpsBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/reclassify-labels`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ forceAll: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (Array.isArray(data.products)) {
+          setInventory(data.products);
+          if (onCatalogUpdated) onCatalogUpdated(data.products);
+        } else {
+          await fetchInventory();
+        }
+        setOpsBanner({
+          type: 'success',
+          text: data.message || 'Labeled all boutique products with Skin Types, Skin Conditions & Ritual Steps! ✧'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'Failed to auto-label products for Blueprints.'
+        });
+      }
+    } catch (err) {
+      console.error('Auto-label error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while auto-labeling products.' });
+    }
+    setIsAutoLabeling(false);
+  };
+
+  const handleCreateProduct = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(createForm)
+      });
+      if (res.ok) {
+        const addedTitle = createForm.title;
+        await fetchInventory();
+        setCreateForm({
+          title: '',
+          price: '',
+          imageUrl: '',
+          description: '',
+          tags: '',
+          ritualStep: '',
+          skinTypes: [],
+          skinConcerns: []
+        });
+        setOpsBanner({ type: 'success', text: `Added "${addedTitle}" with Blueprint skin-condition labels to the boutique inventory! ✧` });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setOpsBanner({ type: 'error', text: data.error || 'Failed to add product.' });
+      }
+    } catch (err) {
+      console.error('Create product error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while adding product.' });
+    }
+  };
+
+  const handleSaveModalEdit = async (e) => {
+    e.preventDefault();
+    if (!editModalData || !editModalData.id) return;
+    setIsSavingEdit(true);
+    const token = localStorage.getItem('token');
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/${editModalData.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(editModalData)
+      });
+      if (res.ok) {
+        const updatedTitle = editModalData.title;
+        setEditModalData(null);
+        await fetchInventory();
+        setOpsBanner({ type: 'success', text: `Updated "${updatedTitle}" and its Blueprint labels in the boutique catalog! ✧` });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to update product.');
+      }
+    } catch (err) {
+      console.error('Update product error:', err);
+      alert('Network error while updating product.');
+    }
+    setIsSavingEdit(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Are you sure you want to delete this product? It will be removed from the boutique immediately.')) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        if (editModalData && editModalData.id === id) setEditModalData(null);
+        await fetchInventory();
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+    }
+  };
+
+  const handleEditClick = (prod) => {
+    const price = prod.variants?.[0]?.price ?? prod.price ?? 0;
+    const rawDesc = prod.description || prod.rawCjData?.description || '';
+    const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, '') : '';
+    const meta = deriveProductBlueprintMeta(prod);
+    setEditModalData({
+      id: prod._id,
+      title: prod.title || '',
+      price: price,
+      imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
+      description: cleanDesc,
+      tags: Array.isArray(prod.tags) ? prod.tags.join(', ') : (prod.tags || ''),
+      ritualStep: meta.ritualStep,
+      skinTypes: meta.skinTypes,
+      skinConcerns: meta.skinConcerns
+    });
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
+      {/* Pop-Up Edit Product Modal */}
+      {editModalData && (
+        <div
+          onClick={() => !isSavingEdit && setEditModalData(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+            backgroundColor: 'rgba(92, 84, 84, 0.55)', backdropFilter: 'blur(4px)',
+            zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px', boxSizing: 'border-box', animation: 'fadeIn 0.25s ease'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#FFF9F9', border: '1.5px solid #B38B8F', borderRadius: '22px',
+              padding: '30px', maxWidth: '580px', width: '100%', maxHeight: '92vh', overflowY: 'auto',
+              boxShadow: '0 15px 40px rgba(92, 84, 84, 0.35)', position: 'relative', boxSizing: 'border-box'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setEditModalData(null)}
+              style={{ position: 'absolute', top: '16px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#8A797A', cursor: 'pointer' }}
+            >
+              ✕
+            </button>
+
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 6px 0' }}>
+              Edit Boutique Product & Blueprint Labels ✧
+            </h2>
+            <p style={{ margin: '0 0 18px 0', fontSize: '0.9rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Changes save directly to your live boutique catalog and update member Blueprint matching.
+            </p>
+
+            {editModalData.imageUrl && (
+              <div style={{ width: '100%', height: '150px', backgroundColor: '#FFF0F2', borderRadius: '12px', overflow: 'hidden', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #E8C5C8' }}>
+                <img
+                  src={editModalData.imageUrl.startsWith('//') ? `https:${editModalData.imageUrl}` : editModalData.imageUrl}
+                  alt={editModalData.title}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </div>
+            )}
+
+            <form onSubmit={handleSaveModalEdit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Product Title</label>
+                <input
+                  required
+                  type="text"
+                  value={editModalData.title}
+                  onChange={e => setEditModalData({ ...editModalData, title: e.target.value })}
+                  style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Retail Price ($)</label>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    value={editModalData.price}
+                    onChange={e => setEditModalData({ ...editModalData, price: e.target.value })}
+                    style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Ritual Step Badge</label>
+                  <select
+                    value={editModalData.ritualStep || ''}
+                    onChange={e => setEditModalData({ ...editModalData, ritualStep: e.target.value })}
+                    style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.92rem', color: '#5C5454', boxSizing: 'border-box' }}
+                  >
+                    <option value="">Auto-Detect Step from Title</option>
+                    {BLUEPRINT_RITUAL_STEP_OPTIONS.map(stepOpt => (
+                      <option key={stepOpt} value={stepOpt}>{stepOpt}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Skin Types Multi-Select Pills */}
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '6px', fontWeight: 'bold' }}>
+                  Best for Skin Types (click to toggle):
+                </label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {BLUEPRINT_SKIN_TYPE_OPTIONS.map(st => {
+                    const selected = Array.isArray(editModalData.skinTypes) && editModalData.skinTypes.includes(st);
+                    return (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setEditModalData({
+                          ...editModalData,
+                          skinTypes: toggleSelectionInArray(editModalData.skinTypes, st)
+                        })}
+                        style={{
+                          padding: '5px 11px',
+                          borderRadius: '14px',
+                          fontSize: '0.8rem',
+                          fontFamily: 'sans-serif',
+                          fontWeight: selected ? 'bold' : 'normal',
+                          backgroundColor: selected ? '#F2D4D7' : '#FFF9F9',
+                          color: '#5C5454',
+                          border: selected ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {selected ? `✓ ${st}` : st}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Skin Concerns Multi-Select Pills */}
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '6px', fontWeight: 'bold' }}>
+                  Targets Skin Conditions / Goals (click to toggle):
+                </label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {BLUEPRINT_CONCERN_OPTIONS.map(sc => {
+                    const selected = Array.isArray(editModalData.skinConcerns) && editModalData.skinConcerns.includes(sc);
+                    return (
+                      <button
+                        key={sc}
+                        type="button"
+                        onClick={() => setEditModalData({
+                          ...editModalData,
+                          skinConcerns: toggleSelectionInArray(editModalData.skinConcerns, sc)
+                        })}
+                        style={{
+                          padding: '5px 11px',
+                          borderRadius: '14px',
+                          fontSize: '0.8rem',
+                          fontFamily: 'sans-serif',
+                          fontWeight: selected ? 'bold' : 'normal',
+                          backgroundColor: selected ? '#F6FBF7' : '#FFF9F9',
+                          color: selected ? '#2E7D32' : '#5C5454',
+                          border: selected ? '1.5px solid #2E7D32' : '1px solid #E8C5C8',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {selected ? `✨ ${sc}` : sc}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Image URL (HTTPS)</label>
+                  <input
+                    type="url"
+                    value={editModalData.imageUrl}
+                    onChange={e => setEditModalData({ ...editModalData, imageUrl: e.target.value })}
+                    style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.92rem', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={editModalData.tags}
+                    onChange={e => setEditModalData({ ...editModalData, tags: e.target.value })}
+                    placeholder="skincare, serum, hydration"
+                    style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.92rem', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Description</label>
+                <textarea
+                  rows="3"
+                  value={editModalData.description}
+                  onChange={e => setEditModalData({ ...editModalData, description: e.target.value })}
+                  style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', resize: 'vertical', fontFamily: 'sans-serif', fontSize: '0.92rem', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditModalData(null)}
+                  style={{ flex: 1, backgroundColor: '#FFFFFF', color: '#736A6A', padding: '12px', borderRadius: '25px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  style={{ flex: 2, backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: isSavingEdit ? 'not-allowed' : 'pointer' }}
+                >
+                  {isSavingEdit ? 'Saving Changes...' : 'Update Product ✧'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {opsBanner.text && (
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: '10px',
+          fontFamily: 'sans-serif',
+          fontSize: '0.95rem',
+          backgroundColor: opsBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+          color: opsBanner.type === 'success' ? '#2E7D32' : '#C62828',
+          border: `1px solid ${opsBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+        }}>
+          {opsBanner.text}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ width: '360px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
+              Add Custom Product
+            </h2>
+          </div>
+
+          <form onSubmit={handleCreateProduct} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <input required type="text" placeholder="Product Title" value={createForm.title} onChange={e => setCreateForm({...createForm, title: e.target.value})} style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+            <input required type="number" step="0.01" placeholder="Retail Price ($)" value={createForm.price} onChange={e => setCreateForm({...createForm, price: e.target.value})} style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+            <select
+              value={createForm.ritualStep}
+              onChange={e => setCreateForm({ ...createForm, ritualStep: e.target.value })}
+              style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', backgroundColor: '#FFF9F9', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+            >
+              <option value="">Ritual Step (Auto-Detect if blank)</option>
+              {BLUEPRINT_RITUAL_STEP_OPTIONS.map(stepOpt => (
+                <option key={stepOpt} value={stepOpt}>{stepOpt}</option>
+              ))}
+            </select>
+
+            <div style={{ backgroundColor: '#FFF9F9', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+              <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', color: '#5C5454', marginBottom: '6px', fontFamily: 'sans-serif' }}>
+                Best for Skin Types (optional — auto-labeled if blank):
+              </span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                {BLUEPRINT_SKIN_TYPE_OPTIONS.map(st => {
+                  const selected = createForm.skinTypes.includes(st);
+                  return (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setCreateForm({
+                        ...createForm,
+                        skinTypes: toggleSelectionInArray(createForm.skinTypes, st)
+                      })}
+                      style={{
+                        padding: '4px 9px',
+                        borderRadius: '12px',
+                        fontSize: '0.74rem',
+                        fontFamily: 'sans-serif',
+                        fontWeight: selected ? 'bold' : 'normal',
+                        backgroundColor: selected ? '#F2D4D7' : '#FFFFFF',
+                        color: '#5C5454',
+                        border: selected ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {selected ? `✓ ${st}` : st}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ backgroundColor: '#FFF9F9', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+              <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', color: '#5C5454', marginBottom: '6px', fontFamily: 'sans-serif' }}>
+                Targets Skin Conditions (optional — auto-labeled if blank):
+              </span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                {BLUEPRINT_CONCERN_OPTIONS.map(sc => {
+                  const selected = createForm.skinConcerns.includes(sc);
+                  return (
+                    <button
+                      key={sc}
+                      type="button"
+                      onClick={() => setCreateForm({
+                        ...createForm,
+                        skinConcerns: toggleSelectionInArray(createForm.skinConcerns, sc)
+                      })}
+                      style={{
+                        padding: '4px 9px',
+                        borderRadius: '12px',
+                        fontSize: '0.74rem',
+                        fontFamily: 'sans-serif',
+                        fontWeight: selected ? 'bold' : 'normal',
+                        backgroundColor: selected ? '#F6FBF7' : '#FFFFFF',
+                        color: selected ? '#2E7D32' : '#5C5454',
+                        border: selected ? '1.5px solid #2E7D32' : '1px solid #E8C5C8',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {selected ? `✨ ${sc}` : sc}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <input type="url" placeholder="Image URL (HTTPS)" value={createForm.imageUrl} onChange={e => setCreateForm({...createForm, imageUrl: e.target.value})} style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+            <input type="text" placeholder="Tags (comma separated)" value={createForm.tags} onChange={e => setCreateForm({...createForm, tags: e.target.value})} style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
+            <textarea placeholder="Description..." rows="3" value={createForm.description} onChange={e => setCreateForm({...createForm, description: e.target.value})} style={{ padding: '11px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', resize: 'vertical' }} />
+            
+            <button type="submit" style={{ backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s ease', marginTop: '6px' }}>
+              Save to Boutique ✧
+            </button>
+          </form>
+        </div>
+
+        <div style={{ flex: 1, minWidth: '280px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                disabled={isAutoLabeling}
+                onClick={handleAutoLabelAllProducts}
+                style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '7px 14px', borderRadius: '20px', fontSize: '0.92rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', cursor: isAutoLabeling ? 'not-allowed' : 'pointer' }}
+              >
+                {isAutoLabeling ? '⏳ Labeling Catalog...' : '🏷️ Auto-Label All Products for Blueprints'}
+              </button>
+              {onOpenTestsTab && (
+                <button
+                  type="button"
+                  onClick={onOpenTestsTab}
+                  style={{ backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '6px 14px', borderRadius: '20px', fontSize: '0.9rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  🧪 CJ Sync & Diagnostics Tab →
+                </button>
+              )}
+              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
+                {inventory.length} Items Active
+              </span>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(235px, 1fr))', gap: '20px' }}>
+            {inventory.map(prod => {
+              const price = prod.variants?.[0]?.price || prod.price || 0;
+              const displayImage = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
+              const meta = deriveProductBlueprintMeta(prod);
+
+              return (
+                <div key={prod._id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '15px', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
+                  <div style={{ width: '100%', height: '140px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '12px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                    <span style={{ position: 'absolute', top: '6px', left: '6px', backgroundColor: 'rgba(92, 84, 84, 0.85)', color: '#FFFFFF', padding: '3px 8px', borderRadius: '10px', fontSize: '0.68rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold' }}>
+                      {meta.ritualStep}
+                    </span>
+                    {displayImage ? (
+                      <img src={displayImage} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ color: '#B38B8F', fontStyle: 'italic', fontSize: '0.9rem' }}>No Image</span>
+                    )}
+                  </div>
+                  <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 4px 0', minHeight: '38px' }}>{prod.title}</h4>
+                  <p style={{ fontFamily: 'sans-serif', fontSize: '1.08rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 8px 0' }}>${parseFloat(price).toFixed(2)}</p>
+
+                  {/* Skin Type & Skin Condition Badges */}
+                  <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '7px 8px', marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Skin:</span>
+                      {meta.skinTypes.slice(0, 3).map((st, idx) => (
+                        <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
+                          {st}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Targets:</span>
+                      {meta.skinConcerns.slice(0, 3).map((sc, idx) => (
+                        <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
+                          {sc}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleEditClick(prod)}
+                      style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}
+                    >
+                      ✎ Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(prod._id)}
+                      style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
+  const [isRunningFullSuite, setIsRunningFullSuite] = useState(false);
+  const [sendLiveEmailInSuite, setSendLiveEmailInSuite] = useState(false);
+  const [fullDiagReport, setFullDiagReport] = useState(null);
+
+  const [isSyncingCj, setIsSyncingCj] = useState(false);
+  const [isCleaningCj, setIsCleaningCj] = useState(false);
+  const [isTestingWebhooks, setIsTestingWebhooks] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+
+  const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
+  const [webhookReport, setWebhookReport] = useState(null);
+  const [smtpReport, setSmtpReport] = useState(null);
+
+  const handleRunFullSuite = async () => {
+    const token = localStorage.getItem('token');
+    setIsRunningFullSuite(true);
+    setOpsBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/diagnostics/run-all`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ sendLiveTestEmail: sendLiveEmailInSuite })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setFullDiagReport(data);
+        setOpsBanner({
+          type: data.overallStatus === 'PASSED' ? 'success' : 'error',
+          text: data.message || '6-Point System Diagnostics completed.'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'Failed to run 6-point diagnostic suite.'
+        });
+      }
+    } catch (err) {
+      console.error('Full diagnostic suite error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while running 6-point system diagnostics.' });
+    }
+    setIsRunningFullSuite(false);
+  };
+
   const handleCjSyncOrClean = async (purgeOnly = false) => {
     const token = localStorage.getItem('token');
     if (purgeOnly) setIsCleaningCj(true);
@@ -1258,11 +3392,8 @@ const AdminInventory = ({ onCatalogUpdated }) => {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        if (Array.isArray(data.products)) {
-          setInventory(data.products);
-          if (onCatalogUpdated) onCatalogUpdated(data.products);
-        } else {
-          await fetchInventory();
+        if (Array.isArray(data.products) && onCatalogUpdated) {
+          onCatalogUpdated(data.products);
         }
         setOpsBanner({
           type: 'success',
@@ -1348,227 +3479,142 @@ const AdminInventory = ({ onCatalogUpdated }) => {
     setIsTestingSmtp(false);
   };
 
-  const handleCreateProduct = async (e) => {
-    e.preventDefault();
-    const token = localStorage.getItem('token');
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/admin/products`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(createForm)
-      });
-      if (res.ok) {
-        await fetchInventory();
-        setCreateForm({ title: '', price: '', imageUrl: '', description: '', tags: '' });
-        setOpsBanner({ type: 'success', text: `Added "${createForm.title}" to the boutique inventory! ✧` });
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setOpsBanner({ type: 'error', text: data.error || 'Failed to add product.' });
-      }
-    } catch (err) {
-      console.error('Create product error:', err);
-      setOpsBanner({ type: 'error', text: 'Network error while adding product.' });
-    }
-  };
-
-  const handleSaveModalEdit = async (e) => {
-    e.preventDefault();
-    if (!editModalData || !editModalData.id) return;
-    setIsSavingEdit(true);
-    const token = localStorage.getItem('token');
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/admin/products/${editModalData.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(editModalData)
-      });
-      if (res.ok) {
-        const updatedTitle = editModalData.title;
-        setEditModalData(null);
-        await fetchInventory();
-        setOpsBanner({ type: 'success', text: `Updated "${updatedTitle}" in the boutique catalog! ✧` });
-      } else {
-        const data = await res.json().catch(() => ({}));
-        alert(data.error || 'Failed to update product.');
-      }
-    } catch (err) {
-      console.error('Update product error:', err);
-      alert('Network error while updating product.');
-    }
-    setIsSavingEdit(false);
-  };
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this product? It will be removed from the boutique immediately.')) return;
-    const token = localStorage.getItem('token');
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/admin/products/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        if (editModalData && editModalData.id === id) setEditModalData(null);
-        await fetchInventory();
-      }
-    } catch (err) {
-      console.error('Delete error:', err);
-    }
-  };
-
-  const handleEditClick = (prod) => {
-    const price = prod.variants?.[0]?.price ?? prod.price ?? 0;
-    const rawDesc = prod.description || prod.rawCjData?.description || '';
-    const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, '') : '';
-    setEditModalData({
-      id: prod._id,
-      title: prod.title || '',
-      price: price,
-      imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
-      description: cleanDesc,
-      tags: Array.isArray(prod.tags) ? prod.tags.join(', ') : (prod.tags || '')
-    });
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
-      {/* Pop-Up Edit Product Modal */}
-      {editModalData && (
-        <div
-          onClick={() => !isSavingEdit && setEditModalData(null)}
-          style={{
-            position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-            backgroundColor: 'rgba(92, 84, 84, 0.55)', backdropFilter: 'blur(4px)',
-            zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '20px', boxSizing: 'border-box', animation: 'fadeIn 0.25s ease'
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              backgroundColor: '#FFF9F9', border: '1.5px solid #B38B8F', borderRadius: '22px',
-              padding: '30px', maxWidth: '520px', width: '100%', maxHeight: '90vh', overflowY: 'auto',
-              boxShadow: '0 15px 40px rgba(92, 84, 84, 0.35)', position: 'relative', boxSizing: 'border-box'
-            }}
-          >
+      {/* Card 1: Master 6-Point Odie System Diagnostics Suite */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '26px 28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: 0 }}>
+                🧪 Odie System Diagnostics & Boutique Test Lab ✧
+              </h2>
+              {fullDiagReport && (
+                <span style={{
+                  padding: '4px 12px',
+                  borderRadius: '14px',
+                  fontSize: '0.8rem',
+                  fontWeight: 'bold',
+                  fontFamily: 'sans-serif',
+                  backgroundColor: fullDiagReport.overallStatus === 'PASSED' ? '#F6FBF7' : '#FFF8E7',
+                  color: fullDiagReport.overallStatus === 'PASSED' ? '#2E7D32' : '#B26A00',
+                  border: `1px solid ${fullDiagReport.overallStatus === 'PASSED' ? '#A5D6A7' : '#FFE082'}`
+                }}>
+                  {fullDiagReport.passedCount}/{fullDiagReport.totalChecks} Checks Passed ({fullDiagReport.durationMs}ms)
+                </span>
+              )}
+            </div>
+            <p style={{ margin: '6px 0 0 0', fontSize: '0.94rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Verify MongoDB, Stripe & CJ v2 Webhooks, Stripe Balance API, CJ Dropshipping Wallet API, IONOS SMTP Email, and Odie's AI Brain in one click — or ask Odie to run and explain every test for you.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.86rem', color: '#5C5454', fontFamily: 'sans-serif', backgroundColor: '#FFF9F9', padding: '8px 12px', borderRadius: '14px', border: '1px solid #E8C5C8', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={sendLiveEmailInSuite}
+                onChange={(e) => setSendLiveEmailInSuite(e.target.checked)}
+              />
+              Also send live test email to Susan
+            </label>
+
             <button
               type="button"
-              onClick={() => setEditModalData(null)}
-              style={{ position: 'absolute', top: '16px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#8A797A', cursor: 'pointer' }}
+              disabled={isRunningFullSuite}
+              onClick={handleRunFullSuite}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '11px 20px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', fontWeight: 'bold', cursor: isRunningFullSuite ? 'not-allowed' : 'pointer' }}
             >
-              ✕
+              {isRunningFullSuite ? '⏳ Running 6-Point Suite...' : '🚀 Run Full 6-Point Diagnostics'}
             </button>
 
-            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 6px 0' }}>
-              Edit Boutique Product ✧
-            </h2>
-            <p style={{ margin: '0 0 18px 0', fontSize: '0.9rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-              Changes save directly to your live boutique catalog.
-            </p>
-
-            {editModalData.imageUrl && (
-              <div style={{ width: '100%', height: '160px', backgroundColor: '#FFF0F2', borderRadius: '12px', overflow: 'hidden', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #E8C5C8' }}>
-                <img
-                  src={editModalData.imageUrl.startsWith('//') ? `https:${editModalData.imageUrl}` : editModalData.imageUrl}
-                  alt={editModalData.title}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  onError={(e) => { e.target.style.display = 'none'; }}
-                />
-              </div>
+            {onAskOdieToTest && (
+              <button
+                type="button"
+                onClick={() =>
+                  onAskOdieToTest(
+                    sendLiveEmailInSuite
+                      ? 'Odie, run the full 6-point system diagnostics suite with sendLiveTestEmail set to true and explain the results of every subsystem.'
+                      : 'Odie, run the full 6-point system diagnostics suite and explain the health of every subsystem.'
+                  )
+                }
+                style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '11px 20px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                🐾 Ask Odie to Run & Diagnose
+              </button>
             )}
-
-            <form onSubmit={handleSaveModalEdit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Product Title</label>
-                <input
-                  required
-                  type="text"
-                  value={editModalData.title}
-                  onChange={e => setEditModalData({ ...editModalData, title: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
-                />
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '12px' }}>
-                <div>
-                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Retail Price ($)</label>
-                  <input
-                    required
-                    type="number"
-                    step="0.01"
-                    value={editModalData.price}
-                    onChange={e => setEditModalData({ ...editModalData, price: e.target.value })}
-                    style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Tags (comma-separated)</label>
-                  <input
-                    type="text"
-                    value={editModalData.tags}
-                    onChange={e => setEditModalData({ ...editModalData, tags: e.target.value })}
-                    placeholder="skincare, serum, hydration"
-                    style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.98rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Image URL (HTTPS)</label>
-                <input
-                  type="url"
-                  value={editModalData.imageUrl}
-                  onChange={e => setEditModalData({ ...editModalData, imageUrl: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold' }}>Description</label>
-                <textarea
-                  rows="4"
-                  value={editModalData.description}
-                  onChange={e => setEditModalData({ ...editModalData, description: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', outline: 'none', resize: 'vertical', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setEditModalData(null)}
-                  style={{ flex: 1, backgroundColor: '#FFFFFF', color: '#736A6A', padding: '12px', borderRadius: '25px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer' }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingEdit}
-                  style={{ flex: 2, backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: isSavingEdit ? 'not-allowed' : 'pointer' }}
-                >
-                  {isSavingEdit ? 'Saving Changes...' : 'Update Product ✧'}
-                </button>
-              </div>
-            </form>
           </div>
         </div>
-      )}
 
-      {/* CJ Health & Beauty Sync + Webhook & IONOS SMTP Readiness Control Bar */}
-      <div style={{ backgroundColor: '#FFFFFF', padding: '22px 25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)' }}>
+        {opsBanner.text && (
+          <div style={{
+            marginTop: '18px',
+            padding: '12px 16px',
+            borderRadius: '10px',
+            fontFamily: 'sans-serif',
+            fontSize: '0.95rem',
+            backgroundColor: opsBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+            color: opsBanner.type === 'success' ? '#2E7D32' : '#C62828',
+            border: `1px solid ${opsBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+          }}>
+            {opsBanner.text}
+          </div>
+        )}
+
+        {/* 6-Point Visual Scorecard Grid */}
+        {fullDiagReport && Array.isArray(fullDiagReport.checksList) && (
+          <div style={{ marginTop: '20px', padding: '18px', borderRadius: '15px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#5C5454' }}>
+                6-Point Subsystem Verification Scorecard ({fullDiagReport.timestampCT})
+              </strong>
+              <button
+                type="button"
+                onClick={() => setFullDiagReport(null)}
+                style={{ background: 'none', border: 'none', color: '#8A797A', cursor: 'pointer', fontSize: '0.85rem', textDecoration: 'underline' }}
+              >
+                Hide Scorecard
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
+              {fullDiagReport.checksList.map((chk, idx) => (
+                <div key={idx} style={{ backgroundColor: '#FFFFFF', border: `1px solid ${chk.passed ? '#A5D6A7' : '#FFE082'}`, borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                    <strong style={{ color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>
+                      {chk.passed ? '✅' : '⚠️'} {chk.name}
+                    </strong>
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      fontSize: '0.72rem',
+                      fontWeight: 'bold',
+                      fontFamily: 'sans-serif',
+                      backgroundColor: chk.passed ? '#F6FBF7' : '#FFF8E7',
+                      color: chk.passed ? '#2E7D32' : '#B26A00'
+                    }}>
+                      {chk.status}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+                    {chk.details}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Card 2: Individual Subsystem Test & Catalog Sync Controls (Moved from Inventory) */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '26px 28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
           <div>
-            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#5C5454', margin: '0 0 4px 0' }}>
-              CJ Dropshipping Beauty & Skincare Sync + System Diagnostics ✧
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.7rem', color: '#5C5454', margin: '0 0 4px 0' }}>
+              Individual Subsystem Tests & CJ Dropshipping Catalog Sync ✧
             </h3>
             <p style={{ margin: 0, fontSize: '0.92rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-              Pulls from CJ Beauty & Skincare categories + 44 targeted skincare/makeup queries, and verifies IONOS SMTP & Webhooks.
+              Run targeted CJ Beauty & Skincare catalog syncs, non-beauty purges, live IONOS SMTP delivery tests, or Stripe/CJ webhook payload checks.
             </p>
           </div>
 
@@ -1608,26 +3654,21 @@ const AdminInventory = ({ onCatalogUpdated }) => {
             >
               {isTestingWebhooks ? '⏳ Testing Webhooks...' : '🧪 Test CJ & Stripe Webhooks'}
             </button>
+
+            {onAskOdieToTest && (
+              <button
+                type="button"
+                onClick={() => onAskOdieToTest('Odie, clean any non-beauty items from our CJ catalog and let me know how many verified beauty products remain active.')}
+                style={{ backgroundColor: '#FFFFFF', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: 'pointer' }}
+              >
+                🐾 Ask Odie to Clean Catalog
+              </button>
+            )}
           </div>
         </div>
 
-        {opsBanner.text && (
-          <div style={{
-            marginTop: '15px',
-            padding: '12px 16px',
-            borderRadius: '10px',
-            fontFamily: 'sans-serif',
-            fontSize: '0.95rem',
-            backgroundColor: opsBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
-            color: opsBanner.type === 'success' ? '#2E7D32' : '#C62828',
-            border: `1px solid ${opsBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
-          }}>
-            {opsBanner.text}
-          </div>
-        )}
-
         {smtpReport && (
-          <div style={{ marginTop: '15px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
+          <div style={{ marginTop: '18px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
               <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
                 {smtpReport.ok ? '✅ IONOS Email Live Diagnostic Report (PASSED)' : '⚠️ IONOS Email Troubleshooter Report'}
@@ -1687,7 +3728,7 @@ const AdminInventory = ({ onCatalogUpdated }) => {
         )}
 
         {webhookReport && (
-          <div style={{ marginTop: '15px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
+          <div style={{ marginTop: '18px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
               <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
                 Webhook & Public Launch Readiness Report ({webhookReport.overallStatus})
@@ -1732,80 +3773,11 @@ const AdminInventory = ({ onCatalogUpdated }) => {
           </div>
         )}
       </div>
-
-      <div style={{ display: 'flex', gap: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-      <div style={{ width: '350px', flexShrink: 0, backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)', boxSizing: 'border-box' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '1.8rem' }}>
-            Add Custom Product
-          </h2>
-        </div>
-
-        <form onSubmit={handleCreateProduct} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <input required type="text" placeholder="Product Title" value={createForm.title} onChange={e => setCreateForm({...createForm, title: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input required type="number" step="0.01" placeholder="Retail Price ($)" value={createForm.price} onChange={e => setCreateForm({...createForm, price: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input type="url" placeholder="Image URL (HTTPS)" value={createForm.imageUrl} onChange={e => setCreateForm({...createForm, imageUrl: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <input type="text" placeholder="Tags (comma separated)" value={createForm.tags} onChange={e => setCreateForm({...createForm, tags: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none' }} />
-          <textarea placeholder="Description..." rows="4" value={createForm.description} onChange={e => setCreateForm({...createForm, description: e.target.value})} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8', outline: 'none', resize: 'vertical' }} />
-          
-          <button type="submit" style={{ backgroundColor: '#F2D4D7', color: '#5C5454', padding: '12px', borderRadius: '25px', border: '1px solid #B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer', transition: 'all 0.3s ease', marginTop: '10px' }}>
-            Save to Boutique ✧
-          </button>
-        </form>
-      </div>
-
-      <div style={{ flex: 1, minWidth: '280px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
-          <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
-            {inventory.length} Items Active
-          </span>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '20px' }}>
-          {inventory.map(prod => {
-            const price = prod.variants?.[0]?.price || prod.price || 0;
-            const displayImage = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
-
-            return (
-              <div key={prod._id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '15px', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
-                <div style={{ width: '100%', height: '140px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '15px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {displayImage ? (
-                    <img src={displayImage} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  ) : (
-                    <span style={{ color: '#B38B8F', fontStyle: 'italic', fontSize: '0.9rem' }}>No Image</span>
-                  )}
-                </div>
-                <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0', minHeight: '40px' }}>{prod.title}</h4>
-                <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 15px 0' }}>${parseFloat(price).toFixed(2)}</p>
-                
-                <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleEditClick(prod)}
-                    style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}
-                  >
-                    ✎ Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(prod._id)}
-                    style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      </div>
     </div>
   );
 };
 
-const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
+const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie }) => {
   const [telemetry, setTelemetry] = useState(null);
   const [isLoadingFinances, setIsLoadingFinances] = useState(false);
   const [isSyncingCjOrders, setIsSyncingCjOrders] = useState(false);
@@ -1814,6 +3786,27 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
   const [statusBanner, setStatusBanner] = useState({ type: '', text: '' });
   const [editingOrderMap, setEditingOrderMap] = useState({});
   const [savingOrderId, setSavingOrderId] = useState(null);
+
+  // Phase 3: Stripe "Money Dump" (Bank Payout) State
+  const [isDumpingStripe, setIsDumpingStripe] = useState(false);
+  const [moneyDumpForm, setMoneyDumpForm] = useState({
+    fullAvailableDump: true,
+    amountUsd: '',
+    reserveForActiveOrders: true,
+    method: 'standard',
+    notes: ''
+  });
+  const [lastDumpResult, setLastDumpResult] = useState(null);
+
+  // Phase 3: Move Money (Stripe -> CJ Dropshipping Bridge & Order Auto-Pay) State
+  const [isMovingToCj, setIsMovingToCj] = useState(false);
+  const [cjBridgeForm, setCjBridgeForm] = useState({
+    amountUsd: '',
+    allocateFromStripe: true,
+    payUnpaidCjOrders: true,
+    notes: ''
+  });
+  const [lastBridgeResult, setLastBridgeResult] = useState(null);
 
   const fetchFinancesAndOrders = async (syncCj = false) => {
     const token = localStorage.getItem('token');
@@ -1859,6 +3852,110 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
     fetchFinancesAndOrders(false);
     // eslint-disable-next-line
   }, []);
+
+  const handleExecuteStripeMoneyDump = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    setIsDumpingStripe(true);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const payload = {
+        fullAvailableDump: Boolean(moneyDumpForm.fullAvailableDump),
+        amountUsd: moneyDumpForm.fullAvailableDump ? undefined : moneyDumpForm.amountUsd,
+        reserveForActiveOrders: Boolean(moneyDumpForm.reserveForActiveOrders),
+        method: moneyDumpForm.method || 'standard',
+        notes: moneyDumpForm.notes || ''
+      };
+
+      const res = await fetch(`${API_BASE_URL}/api/admin/finances/stripe-payout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setLastDumpResult(data);
+        if (data.telemetry) {
+          setTelemetry(data.telemetry);
+        } else {
+          await fetchFinancesAndOrders(false);
+        }
+        setMoneyDumpForm(prev => ({ ...prev, amountUsd: '', notes: '' }));
+        setStatusBanner({
+          type: 'success',
+          text: data.message || 'Stripe Money Dump completed! ✧'
+        });
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Failed to execute Stripe Money Dump.'
+        });
+      }
+    } catch (err) {
+      console.error('Stripe Money Dump error:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while executing Stripe Money Dump.'
+      });
+    }
+    setIsDumpingStripe(false);
+  };
+
+  const handleExecuteStripeToCjBridge = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    setIsMovingToCj(true);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const payload = {
+        amountUsd: cjBridgeForm.amountUsd !== '' ? Number(cjBridgeForm.amountUsd) : undefined,
+        allocateFromStripe: Boolean(cjBridgeForm.allocateFromStripe),
+        payUnpaidCjOrders: Boolean(cjBridgeForm.payUnpaidCjOrders),
+        notes: cjBridgeForm.notes || ''
+      };
+
+      const res = await fetch(`${API_BASE_URL}/api/admin/finances/stripe-to-cj`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setLastBridgeResult(data);
+        if (data.telemetry) {
+          setTelemetry(data.telemetry);
+        } else {
+          await fetchFinancesAndOrders(false);
+        }
+        setCjBridgeForm(prev => ({ ...prev, notes: '' }));
+        setStatusBanner({
+          type: 'success',
+          text: data.message || 'Stripe → CJ Dropshipping treasury bridge executed! ✧'
+        });
+        if (onOrdersUpdated) onOrdersUpdated();
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Failed to execute Stripe → CJ transfer bridge.'
+        });
+      }
+    } catch (err) {
+      console.error('Stripe -> CJ Bridge error:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while executing Stripe → CJ transfer bridge.'
+      });
+    }
+    setIsMovingToCj(false);
+  };
 
   const handleOrderEditChange = (order, field, value) => {
     setEditingOrderMap(prev => {
@@ -1928,6 +4025,15 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
   const counts = telemetry?.orderPipeline?.counts || { total: 0, past: 0, present: 0, future: 0, scheduledMemberBoxes: 0 };
   const summary = telemetry?.summaryMetrics || {};
   const futureProj = telemetry?.futureProjections || { scheduledMemberBoxes: [] };
+  const recentTransfers = telemetry?.recentTransfers || [];
+
+  // Live Money Dump & CJ Wholesale Reserve Math
+  const availableStripeUsd = Number(stripeBal.availableUsd || 0);
+  const activeUnshippedCostUsd = Number(cjBal.activeUnshippedCostUsd || 0);
+  const cjWalletAvailableUsd = Number(cjBal.availableUsd || 0);
+  const uncoveredCjWholesaleUsd = Number(Math.max(0, activeUnshippedCostUsd - cjWalletAvailableUsd).toFixed(2));
+  const reserveAppliedUsd = moneyDumpForm.reserveForActiveOrders ? uncoveredCjWholesaleUsd : 0;
+  const maxSafeStripeDumpUsd = Number(Math.max(0, availableStripeUsd - reserveAppliedUsd).toFixed(2));
 
   const rawOrders =
     pipelineFilter === 'PAST'
@@ -1964,7 +4070,7 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
             Executive Treasury & Order Pipeline Command Center ✧
           </h2>
           <p style={{ margin: 0, fontSize: '0.92rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-            Real-time Stripe Payout Balance, CJ Dropshipping Wallet Balance, and Past, Present & Future Order Monitoring.
+            Real-time Stripe Money Dump Payouts, Stripe → CJ Dropshipping Wholesale Bridge, and Past, Present & Future Order Monitoring.
           </p>
         </div>
 
@@ -2157,6 +4263,330 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated }) => {
           </div>
         </div>
       </div>
+
+      {/* Row 1.5: Phase 3 — Executive Treasury Console: Stripe Money Dump & Stripe → CJ Dropshipping Bridge */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '24px' }}>
+        {/* Column A: Susan's Stripe "Money Dump" (Bank Payout) */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '26px', borderRadius: '20px', border: '1.5px solid #B38B8F', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.18)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.75rem', color: '#5C5454', margin: 0 }}>
+                💸 Susan's Stripe "Money Dump" (Bank Payout)
+              </h3>
+              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', padding: '3px 10px', borderRadius: '12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                Stripe Payouts API
+              </span>
+            </div>
+            <p style={{ margin: '0 0 16px 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+              Sweep your available Stripe profits directly to your linked bank account or debit card while optionally holding back a Smart Wholesale Reserve for active unshipped CJ orders.
+            </p>
+
+            {/* Live Payout Calculation Preview Box */}
+            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 15px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', fontFamily: 'sans-serif', fontSize: '0.86rem' }}>
+              <div>
+                <span style={{ color: '#8A797A', display: 'block', fontSize: '0.76rem' }}>Safe Bank Dump Available</span>
+                <strong style={{ color: '#2E7D32', fontSize: '1.25rem' }}>${maxSafeStripeDumpUsd.toFixed(2)}</strong>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <span style={{ color: '#8A797A', display: 'block', fontSize: '0.76rem' }}>Smart CJ Wholesale Reserve</span>
+                <strong style={{ color: '#B38B8F', fontSize: '1.05rem' }}>${reserveAppliedUsd.toFixed(2)}</strong>
+              </div>
+            </div>
+
+            <form onSubmit={handleExecuteStripeMoneyDump} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setMoneyDumpForm({ ...moneyDumpForm, fullAvailableDump: true, amountUsd: '' })}
+                  style={{
+                    flex: 1,
+                    padding: '9px 12px',
+                    borderRadius: '14px',
+                    border: moneyDumpForm.fullAvailableDump ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                    backgroundColor: moneyDumpForm.fullAvailableDump ? '#F2D4D7' : '#FFF9F9',
+                    color: '#5C5454',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.84rem',
+                    fontWeight: moneyDumpForm.fullAvailableDump ? 'bold' : 'normal',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✓ Dump Full Safe Balance (${maxSafeStripeDumpUsd.toFixed(2)})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMoneyDumpForm({ ...moneyDumpForm, fullAvailableDump: false })}
+                  style={{
+                    flex: 1,
+                    padding: '9px 12px',
+                    borderRadius: '14px',
+                    border: !moneyDumpForm.fullAvailableDump ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                    backgroundColor: !moneyDumpForm.fullAvailableDump ? '#F2D4D7' : '#FFF9F9',
+                    color: '#5C5454',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.84rem',
+                    fontWeight: !moneyDumpForm.fullAvailableDump ? 'bold' : 'normal',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Custom USD Amount ($)
+                </button>
+              </div>
+
+              {!moneyDumpForm.fullAvailableDump && (
+                <input
+                  required
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  placeholder="Enter custom payout amount in USD (e.g. 250.00)"
+                  value={moneyDumpForm.amountUsd}
+                  onChange={(e) => setMoneyDumpForm({ ...moneyDumpForm, amountUsd: e.target.value })}
+                  style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.92rem', backgroundColor: '#FFF9F9' }}
+                />
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <select
+                  value={moneyDumpForm.method}
+                  onChange={(e) => setMoneyDumpForm({ ...moneyDumpForm, method: e.target.value })}
+                  style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#5C5454', backgroundColor: '#FFF9F9' }}
+                >
+                  <option value="standard">🏦 Standard Bank ACH (Free • 1–2 Days)</option>
+                  <option value="instant">⚡ Instant Debit Card Payout</option>
+                </select>
+
+                <input
+                  type="text"
+                  placeholder="Ledger Note (e.g. Weekly Profit Sweep)"
+                  value={moneyDumpForm.notes}
+                  onChange={(e) => setMoneyDumpForm({ ...moneyDumpForm, notes: e.target.value })}
+                  style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+                />
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer', backgroundColor: '#FFF9F9', padding: '8px 12px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(moneyDumpForm.reserveForActiveOrders)}
+                  onChange={(e) => setMoneyDumpForm({ ...moneyDumpForm, reserveForActiveOrders: e.target.checked })}
+                />
+                <span>
+                  <strong>Smart CJ Wholesale Reserve:</strong> Keep ${uncoveredCjWholesaleUsd.toFixed(2)} in Stripe to cover active unshipped CJ orders
+                </span>
+              </label>
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '4px' }}>
+                <button
+                  type="submit"
+                  disabled={isDumpingStripe}
+                  style={{ flex: 2, backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 18px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', cursor: isDumpingStripe ? 'not-allowed' : 'pointer' }}
+                >
+                  {isDumpingStripe ? '⏳ Dumping Stripe Funds...' : '💸 Execute Stripe Money Dump ✧'}
+                </button>
+
+                {onAskOdie && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onAskOdie(
+                        'Odie, execute a Stripe money dump of my available balance to the bank, reserving enough for active unshipped CJ orders.'
+                      )
+                    }
+                    style={{ flex: 1, backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '12px 14px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    🐾 Ask Odie
+                  </button>
+                )}
+              </div>
+            </form>
+
+            {lastDumpResult && (
+              <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '10px', backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', fontSize: '0.84rem', color: '#2E7D32', fontFamily: 'sans-serif' }}>
+                <strong>✓ Latest Money Dump:</strong> {lastDumpResult.message}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Column B: Move Money: Stripe → CJ Dropshipping Wholesale Bridge & Order Auto-Payment */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '26px', borderRadius: '20px', border: '1.5px solid #B38B8F', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.18)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.75rem', color: '#5C5454', margin: 0 }}>
+                📦 Move Money: Stripe → CJ Dropshipping Bridge
+              </h3>
+              <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '3px 10px', borderRadius: '12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                CJ Wallet & Order Pay
+              </span>
+            </div>
+            <p style={{ margin: '0 0 16px 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+              Allocate wholesale funds from Stripe (`CJ DROPSHIP` payout earmark) and automatically pay open CJ Dropshipping orders directly from your CJ Wallet (`POST /shopping/pay/payBalance`).
+            </p>
+
+            {/* Live CJ Wholesale Needed vs CJ Wallet Box */}
+            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 15px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', fontFamily: 'sans-serif', fontSize: '0.86rem' }}>
+              <div>
+                <span style={{ color: '#8A797A', display: 'block', fontSize: '0.76rem' }}>Active Unshipped CJ Wholesale Cost</span>
+                <strong style={{ color: '#5C5454', fontSize: '1.25rem' }}>${activeUnshippedCostUsd.toFixed(2)}</strong>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCjBridgeForm({
+                      ...cjBridgeForm,
+                      amountUsd: String(activeUnshippedCostUsd > 0 ? activeUnshippedCostUsd.toFixed(2) : '50.00')
+                    })
+                  }
+                  style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '6px 12px', borderRadius: '14px', fontSize: '0.8rem', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  Use Exact Wholesale (${(activeUnshippedCostUsd > 0 ? activeUnshippedCostUsd : 50).toFixed(2)})
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleExecuteStripeToCjBridge} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  placeholder={`Transfer Amount ($ default ${(activeUnshippedCostUsd > 0 ? activeUnshippedCostUsd : 50).toFixed(2)})`}
+                  value={cjBridgeForm.amountUsd}
+                  onChange={(e) => setCjBridgeForm({ ...cjBridgeForm, amountUsd: e.target.value })}
+                  style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem', backgroundColor: '#FFF9F9' }}
+                />
+
+                <input
+                  type="text"
+                  placeholder="Bridge Note (e.g. CJ Order Batch Fulfillment)"
+                  value={cjBridgeForm.notes}
+                  onChange={(e) => setCjBridgeForm({ ...cjBridgeForm, notes: e.target.value })}
+                  style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+                />
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer', backgroundColor: '#FFF9F9', padding: '8px 12px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(cjBridgeForm.allocateFromStripe)}
+                  onChange={(e) => setCjBridgeForm({ ...cjBridgeForm, allocateFromStripe: e.target.checked })}
+                />
+                <span>
+                  <strong>Stage A — Allocate & Payout from Stripe:</strong> Initiate dedicated <code>CJ DROPSHIP</code> wholesale payout
+                </span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer', backgroundColor: '#FFF9F9', padding: '8px 12px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(cjBridgeForm.payUnpaidCjOrders)}
+                  onChange={(e) => setCjBridgeForm({ ...cjBridgeForm, payUnpaidCjOrders: e.target.checked })}
+                />
+                <span>
+                  <strong>Stage B — Auto-Pay Open CJ Orders:</strong> Forward unpaid Present orders & pay via CJ Wallet API
+                </span>
+              </label>
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '4px' }}>
+                <button
+                  type="submit"
+                  disabled={isMovingToCj}
+                  style={{ flex: 2, backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 18px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.12rem', fontWeight: 'bold', cursor: isMovingToCj ? 'not-allowed' : 'pointer' }}
+                >
+                  {isMovingToCj ? '⏳ Moving Funds to CJ...' : '📦 Move Funds & Pay CJ Orders ✧'}
+                </button>
+
+                <a
+                  href="https://app.cjdropshipping.com/myCJ.html#/myCJWallet"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ flex: 1, textAlign: 'center', textDecoration: 'none', backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 12px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  ↗ CJ Wallet Portal
+                </a>
+
+                {onAskOdie && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onAskOdie(
+                        'Odie, move the wholesale funds needed for my active orders from Stripe to CJ Dropshipping and pay any open CJ orders.'
+                      )
+                    }
+                    style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '12px 14px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    🐾 Ask Odie
+                  </button>
+                )}
+              </div>
+            </form>
+
+            {lastBridgeResult && (
+              <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '10px', backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', fontSize: '0.84rem', color: '#2E7D32', fontFamily: 'sans-serif' }}>
+                <strong>✓ Latest Stripe → CJ Bridge:</strong> {lastBridgeResult.message}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Row 1.8: Recent Treasury Transfers & Money Dump Audit Ledger */}
+      {recentTransfers.length > 0 && (
+        <div style={{ backgroundColor: '#FFFFFF', padding: '24px 28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.12)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+            <div>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                🏛️ Executive Treasury Transfer & Money Dump Ledger
+              </h3>
+              <p style={{ margin: '2px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                Permanent audit trail of every Stripe Money Dump bank payout and Stripe → CJ Dropshipping wholesale transfer triggered by Susan or Odie.
+              </p>
+            </div>
+            <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '4px 12px', borderRadius: '14px', fontSize: '0.82rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+              {recentTransfers.length} Recorded Transfer(s)
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '260px', overflowY: 'auto' }}>
+            {recentTransfers.map((tr, idx) => {
+              const isDump = tr.transferType === 'STRIPE_BANK_PAYOUT';
+              return (
+                <div key={tr._id || idx} style={{ padding: '12px 16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', fontFamily: 'sans-serif', fontSize: '0.86rem' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <strong style={{ color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>
+                        {isDump ? '💸 Stripe Bank Money Dump' : '📦 Stripe → CJ Wholesale Bridge'}
+                      </strong>
+                      <span style={{ backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #E8C5C8', padding: '2px 8px', borderRadius: '10px', fontSize: '0.74rem', fontWeight: 'bold' }}>
+                        {tr.status}
+                      </span>
+                      <span style={{ backgroundColor: tr.triggeredBy === 'odie' ? '#F6FBF7' : '#FFF0F2', color: tr.triggeredBy === 'odie' ? '#2E7D32' : '#5C5454', padding: '2px 8px', borderRadius: '10px', fontSize: '0.74rem', fontWeight: 'bold' }}>
+                        {tr.triggeredBy === 'odie' ? '🐾 Triggered by Odie' : '👩🏼‍💼 Triggered by Susan'}
+                      </span>
+                    </div>
+                    <p style={{ margin: '4px 0 0 0', color: '#736A6A', fontSize: '0.82rem' }}>
+                      {tr.notes} • {tr.createdAt ? new Date(tr.createdAt).toLocaleString() : ''}
+                    </p>
+                  </div>
+
+                  <div style={{ textAlign: 'right' }}>
+                    <strong style={{ fontSize: '1.2rem', color: isDump ? '#2E7D32' : '#B38B8F' }}>
+                      ${Number(tr.amountUsd || 0).toFixed(2)} {tr.currency || 'USD'}
+                    </strong>
+                    {tr.wholesaleReserveUsd > 0 && (
+                      <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A' }}>
+                        CJ Reserve: ${Number(tr.wholesaleReserveUsd).toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Row 2: Past, Present & Future Order Pipeline Monitor */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
@@ -2456,26 +4886,918 @@ const AdminVideoPortal = () => {
   );
 };
 
-const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
-  const [messages, setMessages] = useState([
-    {
-      role: 'model',
-      text: "Hello Susan ✧ I'm connected to your live boutique inventory, member blueprints, IONOS email, and Central Time consultation calendar. You can ask me to add or edit products, curate items for a member's inbox, schedule consultations, or dispatch email reminders!"
+const AdminAnalytics = ({ onOpenCurationTab, onOpenInventoryTab, onAskOdie }) => {
+  const [range, setRange] = useState('30d');
+  const [analytics, setAnalytics] = useState(null);
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+  const [isSeedingDemo, setIsSeedingDemo] = useState(false);
+  const [isClearingDemo, setIsClearingDemo] = useState(false);
+  const [leaderboardSort, setLeaderboardSort] = useState('engagement'); // 'engagement' | 'views' | 'cartAdds' | 'purchases' | 'curated' | 'conversion'
+  const [statusBanner, setStatusBanner] = useState({ type: '', text: '' });
+
+  const fetchAnalytics = async (selectedRange = range) => {
+    const token = localStorage.getItem('token');
+    setIsLoadingAnalytics(true);
+    setStatusBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/analytics?range=${encodeURIComponent(selectedRange)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setAnalytics(data);
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Could not load site analytics telemetry.'
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching admin analytics:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while fetching site analytics telemetry.'
+      });
     }
-  ]);
+    setIsLoadingAnalytics(false);
+  };
+
+  useEffect(() => {
+    fetchAnalytics(range);
+    // eslint-disable-next-line
+  }, [range]);
+
+  const handleSeedOrClearDemo = async (actionType = 'seed') => {
+    const token = localStorage.getItem('token');
+    if (actionType === 'clear_demo') setIsClearingDemo(true);
+    else setIsSeedingDemo(true);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/analytics/seed-demo`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action: actionType, range })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (data.telemetry) {
+          setAnalytics(data.telemetry);
+        } else {
+          await fetchAnalytics(range);
+        }
+        setStatusBanner({
+          type: 'success',
+          text: data.message || (actionType === 'clear_demo' ? 'Sample traffic cleared! ✧' : 'Sample traffic loaded! ✧')
+        });
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Failed to update sample analytics traffic.'
+        });
+      }
+    } catch (err) {
+      console.error('Analytics seed/clear error:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while updating sample analytics traffic.'
+      });
+    }
+
+    setIsSeedingDemo(false);
+    setIsClearingDemo(false);
+  };
+
+  const ov = analytics?.overview || {};
+  const dailySeries = Array.isArray(analytics?.dailyTrafficSeries) ? analytics.dailyTrafficSeries : [];
+  const topPages = Array.isArray(analytics?.topPages) ? analytics.topPages : [];
+  const funnel = Array.isArray(analytics?.conversionFunnel) ? analytics.conversionFunnel : [];
+  const rawLeaderboard = Array.isArray(analytics?.productLeaderboard) ? analytics.productLeaderboard : [];
+  const bpSupplyDemand = analytics?.blueprintDemandVsSupply || {};
+  const filterTrends = analytics?.filterAndSearchTrends?.topFilters || [];
+  const searchTrends = analytics?.filterAndSearchTrends?.topSearches || [];
+  const recentEvents = Array.isArray(analytics?.recentEvents) ? analytics.recentEvents : [];
+
+  const sortedLeaderboard = [...rawLeaderboard].sort((a, b) => {
+    if (leaderboardSort === 'views') return (b.viewCount - a.viewCount) || (b.engagementScore - a.engagementScore);
+    if (leaderboardSort === 'cartAdds') return (b.cartAddCount - a.cartAddCount) || (b.viewCount - a.viewCount);
+    if (leaderboardSort === 'purchases') return (b.purchaseCount - a.purchaseCount) || (b.revenueUsd - a.revenueUsd);
+    if (leaderboardSort === 'curated') return (b.curatedCount - a.curatedCount) || (b.viewCount - a.viewCount);
+    if (leaderboardSort === 'conversion') return (b.viewToCartRatePct - a.viewToCartRatePct) || (b.cartAddCount - a.cartAddCount);
+    return (b.engagementScore - a.engagementScore) || (b.viewCount - a.viewCount);
+  });
+
+  const maxDailyVal = Math.max(
+    1,
+    ...dailySeries.map(d => Math.max(Number(d.pageViews || 0), Number(d.productViews || 0) + Number(d.cartAdds || 0)))
+  );
+
+  const badgeStyleForTone = (tone) => {
+    if (tone === 'hot') return { bg: '#FFF0F2', color: '#C62828', border: '#FFCDD2' };
+    if (tone === 'warning') return { bg: '#FFF8E7', color: '#B26A00', border: '#FFE082' };
+    if (tone === 'gem') return { bg: '#F6FBF7', color: '#2E7D32', border: '#A5D6A7' };
+    if (tone === 'curated') return { bg: '#F4F0FF', color: '#5E35B1', border: '#D1C4E9' };
+    if (tone === 'active') return { bg: '#FFF9F9', color: '#B38B8F', border: '#B38B8F' };
+    return { bg: '#F7F2F2', color: '#736A6A', border: '#E8C5C8' };
+  };
+
+  const eventLabelStyle = (evType) => {
+    switch (evType) {
+      case 'PRODUCT_VIEW': return { icon: '👁️', label: 'Product View', bg: '#FFF0F2', color: '#B38B8F' };
+      case 'ADD_TO_CART': return { icon: '🛍️', label: 'Added to Bag', bg: '#F6FBF7', color: '#2E7D32' };
+      case 'REMOVE_FROM_CART': return { icon: '🗑️', label: 'Removed from Bag', bg: '#FFF5F5', color: '#C62828' };
+      case 'CHECKOUT_INITIATED': return { icon: '💳', label: 'Checkout Started', bg: '#FFF8E7', color: '#B26A00' };
+      case 'FILTER_USED': return { icon: '🏷️', label: 'Filter Clicked', bg: '#F4F0FF', color: '#5E35B1' };
+      case 'SEARCH_QUERY': return { icon: '🔍', label: 'Boutique Search', bg: '#F4F0FF', color: '#5E35B1' };
+      case 'QUIZ_STARTED': return { icon: '📝', label: 'Quiz Started', bg: '#FFF0F2', color: '#B38B8F' };
+      case 'QUIZ_COMPLETED': return { icon: '✨', label: 'Blueprint Locked', bg: '#F6FBF7', color: '#2E7D32' };
+      default: return { icon: '📄', label: 'Page View', bg: '#FFF9F9', color: '#5C5454' };
+    }
+  };
+
+  const hasDemoEvents = recentEvents.some(e => e.isDemo);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '26px', animation: 'fadeIn 0.5s ease' }}>
+      {/* Top Executive Analytics Command Bar */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '22px 26px', borderRadius: '20px', border: '1.5px solid #B38B8F', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.18)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.05rem', color: '#5C5454', margin: 0 }}>
+              📊 Boutique Traffic, Product Engagement & Curation Intelligence ✧
+            </h2>
+            {analytics?.updatedAtCT && (
+              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', padding: '3px 10px', borderRadius: '12px', fontSize: '0.76rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                🕒 Updated {analytics.updatedAtCT}
+              </span>
+            )}
+          </div>
+          <p style={{ margin: '5px 0 0 0', fontSize: '0.92rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+            Real-time page views, most viewed & highest-converting products, Member Blueprint demand vs. inventory supply gaps, and live shopper telemetry.
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Time Range Selector Pills */}
+          <div style={{ display: 'flex', backgroundColor: '#FFF9F9', padding: '4px', borderRadius: '20px', border: '1px solid #E8C5C8', gap: '4px' }}>
+            {[
+              { id: '7d', label: '7 Days' },
+              { id: '30d', label: '30 Days' },
+              { id: '90d', label: '90 Days' },
+              { id: 'all', label: 'All Time' }
+            ].map(rOpt => (
+              <button
+                key={rOpt.id}
+                type="button"
+                onClick={() => setRange(rOpt.id)}
+                style={{
+                  padding: '6px 13px',
+                  borderRadius: '16px',
+                  border: range === rOpt.id ? '1px solid #B38B8F' : 'none',
+                  backgroundColor: range === rOpt.id ? '#F2D4D7' : 'transparent',
+                  color: '#5C5454',
+                  fontFamily: 'sans-serif',
+                  fontSize: '0.8rem',
+                  fontWeight: range === rOpt.id ? 'bold' : 'normal',
+                  cursor: 'pointer'
+                }}
+              >
+                {rOpt.label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            disabled={isLoadingAnalytics}
+            onClick={() => fetchAnalytics(range)}
+            style={{ backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '9px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: isLoadingAnalytics ? 'not-allowed' : 'pointer' }}
+          >
+            {isLoadingAnalytics ? '⏳ Refreshing...' : '↻ Refresh Live Telemetry'}
+          </button>
+
+          <button
+            type="button"
+            disabled={isSeedingDemo || isClearingDemo}
+            onClick={() => handleSeedOrClearDemo('seed')}
+            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '9px 16px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isSeedingDemo || isClearingDemo) ? 'not-allowed' : 'pointer' }}
+          >
+            {isSeedingDemo ? '⏳ Populating...' : '✨ Load Sample Traffic Preview'}
+          </button>
+
+          {hasDemoEvents && (
+            <button
+              type="button"
+              disabled={isSeedingDemo || isClearingDemo}
+              onClick={() => handleSeedOrClearDemo('clear_demo')}
+              style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', color: '#8A797A', padding: '9px 14px', borderRadius: '20px', fontFamily: 'sans-serif', fontSize: '0.8rem', cursor: (isSeedingDemo || isClearingDemo) ? 'not-allowed' : 'pointer' }}
+            >
+              {isClearingDemo ? '⏳ Clearing...' : '🧹 Clear Sample Events'}
+            </button>
+          )}
+
+          {onAskOdie && (
+            <button
+              type="button"
+              onClick={() =>
+                onAskOdie(
+                  `Odie, analyze my site traffic and product engagement for the ${range} window, tell me my top viewed products and Blueprint demand gaps, and suggest what I should curate for members today.`
+                )
+              }
+              style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '9px 18px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              🐾 Ask Odie for Curation Strategy
+            </button>
+          )}
+        </div>
+      </div>
+
+      {statusBanner.text && (
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: '10px',
+          fontFamily: 'sans-serif',
+          fontSize: '0.94rem',
+          backgroundColor: statusBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+          color: statusBanner.type === 'success' ? '#2E7D32' : '#C62828',
+          border: `1px solid ${statusBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+        }}>
+          {statusBanner.text}
+        </div>
+      )}
+
+      {/* Section 1: 6-Card Executive KPI Scorecard */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '18px' }}>
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            🌐 Total Page Views
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.35rem', color: '#5C5454', fontWeight: 'bold', margin: '6px 0 4px 0' }}>
+            {Number(ov.totalPageViews || 0).toLocaleString()}
+          </p>
+          <span style={{ fontSize: '0.82rem', color: '#B38B8F', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+            {Number(ov.uniqueVisitors || 0).toLocaleString()} Unique Visitor Session(s)
+          </span>
+        </div>
+
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            👁️ Product Detail Views
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.35rem', color: '#B38B8F', fontWeight: 'bold', margin: '6px 0 4px 0' }}>
+            {Number(ov.productViews || 0).toLocaleString()}
+          </p>
+          <span style={{ fontSize: '0.82rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+            Across {ov.totalActiveProducts || 0} Active Boutique SKUs
+          </span>
+        </div>
+
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            🛍️ Ritual Bag Additions
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.35rem', color: '#2E7D32', fontWeight: 'bold', margin: '6px 0 4px 0' }}>
+            {Number(ov.cartAdditions || 0).toLocaleString()}
+          </p>
+          <span style={{ fontSize: '0.82rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+            {ov.checkoutsInitiated || 0} Checkout(s) Initiated
+          </span>
+        </div>
+
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            💳 Order Conversion Rate
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.35rem', color: '#5C5454', fontWeight: 'bold', margin: '6px 0 4px 0' }}>
+            {Number(ov.conversionRatePct || 0).toFixed(1)}%
+          </p>
+          <span style={{ fontSize: '0.82rem', color: '#2E7D32', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+            {ov.paidOrdersCount || 0} Paid Orders (${Number(ov.paidRevenueUsd || 0).toFixed(2)})
+          </span>
+        </div>
+
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            📝 Blueprint Quiz Completion
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.35rem', color: '#B38B8F', fontWeight: 'bold', margin: '6px 0 4px 0' }}>
+            {Number(ov.quizCompletionRatePct || 0).toFixed(1)}%
+          </p>
+          <span style={{ fontSize: '0.82rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+            {ov.quizCompletions || 0} Locked Blueprints • {ov.totalCurationsSent || 0} Curations Sent
+          </span>
+        </div>
+
+        <div style={{ backgroundColor: '#FFFFFF', padding: '20px 22px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)' }}>
+          <span style={{ fontSize: '0.8rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+            👑 Member vs. Guest Split
+          </span>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', fontWeight: 'bold', margin: '10px 0 6px 0' }}>
+            {ov.memberTrafficSharePct ?? 50}% Member / {ov.guestTrafficSharePct ?? 50}% Guest
+          </p>
+          <div style={{ width: '100%', height: '8px', backgroundColor: '#FFF0F2', borderRadius: '6px', overflow: 'hidden', display: 'flex' }}>
+            <div style={{ width: `${ov.memberTrafficSharePct ?? 50}%`, backgroundColor: '#B38B8F', height: '100%' }} />
+            <div style={{ width: `${ov.guestTrafficSharePct ?? 50}%`, backgroundColor: '#F2D4D7', height: '100%' }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Section 2: Daily Traffic & Engagement Trend Chart + Top Viewed Pages Breakdown */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '24px' }}>
+        {/* Left: Pure CSS Daily Traffic & Product Engagement Bar Chart */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '24px 26px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+              <div>
+                <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                  📈 Daily Traffic & Product Engagement Trend
+                </h3>
+                <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                  Page Views vs. Product Detail Opens & Ritual Bag Additions (US Central Time)
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', fontSize: '0.76rem', fontFamily: 'sans-serif', color: '#5C5454' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '3px', backgroundColor: '#B38B8F', display: 'inline-block' }} />
+                  Page Views
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '3px', backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', display: 'inline-block' }} />
+                  Product Views
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '3px', backgroundColor: '#2E7D32', display: 'inline-block' }} />
+                  Bag Adds
+                </span>
+              </div>
+            </div>
+
+            {dailySeries.length === 0 ? (
+              <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}>
+                No daily traffic recorded yet. Click "✨ Load Sample Traffic Preview" above to preview multi-day charts.
+              </p>
+            ) : (
+              <div style={{
+                display: 'flex',
+                alignItems: 'flex-end',
+                gap: '8px',
+                height: '215px',
+                padding: '18px 12px 8px 12px',
+                backgroundColor: '#FFF9F9',
+                borderRadius: '14px',
+                border: '1px solid #E8C5C8',
+                overflowX: 'auto'
+              }}>
+                {dailySeries.map((day, idx) => {
+                  const pvH = Math.max(4, Math.round((Number(day.pageViews || 0) / maxDailyVal) * 145));
+                  const prodH = Math.max(3, Math.round((Number(day.productViews || 0) / maxDailyVal) * 145));
+                  const cartH = Math.max(0, Math.round((Number(day.cartAdds || 0) / maxDailyVal) * 145));
+                  return (
+                    <div
+                      key={day.dateStr || idx}
+                      title={`${day.label}: ${day.pageViews} Page Views • ${day.productViews} Product Views • ${day.cartAdds} Bag Adds • ${day.orders} Orders`}
+                      style={{
+                        flex: '1 0 34px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'flex-end',
+                        height: '100%'
+                      }}
+                    >
+                      <span style={{ fontSize: '0.68rem', color: '#8A797A', fontFamily: 'sans-serif', marginBottom: '3px', fontWeight: day.pageViews > 0 ? 'bold' : 'normal' }}>
+                        {day.pageViews > 0 ? day.pageViews : ''}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '3px', height: '150px' }}>
+                        <div style={{ width: '9px', height: `${pvH}px`, backgroundColor: '#B38B8F', borderRadius: '4px 4px 0 0', transition: 'height 0.3s ease' }} />
+                        <div style={{ width: '9px', height: `${prodH}px`, backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '4px 4px 0 0', transition: 'height 0.3s ease' }} />
+                        {cartH > 0 && (
+                          <div style={{ width: '7px', height: `${Math.max(5, cartH)}px`, backgroundColor: '#2E7D32', borderRadius: '4px 4px 0 0', transition: 'height 0.3s ease' }} />
+                        )}
+                      </div>
+                      <span style={{ fontSize: '0.68rem', color: '#5C5454', fontFamily: 'sans-serif', marginTop: '6px', whiteSpace: 'nowrap' }}>
+                        {day.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.82rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+            <span>💡 Hover over any day's bars to inspect exact Page Views, Product Modal Opens, Bag Additions, and Orders.</span>
+          </div>
+        </div>
+
+        {/* Right: Top Viewed Pages & Member Sanctuary Tabs */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '24px 26px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+            <div>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                🏛️ Most Visited Pages & Member Sanctuary Tabs
+              </h3>
+              <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                Ranked by total page views and unique visitor sessions
+              </span>
+            </div>
+            <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '4px 10px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+              {topPages.length} Active Destinations
+            </span>
+          </div>
+
+          {topPages.length === 0 ? (
+            <div style={{ padding: '30px', textAlign: 'center', backgroundColor: '#FFF9F9', borderRadius: '14px', border: '1px dashed #E8C5C8' }}>
+              <p style={{ margin: 0, fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#8A797A', fontStyle: 'italic' }}>
+                Browse the Boutique or click "✨ Load Sample Traffic Preview" to populate page rankings.
+              </p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '240px', overflowY: 'auto' }}>
+              {topPages.map((pg, idx) => (
+                <div key={pg.page || idx} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
+                    <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.12rem', color: '#5C5454' }}>
+                      {idx + 1}. {pg.page}
+                    </strong>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontFamily: 'sans-serif', fontSize: '0.78rem' }}>
+                      <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>{pg.views} views ({pg.sharePct}%)</span>
+                      <span style={{ color: '#8A797A' }}>• {pg.uniqueSessions} session(s)</span>
+                    </div>
+                  </div>
+                  <div style={{ width: '100%', height: '6px', backgroundColor: '#FFF0F2', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(100, Math.max(6, pg.sharePct))}%`, height: '100%', backgroundColor: '#B38B8F', borderRadius: '4px' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Section 3: 5-Stage Boutique Conversion Funnel & Blueprint Quiz Pipeline */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '24px 26px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.7rem', color: '#5C5454', margin: 0 }}>
+              🔻 5-Stage Boutique Conversion Funnel & Shopper Journey
+            </h3>
+            <span style={{ fontSize: '0.84rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Tracks how visitors progress from landing on the site to opening product modals, adding to their Ritual Bag, and completing paid orders
+            </span>
+          </div>
+          <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '4px 12px', borderRadius: '14px', fontSize: '0.8rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+            Overall Site-to-Order Conversion: {Number(ov.conversionRatePct || 0).toFixed(1)}%
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: '14px' }}>
+          {funnel.map((st, idx) => (
+            <div key={st.stage || idx} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '14px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '8px' }}>
+              <div>
+                <span style={{ fontSize: '0.76rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                  {st.stage}
+                </span>
+                <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', fontWeight: 'bold', margin: '4px 0' }}>
+                  {Number(st.count || 0).toLocaleString()}
+                </p>
+              </div>
+              <div>
+                <div style={{ width: '100%', height: '7px', backgroundColor: '#FFF0F2', borderRadius: '4px', overflow: 'hidden', marginBottom: '4px' }}>
+                  <div style={{ width: `${Math.min(100, Math.max(5, st.pctOfTop || 0))}%`, height: '100%', backgroundColor: idx === funnel.length - 1 ? '#2E7D32' : '#B38B8F' }} />
+                </div>
+                <span style={{ fontSize: '0.75rem', color: '#B38B8F', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                  {st.pctOfTop}% of Top-of-Funnel
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Section 4: Most Viewed & Highest-Converting Products Leaderboard */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '26px 28px', borderRadius: '20px', border: '1.5px solid #B38B8F', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.16)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', marginBottom: '18px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+              🏆 Most Viewed, Carted & Highest-Converting Products Leaderboard
+            </h3>
+            <p style={{ margin: '3px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              See which products attract the most views, which convert into Ritual Bag additions and orders, and which hidden gems to curate for members next.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {[
+              { id: 'engagement', label: '🔥 Top Overall' },
+              { id: 'views', label: '👁️ Most Viewed' },
+              { id: 'cartAdds', label: '🛍️ Most Added to Bag' },
+              { id: 'purchases', label: '💸 Most Purchased' },
+              { id: 'curated', label: '💌 Most Curated' },
+              { id: 'conversion', label: '💎 Highest View→Bag %' }
+            ].map(sBtn => (
+              <button
+                key={sBtn.id}
+                type="button"
+                onClick={() => setLeaderboardSort(sBtn.id)}
+                style={{
+                  padding: '7px 13px',
+                  borderRadius: '16px',
+                  border: leaderboardSort === sBtn.id ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                  backgroundColor: leaderboardSort === sBtn.id ? '#F2D4D7' : '#FFF9F9',
+                  color: '#5C5454',
+                  fontFamily: 'sans-serif',
+                  fontSize: '0.78rem',
+                  fontWeight: leaderboardSort === sBtn.id ? 'bold' : 'normal',
+                  cursor: 'pointer'
+                }}
+              >
+                {sBtn.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {sortedLeaderboard.length === 0 ? (
+          <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}>
+            No products in catalog yet.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '520px', overflowY: 'auto', paddingRight: '4px' }}>
+            {sortedLeaderboard.slice(0, 20).map((prod, idx) => {
+              const bStyle = badgeStyleForTone(prod.badgeTone);
+              const imgUrl = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
+
+              return (
+                <div
+                  key={prod._id || idx}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '14px',
+                    padding: '14px 16px',
+                    backgroundColor: '#FFF9F9',
+                    border: '1px solid #E8C5C8',
+                    borderRadius: '14px'
+                  }}
+                >
+                  {/* Product Info & Skin Condition Pills */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: '2 1 300px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '50%',
+                      backgroundColor: idx < 3 ? '#F2D4D7' : '#FFFFFF',
+                      border: '1px solid #B38B8F',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontWeight: 'bold',
+                      color: '#5C5454',
+                      flexShrink: 0
+                    }}>
+                      {idx + 1}
+                    </div>
+
+                    <div style={{ width: '54px', height: '54px', borderRadius: '10px', backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {imgUrl ? (
+                        <img src={imgUrl} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ) : (
+                        <span style={{ fontSize: '0.7rem', color: '#B38B8F' }}>SKU</span>
+                      )}
+                    </div>
+
+                    <div style={{ minWidth: '180px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
+                          {prod.title}
+                        </strong>
+                        <span style={{ fontSize: '0.88rem', color: '#B38B8F', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                          ${Number(prod.price || 0).toFixed(2)}
+                        </span>
+                        <span style={{
+                          backgroundColor: bStyle.bg,
+                          color: bStyle.color,
+                          border: `1px solid ${bStyle.border}`,
+                          padding: '2px 9px',
+                          borderRadius: '10px',
+                          fontSize: '0.72rem',
+                          fontFamily: 'sans-serif',
+                          fontWeight: 'bold'
+                        }}>
+                          {prod.curationInsightBadge}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '5px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.7rem', backgroundColor: '#5C5454', color: '#FFFFFF', padding: '2px 7px', borderRadius: '8px', fontFamily: 'sans-serif' }}>
+                          {prod.ritualStep}
+                        </span>
+                        {(prod.skinTypes || []).slice(0, 2).map((st, i) => (
+                          <span key={`lb-st-${i}`} style={{ fontSize: '0.7rem', backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', padding: '1px 6px', borderRadius: '8px', fontFamily: 'sans-serif' }}>
+                            💧 {st}
+                          </span>
+                        ))}
+                        {(prod.skinConcerns || []).slice(0, 2).map((sc, i) => (
+                          <span key={`lb-sc-${i}`} style={{ fontSize: '0.7rem', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '1px 6px', borderRadius: '8px', fontFamily: 'sans-serif' }}>
+                            ✨ {sc}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Telemetry Metrics Columns */}
+                  <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap', fontFamily: 'sans-serif' }}>
+                    <div style={{ textAlign: 'center', minWidth: '58px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>Views</span>
+                      <strong style={{ fontSize: '1.08rem', color: '#5C5454' }}>{prod.viewCount}</strong>
+                    </div>
+                    <div style={{ textAlign: 'center', minWidth: '58px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>Bag Adds</span>
+                      <strong style={{ fontSize: '1.08rem', color: '#B38B8F' }}>{prod.cartAddCount}</strong>
+                    </div>
+                    <div style={{ textAlign: 'center', minWidth: '58px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>View→Bag</span>
+                      <strong style={{ fontSize: '1.02rem', color: '#5C5454' }}>{prod.viewToCartRatePct}%</strong>
+                    </div>
+                    <div style={{ textAlign: 'center', minWidth: '58px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>Sold</span>
+                      <strong style={{ fontSize: '1.08rem', color: '#2E7D32' }}>{prod.purchaseCount}</strong>
+                    </div>
+                    <div style={{ textAlign: 'center', minWidth: '68px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>Revenue</span>
+                      <strong style={{ fontSize: '1.05rem', color: '#2E7D32' }}>${Number(prod.revenueUsd || 0).toFixed(2)}</strong>
+                    </div>
+                    <div style={{ textAlign: 'center', minWidth: '58px' }}>
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: '#8A797A' }}>Curated</span>
+                      <strong style={{ fontSize: '1.05rem', color: '#5E35B1' }}>{prod.curatedCount}x</strong>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {onOpenCurationTab && (
+                        <button
+                          type="button"
+                          onClick={onOpenCurationTab}
+                          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '7px 12px', borderRadius: '14px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.95rem', fontWeight: 'bold', cursor: 'pointer' }}
+                        >
+                          ✨ Curate for Member →
+                        </button>
+                      )}
+                      {onOpenInventoryTab && (
+                        <button
+                          type="button"
+                          onClick={onOpenInventoryTab}
+                          style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', color: '#736A6A', padding: '7px 10px', borderRadius: '14px', fontFamily: 'sans-serif', fontSize: '0.76rem', cursor: 'pointer' }}
+                        >
+                          🏷️ Edit
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Section 5: Curation Intelligence — Member Blueprint Demand vs. Inventory Supply Matrix */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '26px 28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+              🧬 Curation Intelligence: Member Blueprint Demand vs. Boutique Supply Matrix
+            </h3>
+            <p style={{ margin: '3px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+              Compares your members' locked Beauty Blueprints ({bpSupplyDemand.totalBlueprints || 0} profiles) against your active Boutique inventory ({bpSupplyDemand.totalCatalog || 0} products) to spotlight curation & catalog opportunities.
+            </p>
+          </div>
+          {onOpenCurationTab && (
+            <button
+              type="button"
+              onClick={onOpenCurationTab}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px 16px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              ✨ Open Client Curation Studio →
+            </button>
+          )}
+        </div>
+
+        {/* Actionable Curation Recommendations Callout */}
+        {Array.isArray(bpSupplyDemand.curationRecommendations) && bpSupplyDemand.curationRecommendations.length > 0 && (
+          <div style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '14px', padding: '14px 18px', marginBottom: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
+              💡 Odie's Automated Curation & Inventory Recommendations for Susan:
+            </strong>
+            {bpSupplyDemand.curationRecommendations.map((rec, i) => (
+              <div key={i} style={{ fontSize: '0.86rem', color: '#5C5454', fontFamily: 'sans-serif' }}>
+                {rec}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
+          {/* Primary Skin Goals / Conditions Matrix */}
+          <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '16px' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454', display: 'block', marginBottom: '10px' }}>
+              🎯 Primary Skin Conditions (Member Demand vs. Products in Stock)
+            </strong>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {(bpSupplyDemand.skinConcerns || []).map((row, idx) => (
+                <div key={idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <strong style={{ color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.86rem' }}>{row.trait}</strong>
+                    <span style={{ fontSize: '0.74rem', fontFamily: 'sans-serif', fontWeight: 'bold', color: row.status.startsWith('✓') ? '#2E7D32' : '#B26A00' }}>
+                      {row.status}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                    <span>👥 Members: <strong>{row.memberCount}</strong> ({row.memberSharePct}%)</span>
+                    <span>🛍️ Catalog: <strong>{row.productCount} SKUs</strong> ({row.catalogSharePct}%)</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Skin Types & Sensitivity Matrix */}
+          <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div>
+              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454', display: 'block', marginBottom: '10px' }}>
+                💧 Member Skin Temperaments vs. Compatible Products
+              </strong>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {(bpSupplyDemand.skinTypes || []).map((row, idx) => (
+                  <div key={idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '9px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: 'sans-serif', fontSize: '0.82rem' }}>
+                    <strong style={{ color: '#5C5454' }}>{row.trait}</strong>
+                    <span style={{ color: '#736A6A' }}>
+                      👥 <strong>{row.memberCount}</strong> members ({row.memberSharePct}%) • 🛍️ <strong>{row.productCount}</strong> products
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454', display: 'block', marginBottom: '8px' }}>
+                🛡️ Member Skin Sensitivity Distribution
+              </strong>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                {(bpSupplyDemand.sensitivities || []).map((row, idx) => (
+                  <div key={idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '10px', textAlign: 'center', fontFamily: 'sans-serif' }}>
+                    <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A', fontWeight: 'bold' }}>{row.trait}</span>
+                    <strong style={{ fontSize: '1.2rem', color: '#B38B8F' }}>{row.memberCount}</strong>
+                    <span style={{ display: 'block', fontSize: '0.72rem', color: '#736A6A' }}>{row.productCount} Safe SKUs</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Section 6: Shopper Filter/Search Trends & Live Visitor Activity Stream */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '24px' }}>
+        {/* Left: Top Filter Pills & Search Keywords */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '24px 26px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)' }}>
+          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+            🔍 Shopper Filter Clicks & Boutique Search Trends
+          </h3>
+          <p style={{ margin: '0 0 14px 0', fontSize: '0.84rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+            Reveals which skin-condition pills, ritual steps, and ingredient keywords shoppers actively filter and search for.
+          </p>
+
+          <div style={{ marginBottom: '16px' }}>
+            <strong style={{ display: 'block', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif', marginBottom: '8px', textTransform: 'uppercase' }}>
+              🏷️ Most Clicked Boutique Filter Pills:
+            </strong>
+            {filterTrends.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '0.85rem', color: '#A89999', fontStyle: 'italic' }}>
+                No filter clicks recorded in this window yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {filterTrends.map((f, i) => (
+                  <span key={i} style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '14px', padding: '5px 11px', fontSize: '0.8rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                    {f.label} <span style={{ color: '#B38B8F' }}>({f.count})</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <strong style={{ display: 'block', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif', marginBottom: '8px', textTransform: 'uppercase' }}>
+              🔍 Top Boutique Search Keywords:
+            </strong>
+            {searchTrends.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '0.85rem', color: '#A89999', fontStyle: 'italic' }}>
+                No search queries recorded in this window yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {searchTrends.map((s, i) => (
+                  <span key={i} style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '14px', padding: '5px 11px', fontSize: '0.8rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                    "{s.keyword}" ({s.count})
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Live Visitor & Member Activity Stream */}
+        <div style={{ backgroundColor: '#FFFFFF', padding: '24px 26px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.14)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <div>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                ⚡ Live Visitor & Member Activity Stream
+              </h3>
+              <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                Latest 35 telemetry events across your Public Boutique & Member Sanctuary
+              </span>
+            </div>
+          </div>
+
+          {recentEvents.length === 0 ? (
+            <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>
+              No visitor events recorded yet.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto', paddingRight: '4px' }}>
+              {recentEvents.map((ev, idx) => {
+                const meta = eventLabelStyle(ev.eventType);
+                return (
+                  <div key={ev._id || idx} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontFamily: 'sans-serif', fontSize: '0.8rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ backgroundColor: meta.bg, color: meta.color, padding: '2px 8px', borderRadius: '8px', fontWeight: 'bold', fontSize: '0.74rem' }}>
+                        {meta.icon} {meta.label}
+                      </span>
+                      <strong style={{ color: '#5C5454' }}>
+                        {ev.productTitle || ev.filterValue || ev.searchQuery || ev.page || 'Site Interaction'}
+                      </strong>
+                      {ev.userEmail ? (
+                        <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>({ev.userEmail})</span>
+                      ) : (
+                        <span style={{ color: '#A89999' }}>({ev.membershipTier || 'guest'})</span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '0.73rem', color: '#8A797A' }}>
+                      {ev.timestampCT}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction, pendingPrompt, onClearPendingPrompt }) => {
+  const defaultGreeting = {
+    role: 'model',
+    text: "Hello Susan ✧ I'm Odie, your Executive Boutique AI Assistant! My persistent Memory Bank is online, and I'm connected to your live boutique inventory, member blueprints, IONOS email, Central Time calendar, system diagnostics, and Stripe/CJ treasury. What would you like me to handle or remember for you today?"
+  };
+
+  const [messages, setMessages] = useState([defaultGreeting]);
+  const [memories, setMemories] = useState([]);
+  const [showMemoryBank, setShowMemoryBank] = useState(false);
+  const [isLoadingMemory, setIsLoadingMemory] = useState(false);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
+  const [memoryForm, setMemoryForm] = useState({
+    key: '',
+    category: 'preference',
+    content: '',
+    pinned: true
+  });
+  const [memoryBanner, setMemoryBanner] = useState({ type: '', text: '' });
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = React.useRef(null);
 
   const quickActions = [
-    { label: '💸 Check Stripe & CJ Balances', prompt: 'Check my live Stripe account balance, CJ Dropshipping wallet balance, and summarize my Past, Present, and Future orders.' },
-    { label: '📦 Sync CJ Order Tracking', prompt: 'Sync my CJ Dropshipping orders and tell me if any Present orders have new tracking numbers.' },
-    { label: '➕ Add Custom Product', prompt: 'Add a new product called "Rosewater Luminous Mist" priced at $48 with tags "skincare, hydration, mist" and a short description.' },
-    { label: '🏷️ Update Product Price', prompt: 'Update the price of our first boutique product to $54.00.' },
-    { label: '✨ Curate for Member', prompt: 'Recommend the best hydrating product from our inventory to our newest member with a warm personal note from me.' },
-    { label: '📅 Schedule Consultation', prompt: 'Schedule a 1-on-1 consultation with our newest member for tomorrow at 2:00 PM CT with notes "Seasonal Skincare Check-In".' },
-    { label: '🔔 Send Consultation Reminder', prompt: 'Send an immediate consultation reminder email for my next upcoming appointment.' },
-    { label: '✉️ Email a Client', prompt: 'Send a warm welcome email to Susan.Coke@SusansBeautyConsulting.com with subject "Welcome to Susan\'s Sanctuary ✧".' }
+    { label: '📈 Site Analytics & Top Products', prompt: 'Odie, analyze my site traffic, top viewed and highest-converting products, and tell me which products I should curate for members today.' },
+    { label: '🧠 Teach Odie a Rule', prompt: 'Odie, remember this business rule: Always include a complimentary luxury sample note for Radiance Elite members.' },
+    { label: '🧪 Run 6-Point Diagnostics', prompt: 'Odie, run the full 6-point system diagnostics suite and tell me if every subsystem is healthy.' },
+    { label: '💸 Check Stripe & CJ Balances', prompt: 'Odie, check my live Stripe account balance, CJ Dropshipping wallet balance, and summarize my Past, Present, and Future orders.' },
+    { label: '🏦 Stripe Money Dump (Keep CJ Reserve)', prompt: 'Odie, execute a Stripe money dump of my available balance to the bank, reserving enough for active unshipped CJ orders.' },
+    { label: '📦 Move Stripe Funds to CJ', prompt: 'Odie, move the wholesale funds needed for my active orders from Stripe to CJ Dropshipping and pay any open CJ orders.' },
+    { label: '🔄 Sync CJ Order Tracking', prompt: 'Odie, sync my CJ Dropshipping orders and tell me if any Present orders have new tracking numbers.' },
+    { label: '➕ Add Custom Product', prompt: 'Odie, add a new product called "Rosewater Luminous Mist" priced at $48 with tags "skincare, hydration, mist" and a short description.' },
+    { label: '✨ Curate for Member', prompt: 'Odie, recommend the best hydrating product from our inventory to our newest member with a warm personal note from me.' },
+    { label: '📅 Schedule Consultation', prompt: 'Odie, schedule a 1-on-1 consultation with our newest member for tomorrow at 2:00 PM CT with notes "Seasonal Skincare Check-In".' },
+    { label: '🔔 Send Consultation Reminder', prompt: 'Odie, send an immediate consultation reminder email for my next upcoming appointment.' }
   ];
 
   const scrollToBottom = () => {
@@ -2486,9 +5808,114 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = async (e) => {
+  const fetchOdieMemoryAndHistory = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setIsLoadingMemory(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/odie/memory`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.memories)) {
+          setMemories(data.memories);
+        }
+        if (Array.isArray(data.history) && data.history.length > 0) {
+          const restored = data.history.map(h => ({
+            role: h.role === 'user' ? 'user' : 'model',
+            text: h.text,
+            actionsTaken: h.actionsTaken || []
+          }));
+          setMessages([defaultGreeting, ...restored]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load Odie memory bank:', err);
+    }
+    setIsLoadingMemory(false);
+  };
+
+  useEffect(() => {
+    fetchOdieMemoryAndHistory();
+    // eslint-disable-next-line
+  }, []);
+
+  const handleSaveManualMemory = async (e) => {
     e.preventDefault();
-    const trimmedInput = input.trim();
+    if (!memoryForm.content.trim()) return;
+    setIsSavingMemory(true);
+    setMemoryBanner({ type: '', text: '' });
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/odie/memory`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          key: memoryForm.key.trim() || 'Susan Executive Note',
+          category: memoryForm.category,
+          content: memoryForm.content.trim(),
+          pinned: memoryForm.pinned
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (Array.isArray(data.memories)) setMemories(data.memories);
+        setMemoryForm({ key: '', category: 'preference', content: '', pinned: true });
+        setMemoryBanner({ type: 'success', text: data.message || 'Saved to Odie Memory Bank! 🧠✧' });
+        setTimeout(() => setMemoryBanner({ type: '', text: '' }), 4000);
+      } else {
+        setMemoryBanner({ type: 'error', text: data.error || 'Failed to save memory.' });
+      }
+    } catch (err) {
+      setMemoryBanner({ type: 'error', text: 'Network error while saving memory.' });
+    }
+    setIsSavingMemory(false);
+  };
+
+  const handleDeleteMemory = async (memoryId) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/odie/memory/${memoryId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.memories)) {
+        setMemories(data.memories);
+      }
+    } catch (err) {
+      console.error('Failed to delete Odie memory:', err);
+    }
+  };
+
+  const handleClearChatHistory = async () => {
+    if (!window.confirm("Clear Odie's conversation log? (Odie's long-term Memory Bank facts will remain safely stored.)")) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/odie/history`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setMessages([defaultGreeting]);
+        setMemoryBanner({
+          type: 'success',
+          text: "Cleared Odie's chat log while keeping your long-term Memory Bank intact ✧"
+        });
+        setTimeout(() => setMemoryBanner({ type: '', text: '' }), 4000);
+      }
+    } catch (err) {
+      console.error('Failed to clear Odie history:', err);
+    }
+  };
+
+  const dispatchPromptToOdie = async (promptText) => {
+    const trimmedInput = String(promptText || '').trim();
     if (!trimmedInput || isTyping) return;
 
     const userMessage = { role: 'user', text: trimmedInput };
@@ -2516,11 +5943,14 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
 
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        if (Array.isArray(data.memories)) {
+          setMemories(data.memories);
+        }
         setMessages(prev => [
           ...prev,
           {
             role: 'model',
-            text: data.response || "I'm here, Susan ✧ How may I help?",
+            text: data.response || "I'm right here, Susan ✧ How may Odie help?",
             actionsTaken: data.actionsTaken || []
           }
         ]);
@@ -2537,39 +5967,226 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
           data.scheduledAppointment ||
           data.remindedAppointmentId ||
           data.financialTelemetry ||
-          data.updatedOrder
+          data.updatedOrder ||
+          data.savedMemory ||
+          data.diagnosticsReport ||
+          data.stripeMoneyDumpResult ||
+          data.stripeToCjResult ||
+          data.siteAnalytics ||
+          data.reclassifiedProducts
         )) {
           onExecutiveAction(data);
         }
       } else {
         setMessages(prev => [
           ...prev,
-          { role: 'model', text: '⚠️ AI Connection failed: ' + (data.error || 'Unknown error'), isError: true }
+          { role: 'model', text: '⚠️ Odie Connection failed: ' + (data.error || 'Unknown error'), isError: true }
         ]);
       }
     } catch (err) {
       console.error(err);
       setMessages(prev => [
         ...prev,
-        { role: 'model', text: '⚠️ Network error communicating with Gemini.', isError: true }
+        { role: 'model', text: '⚠️ Network error communicating with Odie.', isError: true }
       ]);
     }
     setIsTyping(false);
   };
 
+  const handleSend = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    await dispatchPromptToOdie(input);
+  };
+
+  useEffect(() => {
+    if (pendingPrompt && String(pendingPrompt).trim() && !isTyping) {
+      const toRun = String(pendingPrompt).trim();
+      if (onClearPendingPrompt) onClearPendingPrompt();
+      dispatchPromptToOdie(toRun);
+    }
+    // eslint-disable-next-line
+  }, [pendingPrompt]);
+
+  const categoryBadgeColor = (cat) => {
+    switch (cat) {
+      case 'business_rule': return { bg: '#FFF0F2', color: '#B38B8F', label: 'Business Rule' };
+      case 'vip_client': return { bg: '#FFF8E7', color: '#B26A00', label: 'VIP Client' };
+      case 'financial_goal': return { bg: '#F6FBF7', color: '#2E7D32', label: 'Treasury & Finance' };
+      case 'preference': return { bg: '#F4F0FF', color: '#5E35B1', label: 'Susan Preference' };
+      default: return { bg: '#F7F2F2', color: '#736A6A', label: 'General Note' };
+    }
+  };
+
   return (
-    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', height: '650px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', minHeight: '680px', animation: 'fadeIn 0.5s ease', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+      {/* Odie Header Bar */}
       <div style={{ padding: '18px 22px', borderBottom: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', borderRadius: '15px 15px 0 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <div style={{ fontSize: '2rem' }}>✨</div>
+          <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#FFF0F2', border: '1.5px solid #B38B8F', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.7rem' }}>
+            🐾
+          </div>
           <div>
-            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: 0 }}>Gemini Executive Boutique Assistant</h2>
-            <p style={{ margin: 0, color: '#8A797A', fontSize: '0.88rem', fontFamily: 'sans-serif' }}>
-              9 Live Tools: Stripe & CJ Balances • Past/Present/Future Orders • Add/Edit/Delete Products • IONOS Email • Curate • Consultations
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.9rem', color: '#5C5454', margin: 0 }}>
+                Odie — Susan's Executive Boutique AI
+              </h2>
+              <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '12px', padding: '2px 10px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                🧠 {memories.length} Persistent Memories Active
+              </span>
+            </div>
+            <p style={{ margin: '2px 0 0 0', color: '#8A797A', fontSize: '0.86rem', fontFamily: 'sans-serif' }}>
+              17 Live Tools: Site Analytics • Persistent Memory • 6-Point Diagnostics • Stripe Money Dump & CJ Bridge • Inventory • IONOS Email • Curate • Calendar
             </p>
           </div>
         </div>
+
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => setShowMemoryBank(!showMemoryBank)}
+            style={{
+              backgroundColor: showMemoryBank ? '#B38B8F' : '#FFF0F2',
+              color: showMemoryBank ? '#FFFFFF' : '#5C5454',
+              border: '1px solid #B38B8F',
+              borderRadius: '20px',
+              padding: '8px 16px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1.05rem',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            {showMemoryBank ? '✕ Close Memory Bank' : `🧠 Odie Memory Bank (${memories.length})`}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleClearChatHistory}
+            style={{
+              backgroundColor: '#FFFFFF',
+              color: '#8A797A',
+              border: '1px solid #E8C5C8',
+              borderRadius: '20px',
+              padding: '8px 14px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1rem',
+              cursor: 'pointer'
+            }}
+          >
+            🧹 Clear Chat Log
+          </button>
+        </div>
       </div>
+
+      {/* Collapsible Odie Persistent Memory Bank Drawer */}
+      {showMemoryBank && (
+        <div style={{ padding: '20px 22px', backgroundColor: '#FFF9F9', borderBottom: '1px solid #E8C5C8', animation: 'fadeIn 0.3s ease' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+            <div>
+              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', color: '#5C5454' }}>
+                🧠 Odie's Long-Term Memory Bank (Stored in MongoDB)
+              </strong>
+              <p style={{ margin: '2px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                Odie automatically recalls these facts in every conversation. You can also tell Odie in chat: <em>"Odie, remember that..."</em>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchOdieMemoryAndHistory}
+              disabled={isLoadingMemory}
+              style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '16px', padding: '6px 12px', fontSize: '0.85rem', color: '#5C5454', cursor: 'pointer' }}
+            >
+              {isLoadingMemory ? '⏳ Syncing...' : '↻ Refresh Memories'}
+            </button>
+          </div>
+
+          {memoryBanner.text && (
+            <div style={{
+              marginBottom: '12px',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              fontSize: '0.9rem',
+              fontFamily: 'sans-serif',
+              backgroundColor: memoryBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+              color: memoryBanner.type === 'success' ? '#2E7D32' : '#C62828',
+              border: `1px solid ${memoryBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+            }}>
+              {memoryBanner.text}
+            </div>
+          )}
+
+          {/* Add Manual Memory Form */}
+          <form onSubmit={handleSaveManualMemory} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px', backgroundColor: '#FFFFFF', padding: '14px', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
+            <input
+              type="text"
+              placeholder="Memory Title (e.g. VIP Packaging Rule)"
+              value={memoryForm.key}
+              onChange={(e) => setMemoryForm({ ...memoryForm, key: e.target.value })}
+              style={{ flex: '1 1 180px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+            />
+            <select
+              value={memoryForm.category}
+              onChange={(e) => setMemoryForm({ ...memoryForm, category: e.target.value })}
+              style={{ padding: '9px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#5C5454', backgroundColor: '#FFF9F9' }}
+            >
+              <option value="preference">Susan Preference</option>
+              <option value="business_rule">Business Rule</option>
+              <option value="vip_client">VIP Client Note</option>
+              <option value="financial_goal">Treasury & Finance</option>
+              <option value="general">General Note</option>
+            </select>
+            <input
+              required
+              type="text"
+              placeholder="What should Odie permanently remember?"
+              value={memoryForm.content}
+              onChange={(e) => setMemoryForm({ ...memoryForm, content: e.target.value })}
+              style={{ flex: '2 1 280px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+            />
+            <button
+              type="submit"
+              disabled={isSavingMemory}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '9px 18px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: isSavingMemory ? 'not-allowed' : 'pointer' }}
+            >
+              {isSavingMemory ? 'Saving...' : '+ Save to Odie Memory ✧'}
+            </button>
+          </form>
+
+          {/* Stored Memories Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '10px', maxHeight: '210px', overflowY: 'auto' }}>
+            {memories.map((mem) => {
+              const badge = categoryBadgeColor(mem.category);
+              return (
+                <div key={mem._id || mem.key} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '12px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', position: 'relative' }}>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', marginBottom: '6px', paddingRight: '22px' }}>
+                      <strong style={{ color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+                        {mem.pinned ? '📌 ' : ''}{mem.key}
+                      </strong>
+                      <span style={{ backgroundColor: badge.bg, color: badge.color, padding: '2px 8px', borderRadius: '10px', fontSize: '0.72rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                        {badge.label}
+                      </span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+                      {mem.content}
+                    </p>
+                  </div>
+                  {mem._id && (
+                    <button
+                      type="button"
+                      title="Forget this memory"
+                      onClick={() => handleDeleteMemory(mem._id)}
+                      style={{ position: 'absolute', top: '8px', right: '8px', background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '0.85rem' }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Quick-Action Executive Prompt Bar */}
       <div style={{ padding: '10px 18px', backgroundColor: '#FFF9F9', borderBottom: '1px solid #E8C5C8', display: 'flex', gap: '8px', overflowX: 'auto' }}>
@@ -2591,11 +6208,12 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
         ))}
       </div>
 
-      <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+      {/* Chat Messages Viewport */}
+      <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '15px', maxHeight: showMemoryBank ? '340px' : '500px' }}>
         {messages.map((msg, idx) => (
           <div key={idx} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
             <div style={{ 
-              maxWidth: '75%', 
+              maxWidth: '78%', 
               padding: '15px', 
               borderRadius: msg.role === 'user' ? '20px 20px 0 20px' : '20px 20px 20px 0', 
               backgroundColor: msg.role === 'user' ? '#B38B8F' : '#FFFFFF', 
@@ -2606,11 +6224,16 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
               lineHeight: '1.5',
               whiteSpace: 'pre-wrap'
             }}>
+              {msg.role !== 'user' && (
+                <div style={{ fontSize: '0.76rem', fontWeight: 'bold', color: '#B38B8F', marginBottom: '4px', letterSpacing: '0.4px' }}>
+                  🐾 ODIE • EXECUTIVE ASSISTANT
+                </div>
+              )}
               {Array.isArray(msg.actionsTaken) && msg.actionsTaken.length > 0 && (
                 <div style={{ marginBottom: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   {msg.actionsTaken.map((act, i) => (
                     <span key={i} style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 'bold' }}>
-                      ✓ Executed: {act}
+                      ✓ Odie Executed: {act}
                     </span>
                   ))}
                 </div>
@@ -2622,7 +6245,7 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
         {isTyping && (
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
             <div style={{ padding: '15px', borderRadius: '20px 20px 20px 0', backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', color: '#8A797A', fontStyle: 'italic' }}>
-              Gemini is executing your request...
+              🐾 Odie is working on your request, Susan...
             </div>
           </div>
         )}
@@ -2632,14 +6255,14 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
       <form onSubmit={handleSend} style={{ padding: '18px 20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E8C5C8', borderRadius: '0 0 15px 15px', display: 'flex', gap: '10px' }}>
         <input 
           type="text" 
-          placeholder="Ask Gemini to add/edit a product, email a client, curate a blueprint, or book a consultation..." 
+          placeholder="Ask Odie to remember a rule, run diagnostics, dump Stripe funds, move money to CJ, or manage products..." 
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={isTyping}
           style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '1px solid #E8C5C8', outline: 'none', fontFamily: 'sans-serif', fontSize: '1rem', backgroundColor: '#FFF9F9' }}
         />
         <button type="submit" disabled={isTyping || !input.trim()} style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '30px', padding: '0 25px', color: '#5C5454', cursor: (isTyping || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', transition: 'all 0.3s ease' }}>
-          Send ✧
+          Ask Odie ✧
         </button>
       </form>
     </div>
@@ -2648,7 +6271,9 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction }) => {
 
 const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted, onCatalogUpdated, onRefreshAdminData }) => {
   const [activeTab, setActiveTab] = useState(() => {
-    return localStorage.getItem('adminActiveTab') || 'Inbox';
+    const saved = localStorage.getItem('adminActiveTab');
+    if (saved === 'AI') return 'Odie';
+    return saved || 'Inbox';
   });
   const mainContentRef = React.useRef(null);
   
@@ -2659,7 +6284,8 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
     }
   }, [activeTab]);
 
-  const tabs = ['Inbox', 'Finances', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Video', 'AI'];
+  const tabs = ['Inbox', 'Finances', 'Analytics', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Tests', 'Video', 'Odie'];
+  const [pendingOdiePrompt, setPendingOdiePrompt] = useState('');
 
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
   const [isSendingEmail, setIsSendingEmail] = useState(false);
@@ -2794,12 +6420,14 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
             >
               {tab === 'Inbox' && '✉️ '}
               {tab === 'Finances' && '💸 '}
+              {tab === 'Analytics' && '📊 '}
               {tab === 'Outbox' && '📤 '}
               {tab === 'Curation' && '✨ '}
               {tab === 'Calendar' && '📅 '}
               {tab === 'Inventory' && '🛍️ '}
+              {tab === 'Tests' && '🧪 '}
               {tab === 'Video' && '🎥 '}
-              {tab === 'AI' && '🤖 '}
+              {tab === 'Odie' && '🐾 '}
               {tab}
             </button>
           ))}
@@ -2937,6 +6565,21 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
               setActiveTab('Inbox');
             }}
             onOrdersUpdated={onRefreshAdminData}
+            onAskOdie={(promptText) => {
+              setPendingOdiePrompt(promptText);
+              setActiveTab('Odie');
+            }}
+          />
+        )}
+
+        {activeTab === 'Analytics' && (
+          <AdminAnalytics
+            onOpenCurationTab={() => setActiveTab('Curation')}
+            onOpenInventoryTab={() => setActiveTab('Inventory')}
+            onAskOdie={(promptText) => {
+              setPendingOdiePrompt(promptText);
+              setActiveTab('Odie');
+            }}
           />
         )}
 
@@ -3050,38 +6693,80 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
                     )}
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-                    {backendProducts.map(product => {
-                      const title = product.title || 'Untitled Product';
-                      const price = product.variants?.[0]?.retailPrice || product.variants?.[0]?.price || product.retailPrice || product.price || 0;
-                      const clientId = selectedBlueprint.userId?._id;
-                      const initialRecs = (selectedBlueprint.userId?.recommendedProducts || []).map(id =>
-                        typeof id === 'object' && id !== null ? id._id || id.toString() : String(id)
-                      );
-                      const sessionRecs = (clientId && pushedProductMap[clientId]) ? pushedProductMap[clientId] : [];
-                      const isAlreadyRecommended = initialRecs.includes(String(product._id)) || sessionRecs.includes(String(product._id));
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '15px' }}>
+                    {[...backendProducts]
+                      .sort((a, b) => {
+                        const matchA = evaluateBlueprintMatch(a, selectedBlueprint, true);
+                        const matchB = evaluateBlueprintMatch(b, selectedBlueprint, true);
+                        return (Number(matchB.isMatch) - Number(matchA.isMatch)) || (matchB.matchScore - matchA.matchScore);
+                      })
+                      .map(product => {
+                        const title = product.title || 'Untitled Product';
+                        const price = product.variants?.[0]?.retailPrice || product.variants?.[0]?.price || product.retailPrice || product.price || 0;
+                        const clientId = selectedBlueprint.userId?._id;
+                        const initialRecs = (selectedBlueprint.userId?.recommendedProducts || []).map(id =>
+                          typeof id === 'object' && id !== null ? id._id || id.toString() : String(id)
+                        );
+                        const sessionRecs = (clientId && pushedProductMap[clientId]) ? pushedProductMap[clientId] : [];
+                        const isAlreadyRecommended = initialRecs.includes(String(product._id)) || sessionRecs.includes(String(product._id));
+                        const clientMatch = evaluateBlueprintMatch(product, selectedBlueprint, true);
 
-                      return (
-                        <div key={product._id} style={{ backgroundColor: '#FFF9F9', border: isAlreadyRecommended ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', borderRadius: '12px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
-                          <div style={{ marginBottom: '15px' }}>
-                            {isAlreadyRecommended && (
-                              <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 'bold', marginBottom: '6px' }}>
-                                ✓ In Member's Curation
-                              </span>
-                            )}
-                            <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0' }}>{title}</h4>
-                            <p style={{ fontFamily: 'sans-serif', fontSize: '1rem', color: '#B38B8F', fontWeight: 'bold', margin: 0 }}>${parseFloat(price).toFixed(2)}</p>
+                        return (
+                          <div key={product._id} style={{ backgroundColor: '#FFF9F9', border: (isAlreadyRecommended || clientMatch.isMatch) ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', borderRadius: '12px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
+                            <div style={{ marginBottom: '12px' }}>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '6px' }}>
+                                {clientMatch.isMatch && (
+                                  <span style={{ display: 'inline-block', backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '10px', padding: '2px 8px', fontSize: '0.72rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                    ✨ Matches Client Blueprint ({clientMatch.matchScore}%)
+                                  </span>
+                                )}
+                                {isAlreadyRecommended && (
+                                  <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '2px 8px', fontSize: '0.72rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                    ✓ In Member's Curation
+                                  </span>
+                                )}
+                                <span style={{ display: 'inline-block', backgroundColor: '#FFFFFF', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '2px 7px', fontSize: '0.68rem', fontFamily: 'sans-serif' }}>
+                                  {clientMatch.ritualStep}
+                                </span>
+                              </div>
+                              <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 4px 0' }}>{title}</h4>
+                              <p style={{ fontFamily: 'sans-serif', fontSize: '1rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 8px 0' }}>${parseFloat(price).toFixed(2)}</p>
+
+                              <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Best for:</span>
+                                  {clientMatch.skinTypes.slice(0, 3).map((st, idx) => {
+                                    const hi = clientMatch.matchesSkinTypePill(st);
+                                    return (
+                                      <span key={idx} style={{ fontSize: '0.65rem', backgroundColor: hi ? '#F2D4D7' : '#FFF0F2', color: '#5C5454', border: hi ? '1px solid #B38B8F' : '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 5px', fontWeight: hi ? 'bold' : 'normal', fontFamily: 'sans-serif' }}>
+                                        {hi ? `✓ ${st}` : st}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Targets:</span>
+                                  {clientMatch.skinConcerns.slice(0, 3).map((sc, idx) => {
+                                    const hi = clientMatch.matchesConcernPill(sc);
+                                    return (
+                                      <span key={idx} style={{ fontSize: '0.65rem', backgroundColor: hi ? '#F2D4D7' : '#F6FBF7', color: hi ? '#5C5454' : '#2E7D32', border: hi ? '1px solid #B38B8F' : '1px solid #A5D6A7', borderRadius: '6px', padding: '1px 5px', fontWeight: hi ? 'bold' : 'normal', fontFamily: 'sans-serif' }}>
+                                        {hi ? `✨ ${sc}` : sc}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handlePushRecommendation(product._id, selectedBlueprint.userId?._id)}
+                              disabled={pushingId === product._id}
+                              style={{ backgroundColor: isAlreadyRecommended ? '#FFFFFF' : '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: pushingId === product._id ? 'not-allowed' : 'pointer', width: '100%', transition: 'all 0.3s ease' }}
+                            >
+                              {pushingId === product._id ? 'Pushing...' : isAlreadyRecommended ? 'Push Again with Note ✧' : 'Push to Member ✧'}
+                            </button>
                           </div>
-                          <button
-                            onClick={() => handlePushRecommendation(product._id, selectedBlueprint.userId?._id)}
-                            disabled={pushingId === product._id}
-                            style={{ backgroundColor: isAlreadyRecommended ? '#FFFFFF' : '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px', borderRadius: '15px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', cursor: pushingId === product._id ? 'not-allowed' : 'pointer', width: '100%', transition: 'all 0.3s ease' }}
-                          >
-                            {pushingId === product._id ? 'Pushing...' : isAlreadyRecommended ? 'Push Again with Note ✧' : 'Push to Member ✧'}
-                          </button>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -3096,16 +6781,35 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
           </div>
         )}
         {activeTab === 'Inventory' && (
-          <AdminInventory onCatalogUpdated={onCatalogUpdated} />
+          <AdminInventory
+            onCatalogUpdated={onCatalogUpdated}
+            onOpenTestsTab={() => setActiveTab('Tests')}
+          />
+        )}
+        {activeTab === 'Tests' && (
+          <AdminTestLab
+            onCatalogUpdated={onCatalogUpdated}
+            onAskOdieToTest={(promptText) => {
+              setPendingOdiePrompt(promptText);
+              setActiveTab('Odie');
+            }}
+          />
         )}
         {activeTab === 'Video' && (
           <AdminVideoPortal />
         )}
-        {activeTab === 'AI' && (
+        {activeTab === 'Odie' && (
           <AdminAiAssistant
             onProductDeleted={onProductDeleted}
+            pendingPrompt={pendingOdiePrompt}
+            onClearPendingPrompt={() => setPendingOdiePrompt('')}
             onExecutiveAction={async (data) => {
-              if (data.addedProduct || data.updatedProduct || data.deletedProductId) {
+              if (
+                data.addedProduct ||
+                data.updatedProduct ||
+                data.deletedProductId ||
+                (Array.isArray(data.actionsTaken) && (data.actionsTaken.includes('syncOrCleanCjCatalog') || data.actionsTaken.includes('reclassifyProductBlueprintLabels')))
+              ) {
                 try {
                   const prodRes = await fetch(`${API_BASE_URL}/api/products`);
                   if (prodRes.ok && onCatalogUpdated) {
@@ -3167,6 +6871,67 @@ function App() {
     }
   });
 
+  const [blueprintAnalysis, setBlueprintAnalysis] = useState(() => {
+    try {
+      const savedAnalysis = localStorage.getItem('blueprintAnalysis');
+      return savedAnalysis ? JSON.parse(savedAnalysis) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const defaultBoutiqueFilterState = {
+    onlyBlueprintMatch: false,
+    skinType: 'All',
+    skinConcern: 'All',
+    ritualStep: 'All',
+    onlySensitiveSafe: false,
+    searchQuery: ''
+  };
+
+  const [boutiqueFilters, setBoutiqueFilters] = useState(defaultBoutiqueFilterState);
+
+  const resetBoutiqueFilters = () => setBoutiqueFilters(defaultBoutiqueFilterState);
+
+  const jumpToBoutiqueWithFilter = (customFilter = {}) => {
+    setBoutiqueFilters({
+      ...defaultBoutiqueFilterState,
+      ...customFilter
+    });
+    if (customFilter.onlyBlueprintMatch) {
+      trackSiteEvent('FILTER_USED', {
+        page: 'Member Sanctuary: Blueprint',
+        filterType: 'Blueprint Match',
+        filterValue: 'Best Match for My Blueprint'
+      });
+    } else if (customFilter.skinType) {
+      trackSiteEvent('FILTER_USED', {
+        page: 'Member Sanctuary: Blueprint',
+        filterType: 'Skin Type',
+        filterValue: customFilter.skinType
+      });
+    } else if (customFilter.skinConcern) {
+      trackSiteEvent('FILTER_USED', {
+        page: 'Member Sanctuary: Blueprint',
+        filterType: 'Skin Condition',
+        filterValue: customFilter.skinConcern
+      });
+    } else if (customFilter.ritualStep) {
+      trackSiteEvent('FILTER_USED', {
+        page: 'Member Sanctuary: Blueprint',
+        filterType: 'Ritual Step',
+        filterValue: customFilter.ritualStep
+      });
+    } else if (customFilter.onlySensitiveSafe) {
+      trackSiteEvent('FILTER_USED', {
+        page: 'Member Sanctuary: Blueprint',
+        filterType: 'Sensitivity',
+        filterValue: 'High-Sensitivity Safe Only'
+      });
+    }
+    setActiveMemberTab('Boutique');
+  };
+
   const [isLoading, setIsLoading] = useState(false);
   const [isSubscribing, setIsSubscribing] = useState(false); 
   const [backendProducts, setBackendProducts] = useState([]);
@@ -3195,8 +6960,69 @@ function App() {
       memberContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }, [activeMemberTab]);
+
+  // Analytics Phase 2: Automatic Page View & Quiz Funnel Telemetry
+  useEffect(() => {
+    if (step === 6 || step === 21) return; // Skip Admin portal & loading transition
+    if (step === 5) return; // Handled by the activeMemberTab effect below
+
+    const stepPageMap = {
+      0: 'Public Landing Porch',
+      1: 'Public Boutique',
+      2: 'Paid Membership Tiers',
+      3: 'Paid Tier Registration',
+      4: 'Member Sign In',
+      7: 'Free Membership Registration',
+      8: 'Password Reset Request',
+      9: 'Set New Password'
+    };
+
+    let pageName = stepPageMap[step] || '';
+    if (!pageName && step >= 11 && step <= 20) {
+      pageName = `Blueprint Quiz Step ${step - 10}`;
+    }
+
+    if (pageName) {
+      trackSiteEvent('PAGE_VIEW', { page: pageName });
+    }
+    if (step === 11 && !hasCompletedQuiz) {
+      trackSiteEvent('QUIZ_STARTED', { page: 'Blueprint Quiz Step 1' });
+    }
+  }, [step, hasCompletedQuiz]);
+
+  // Analytics Phase 2: Track Member Sanctuary Tab Views
+  useEffect(() => {
+    if (step === 5 && activeMemberTab) {
+      trackSiteEvent('PAGE_VIEW', {
+        page: `Member Sanctuary: ${activeMemberTab}`
+      });
+    }
+  }, [step, activeMemberTab]);
+
+  // Analytics Phase 2: Track Product Detail Modal Opens (PRODUCT_VIEW)
+  useEffect(() => {
+    if (!selectedProduct) return;
+    const meta = deriveProductBlueprintMeta(selectedProduct);
+    const price = Number(selectedProduct.variants?.[0]?.price ?? selectedProduct.price ?? 0);
+    const currentPage = step === 5 ? `Member Sanctuary: ${activeMemberTab}` : 'Public Boutique';
+    trackSiteEvent('PRODUCT_VIEW', {
+      page: currentPage,
+      productId: selectedProduct._id || null,
+      productTitle: selectedProduct.title || 'Untitled Product',
+      ritualStep: meta.ritualStep,
+      cartValueUsd: price,
+      metadata: {
+        skinTypes: meta.skinTypes,
+        skinConcerns: meta.skinConcerns
+      }
+    });
+  }, [selectedProduct, step, activeMemberTab]);
   useEffect(() => { localStorage.setItem('hasCompletedQuiz', hasCompletedQuiz); }, [hasCompletedQuiz]);
   useEffect(() => { localStorage.setItem('quizAnswers', JSON.stringify(quizAnswers)); }, [quizAnswers]);
+  useEffect(() => {
+    if (blueprintAnalysis) localStorage.setItem('blueprintAnalysis', JSON.stringify(blueprintAnalysis));
+    else localStorage.removeItem('blueprintAnalysis');
+  }, [blueprintAnalysis]);
   
   useEffect(() => {
     const safeUser = { ...userDetails, password: '' };
@@ -3242,9 +7068,13 @@ function App() {
             makeupVibe: bpData.blueprint.makeupVibe || '',
             routineFocus: bpData.blueprint.routineFocus || ''
           });
+          if (bpData.blueprintAnalysis || bpData.blueprint.blueprintAnalysis) {
+            setBlueprintAnalysis(bpData.blueprintAnalysis || bpData.blueprint.blueprintAnalysis);
+          }
           return true;
         } else {
           setHasCompletedQuiz(false);
+    setBlueprintAnalysis(null);
           return false;
         }
       }
@@ -3354,6 +7184,17 @@ function App() {
   };
 
   const handleAddToCart = (product) => {
+    if (product) {
+      const meta = deriveProductBlueprintMeta(product);
+      const itemPrice = Number(product.price ?? product.variants?.[0]?.price ?? 0);
+      trackSiteEvent('ADD_TO_CART', {
+        page: step === 5 ? `Member Sanctuary: ${activeMemberTab}` : 'Public Boutique',
+        productId: product._id || null,
+        productTitle: product.title || 'Untitled Product',
+        ritualStep: meta.ritualStep,
+        cartValueUsd: itemPrice
+      });
+    }
     setCart(prevCart => {
       const existingItem = prevCart.find(item => item.sku === product.sku);
       if (existingItem) {
@@ -3373,7 +7214,18 @@ function App() {
     }).filter(Boolean));
   };
 
-  const handleRemoveFromCart = (sku) => setCart(prevCart => prevCart.filter(item => item.sku !== sku));
+  const handleRemoveFromCart = (sku) => {
+    const removedItem = cart.find(item => item.sku === sku);
+    if (removedItem) {
+      trackSiteEvent('REMOVE_FROM_CART', {
+        page: step === 5 ? `Member Sanctuary: ${activeMemberTab}` : 'Public Boutique',
+        productId: removedItem._id || null,
+        productTitle: removedItem.title || sku,
+        cartValueUsd: Number(removedItem.price || 0)
+      });
+    }
+    setCart(prevCart => prevCart.filter(item => item.sku !== sku));
+  };
 
   const getActiveMemberDiscount = () => {
     const isSignedIn = Boolean(localStorage.getItem('token'));
@@ -3398,6 +7250,13 @@ function App() {
   };
 
   const handleCartCheckout = async () => {
+    trackSiteEvent('CHECKOUT_INITIATED', {
+      page: step === 5 ? `Member Sanctuary: ${activeMemberTab}` : 'Public Boutique',
+      cartValueUsd: Number(calculateCartTotal()) || 0,
+      metadata: {
+        itemCount: cart.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
+      }
+    });
     setIsLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -3439,6 +7298,15 @@ function App() {
       setStep(5);
       return;
     }
+    trackSiteEvent('QUIZ_COMPLETED', {
+      page: 'Blueprint Quiz Completed',
+      metadata: {
+        skinType: finalData?.skinType || '',
+        primaryGoal: finalData?.primaryGoal || '',
+        skinSensitivity: finalData?.skinSensitivity || '',
+        climate: finalData?.climate || ''
+      }
+    });
     setStep(21); 
     setIsLoading(true);
     try {
@@ -3448,7 +7316,12 @@ function App() {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(finalData), 
       });
-      if (res.status === 403) {
+      if (res.ok) {
+        const savedConsultation = await res.json().catch(() => ({}));
+        if (savedConsultation?.blueprintAnalysis) {
+          setBlueprintAnalysis(savedConsultation.blueprintAnalysis);
+        }
+      } else if (res.status === 403) {
         const lockedData = await res.json().catch(() => ({}));
         if (lockedData.blueprint) {
           setQuizAnswers({
@@ -3463,6 +7336,9 @@ function App() {
             makeupVibe: lockedData.blueprint.makeupVibe || '',
             routineFocus: lockedData.blueprint.routineFocus || ''
           });
+          if (lockedData.blueprintAnalysis || lockedData.blueprint.blueprintAnalysis) {
+            setBlueprintAnalysis(lockedData.blueprintAnalysis || lockedData.blueprint.blueprintAnalysis);
+          }
         }
       }
     } catch (error) {
@@ -3596,6 +7472,7 @@ function App() {
     localStorage.removeItem('activeMemberTab');
     localStorage.removeItem('hasCompletedQuiz');
     localStorage.removeItem('quizAnswers');
+    localStorage.removeItem('blueprintAnalysis');
     localStorage.removeItem('adminActiveTab');
 
     // Reset all states back to default
@@ -3661,7 +7538,7 @@ function App() {
       <GlobalPublicLaunchStyles />
       {isLoading && <FallingSparkles/>}
 
-      <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} />
+      <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} />
 
       {step === 1 && (
         <div style={{ position: 'fixed', top: '30px', right: '30px', zIndex: 1000 }}>
@@ -3778,23 +7655,35 @@ function App() {
 
         {step === 1 && (
           <div style={{ animation: 'fadeIn 1s ease', textAlign: 'left' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '25px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
                 <img src={logo} alt="Logo" style={{ width: '60px', height: '60px', objectFit: 'contain' }} />
                 <h1 style={{ fontSize: '3.8rem', margin: 0, color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400' }}>The Boutique</h1>
               </div>
-              <button onClick={() => setStep(0)} style={{ background: 'none', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '8px 20px', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", cursor: 'pointer', fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>← Home</button>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                {localStorage.getItem('token') && (
+                  <button
+                    onClick={() => setStep(5)}
+                    style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 18px', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', cursor: 'pointer', fontSize: '1.05rem' }}
+                  >
+                    📝 My Sanctuary →
+                  </button>
+                )}
+                <button onClick={() => setStep(0)} style={{ background: 'none', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '8px 20px', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", cursor: 'pointer', fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>← Home</button>
+              </div>
             </div>
-            
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-              {backendProducts.length > 0 ? (
-                backendProducts.map((product) => (
-                  <ProductCard key={product._id || product.title} product={product} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
-                ))
-              ) : (
-                <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>Fetching live boutique inventory...</p>
-              )}
-            </div>
+
+            <BoutiqueSmartFilterSection
+              products={backendProducts}
+              quizAnswers={quizAnswers}
+              hasCompletedQuiz={hasCompletedQuiz}
+              boutiqueFilters={boutiqueFilters}
+              setBoutiqueFilters={setBoutiqueFilters}
+              onResetFilters={resetBoutiqueFilters}
+              onAddToCart={handleAddToCart}
+              onCardClick={setSelectedProduct}
+              onGoToBlueprintTab={localStorage.getItem('token') ? () => { setActiveMemberTab('Blueprint'); setStep(5); } : null}
+            />
           </div>
         )}
 
@@ -4036,30 +7925,355 @@ function App() {
                       </p>
                       <EmpowermentButton text="Start the Consultation" onClick={() => { if (!hasCompletedQuiz) setStep(11); }} />
                     </div>
-                  ) : (
-                    <div style={{ marginBottom: '45px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '15px', padding: '12px 18px', backgroundColor: 'rgba(255, 255, 255, 0.85)', border: '1px solid #E8C5C8', borderRadius: '12px' }}>
-                        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', fontWeight: 'bold' }}>
-                          🔒 Permanent Beauty Blueprint — Locked to Your Personal Profile
-                        </span>
-                        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', color: '#8A797A', fontStyle: 'italic' }}>
-                          One-time personal curation completed ✧
-                        </span>
+                  ) : (() => {
+                    const dossier = generateClientBlueprintDossier(quizAnswers, blueprintAnalysis);
+                    const recLabels = dossier.recommendedLabels || {};
+                    const shoppingBadges = Array.isArray(recLabels.allBadges) ? recLabels.allBadges : [];
+                    const amSteps = Array.isArray(dossier.amRitual) ? dossier.amRitual : [];
+                    const pmSteps = Array.isArray(dossier.pmRitual) ? dossier.pmRitual : [];
+                    const heroList = Array.isArray(dossier.heroIngredients) ? dossier.heroIngredients : [];
+                    const avoidList = Array.isArray(dossier.avoidIngredients) ? dossier.avoidIngredients : [];
+                    const artistry = dossier.artistryProfile || {};
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '28px', marginBottom: '45px', textAlign: 'left' }}>
+                        {/* Lock Status Header */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '12px 18px', backgroundColor: 'rgba(255, 255, 255, 0.9)', border: '1px solid #E8C5C8', borderRadius: '12px' }}>
+                          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', fontWeight: 'bold' }}>
+                            🔒 Permanent Bespoke Beauty Blueprint Dossier — Locked to Your Personal Profile
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => jumpToBoutiqueWithFilter({ onlyBlueprintMatch: true })}
+                            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '6px 15px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            ✨ Shop My Matched Boutique Essentials →
+                          </button>
+                        </div>
+
+                        {/* Section 1: Executive Skin Archetype & Boutique Label Guide */}
+                        <div style={{ backgroundColor: '#FFFFFF', border: '1.5px solid #B38B8F', borderRadius: '20px', padding: '28px', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.2)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+                            <div>
+                              <span style={{ fontSize: '0.8rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px', color: '#B38B8F', fontFamily: 'sans-serif' }}>
+                                ✧ Your Bespoke Skin Archetype & Prescription
+                              </span>
+                              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.3rem', color: '#5C5454', margin: '4px 0 0 0' }}>
+                                {dossier.archetypeTitle}
+                              </h2>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              {recLabels.routineTier && (
+                                <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', padding: '5px 12px', borderRadius: '15px', fontSize: '0.8rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                  ✨ {recLabels.routineTier}
+                                </span>
+                              )}
+                              {recLabels.climateContext && (
+                                <span style={{ backgroundColor: '#FFF9F9', color: '#5C5454', border: '1px solid #E8C5C8', padding: '5px 12px', borderRadius: '15px', fontSize: '0.8rem', fontFamily: 'sans-serif' }}>
+                                  🌤️ {recLabels.climateContext}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <p style={{ fontFamily: 'sans-serif', fontSize: '0.98rem', color: '#5C5454', lineHeight: '1.65', margin: '0 0 20px 0', backgroundColor: '#FFF9F9', padding: '16px 18px', borderRadius: '12px', borderLeft: '4px solid #B38B8F' }}>
+                            {dossier.executiveSummary}
+                          </p>
+
+                          {/* Clickable Boutique Label Guide */}
+                          <div style={{ backgroundColor: '#FFF0F2', borderRadius: '14px', padding: '18px 20px', border: '1px solid #E8C5C8' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+                              <div>
+                                <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#5C5454', display: 'block' }}>
+                                  🏷️ Your Boutique Product Label Cheat-Sheet
+                                </strong>
+                                <span style={{ fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                                  Every product in the Boutique is tagged by Skin Type and Skin Condition. Click any badge below to shop matching products:
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => jumpToBoutiqueWithFilter({ onlyBlueprintMatch: true })}
+                                style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', border: 'none', padding: '8px 16px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: 'pointer' }}
+                              >
+                                ✨ Filter Boutique by All My Labels →
+                              </button>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '12px' }}>
+                              {shoppingBadges.map((b, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    if (b.filterType === 'skinType') {
+                                      jumpToBoutiqueWithFilter({ skinType: b.filterValue });
+                                    } else if (b.filterType === 'skinConcern') {
+                                      jumpToBoutiqueWithFilter({ skinConcern: b.filterValue });
+                                    } else if (b.filterType === 'sensitivity') {
+                                      jumpToBoutiqueWithFilter({ onlySensitiveSafe: b.filterValue === 'safe' });
+                                    } else {
+                                      jumpToBoutiqueWithFilter({ onlyBlueprintMatch: true });
+                                    }
+                                  }}
+                                  style={{
+                                    backgroundColor: '#FFFFFF',
+                                    border: '1.5px solid #B38B8F',
+                                    borderRadius: '12px',
+                                    padding: '12px 14px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    justifyContent: 'space-between',
+                                    gap: '6px',
+                                    transition: 'transform 0.2s ease'
+                                  }}
+                                  onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                                  onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
+                                >
+                                  <div>
+                                    <span style={{ fontSize: '0.7rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold', textTransform: 'uppercase' }}>
+                                      {b.category}
+                                    </span>
+                                    <strong style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', marginTop: '2px' }}>
+                                      ✓ {b.label}
+                                    </strong>
+                                    <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.4' }}>
+                                      {b.description}
+                                    </p>
+                                  </div>
+                                  <span style={{ fontSize: '0.76rem', color: '#B38B8F', fontWeight: 'bold', fontFamily: 'sans-serif', marginTop: '4px' }}>
+                                    Shop This Label in Boutique →
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Section 2: Bespoke AM & PM Ritual Architecture */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '22px' }}>
+                          {/* Morning Protection Ritual */}
+                          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '24px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.15)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid #E8C5C8', paddingBottom: '10px' }}>
+                              <div>
+                                <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                                  ☀️ Morning Protection & Radiance Ritual
+                                </h3>
+                                <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                                  Tailored for {quizAnswers.skinType} Skin • {quizAnswers.climate} Climate
+                                </span>
+                              </div>
+                              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '4px 10px', borderRadius: '12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                {amSteps.length} Steps
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              {amSteps.map((st, idx) => (
+                                <div key={`am-${idx}`} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 14px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '4px' }}>
+                                    <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454' }}>
+                                      Step {st.stepNumber}: {st.title}
+                                    </strong>
+                                    <button
+                                      type="button"
+                                      onClick={() => jumpToBoutiqueWithFilter({ ritualStep: st.lookForLabel })}
+                                      style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '12px', padding: '3px 9px', fontSize: '0.73rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: 'pointer' }}
+                                    >
+                                      Shop {st.lookForLabel} →
+                                    </button>
+                                  </div>
+                                  <p style={{ margin: 0, fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                    {st.instruction}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Evening Renewal Ritual */}
+                          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '24px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.15)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid #E8C5C8', paddingBottom: '10px' }}>
+                              <div>
+                                <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
+                                  🌙 Evening Cellular Renewal Ritual
+                                </h3>
+                                <span style={{ fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                                  Focused on {quizAnswers.primaryGoal} & Overnight Barrier Repair
+                                </span>
+                              </div>
+                              <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '4px 10px', borderRadius: '12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                {pmSteps.length} Steps
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              {pmSteps.map((st, idx) => (
+                                <div key={`pm-${idx}`} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 14px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '4px' }}>
+                                    <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454' }}>
+                                      Step {st.stepNumber}: {st.title}
+                                    </strong>
+                                    <button
+                                      type="button"
+                                      onClick={() => jumpToBoutiqueWithFilter({ ritualStep: st.lookForLabel })}
+                                      style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '12px', padding: '3px 9px', fontSize: '0.73rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: 'pointer' }}
+                                    >
+                                      Shop {st.lookForLabel} →
+                                    </button>
+                                  </div>
+                                  <p style={{ margin: 0, fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                    {st.instruction}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Section 3: Ingredient Sanctuary (Hero Actives vs. Ingredients to Avoid) */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '22px' }}>
+                          {/* Hero Ingredients to Seek */}
+                          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #A5D6A7', borderRadius: '20px', padding: '24px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
+                            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#2E7D32', margin: '0 0 6px 0' }}>
+                              🌿 Hero Actives & Ingredients to Seek
+                            </h3>
+                            <p style={{ margin: '0 0 14px 0', fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                              Prioritize these actives on Boutique product cards for your {quizAnswers.skinType} skin and {quizAnswers.primaryGoal} goal:
+                            </p>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              {heroList.map((hero, idx) => (
+                                <div key={`hero-${idx}`} style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '12px', padding: '11px 14px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                                    <strong style={{ color: '#2E7D32', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>
+                                      ✦ {hero.name}
+                                    </strong>
+                                    {hero.targetConcern && (
+                                      <button
+                                        type="button"
+                                        onClick={() => jumpToBoutiqueWithFilter({ skinConcern: hero.targetConcern })}
+                                        style={{ backgroundColor: '#FFFFFF', border: '1px solid #A5D6A7', color: '#2E7D32', borderRadius: '10px', padding: '2px 8px', fontSize: '0.72rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: 'pointer' }}
+                                      >
+                                        Shop {hero.targetConcern} →
+                                      </button>
+                                    )}
+                                  </div>
+                                  <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+                                    {hero.benefit}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Ingredients & Textures to Avoid */}
+                          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #FFE082', borderRadius: '20px', padding: '24px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
+                            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#B26A00', margin: '0 0 6px 0' }}>
+                              🛡️ Formulas & Habits to Avoid ({quizAnswers.skinSensitivity} Sensitivity)
+                            </h3>
+                            <p style={{ margin: '0 0 14px 0', fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                              Protect your moisture barrier in {quizAnswers.climate} conditions by avoiding or buffering these:
+                            </p>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              {avoidList.map((av, idx) => (
+                                <div key={`avoid-${idx}`} style={{ backgroundColor: '#FFF8E7', border: '1px solid #FFE082', borderRadius: '12px', padding: '11px 14px' }}>
+                                  <strong style={{ color: '#B26A00', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.12rem', display: 'block' }}>
+                                    ⚠️ {av.name}
+                                  </strong>
+                                  <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+                                    {av.reason}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Section 4: Complexion, Undertone & Artistry Harmony Guide */}
+                        <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '26px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.15)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px', borderBottom: '1px solid #E8C5C8', paddingBottom: '12px' }}>
+                            <div>
+                              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.75rem', color: '#5C5454', margin: 0 }}>
+                                💄 Complexion, Undertone & Facial Artistry Guide
+                              </h3>
+                              <span style={{ fontSize: '0.86rem', color: '#B38B8F', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                                {artistry.headline} • {quizAnswers.eyeColor} Eyes • {quizAnswers.faceShape} Silhouette
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => jumpToBoutiqueWithFilter({ ritualStep: 'Makeup & Artistry' })}
+                              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px 16px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              💄 Shop Luminous Makeup & Artistry →
+                            </button>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px' }}>
+                              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#B38B8F', display: 'block', marginBottom: '4px' }}>
+                                Complexion & Undertone Base
+                              </strong>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                {artistry.foundationAndBase}
+                              </p>
+                            </div>
+                            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px' }}>
+                              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#B38B8F', display: 'block', marginBottom: '4px' }}>
+                                Blush, Lip & Glow Palette
+                              </strong>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                {artistry.blushAndLipHarmony}
+                              </p>
+                            </div>
+                            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px' }}>
+                              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#B38B8F', display: 'block', marginBottom: '4px' }}>
+                                {quizAnswers.eyeColor} Eye Enhancement
+                              </strong>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                {artistry.eyeEnhancement}
+                              </p>
+                            </div>
+                            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px' }}>
+                              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#B38B8F', display: 'block', marginBottom: '4px' }}>
+                                {quizAnswers.faceShape} Sculpting & Placement
+                              </strong>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                {artistry.sculptingPlacement}
+                              </p>
+                            </div>
+                            <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px' }}>
+                              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#B38B8F', display: 'block', marginBottom: '4px' }}>
+                                {quizAnswers.makeupVibe} Signature Finish
+                              </strong>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: '#5C5454', fontFamily: 'sans-serif', lineHeight: '1.5' }}>
+                                {artistry.signatureFinish}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Section 5: Your 10-Point Diagnostic Profile Summary Cards */}
+                        <div>
+                          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#5C5454', margin: '0 0 12px 0' }}>
+                            Your 10-Point Diagnostic Profile Reference
+                          </h3>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left' }}>
+                            <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
+                            <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
+                            <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
+                            <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
+                            <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
+                            <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
+                            <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
+                            <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
+                            <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
+                            <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
+                          </div>
+                        </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', textAlign: 'left' }}>
-                        <BlueprintCard label="Skin Temperament" value={quizAnswers.skinType}/>
-                        <BlueprintCard label="Primary Vision" value={quizAnswers.primaryGoal}/>
-                        <BlueprintCard label="Climate Context" value={quizAnswers.climate}/>
-                        <BlueprintCard label="Skin Sensitivity" value={quizAnswers.skinSensitivity}/>
-                        <BlueprintCard label="Complexion Canvas" value={quizAnswers.complexion}/>
-                        <BlueprintCard label="Undertone" value={quizAnswers.undertone}/>
-                        <BlueprintCard label="Eye Color" value={quizAnswers.eyeColor}/>
-                        <BlueprintCard label="Facial Silhouette" value={quizAnswers.faceShape}/>
-                        <BlueprintCard label="Signature Aesthetic" value={quizAnswers.makeupVibe}/>
-                        <BlueprintCard label="Regimen Focus" value={quizAnswers.routineFocus}/>
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   <div style={{ textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.85)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
@@ -4089,6 +8303,8 @@ function App() {
                             product={product}
                             onAddToCart={handleAddToCart}
                             onCardClick={setSelectedProduct}
+                            userBlueprint={quizAnswers}
+                            hasCompletedQuiz={hasCompletedQuiz}
                           />
                         ))}
                       </div>
@@ -4135,7 +8351,7 @@ function App() {
                         <div key={item._id} style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '15px', border: '1px solid #E8C5C8', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
                           <div style={{ flex: '1 1 250px', maxWidth: '300px' }}>
                             {item.productId ? (
-                              <ProductCard product={item.productId} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
+                              <ProductCard product={item.productId} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} />
                             ) : (
                               <p style={{ color: '#A89999', fontStyle: 'italic' }}>Product no longer available.</p>
                             )}
@@ -4159,16 +8375,17 @@ function App() {
               {/* 3. BOUTIQUE TAB */}
               {activeMemberTab === 'Boutique' && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
-                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#8A797A', fontStyle: 'italic', marginBottom: '30px' }}>Shop our full collection of curated beauty essentials.</p>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-                    {backendProducts.length > 0 ? (
-                      backendProducts.map((product) => (
-                        <ProductCard key={product._id || product.title} product={product} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} />
-                      ))
-                    ) : (
-                      <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>Fetching live boutique inventory...</p>
-                    )}
-                  </div>
+                  <BoutiqueSmartFilterSection
+                    products={backendProducts}
+                    quizAnswers={quizAnswers}
+                    hasCompletedQuiz={hasCompletedQuiz}
+                    boutiqueFilters={boutiqueFilters}
+                    setBoutiqueFilters={setBoutiqueFilters}
+                    onResetFilters={resetBoutiqueFilters}
+                    onAddToCart={handleAddToCart}
+                    onCardClick={setSelectedProduct}
+                    onGoToBlueprintTab={() => setActiveMemberTab('Blueprint')}
+                  />
                 </div>
               )}
 
@@ -4381,7 +8598,7 @@ function App() {
 
         {step === 21 && (
           <div style={{ animation: 'fadeIn 1s ease' }}>
-             <EmpowermentLoader text="Susan's AI is analyzing your profile..."/>
+             <EmpowermentLoader text="Odie, Susan's AI Assistant, is analyzing your profile..."/>
           </div>
         )}
 
