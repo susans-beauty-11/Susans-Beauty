@@ -427,356 +427,6 @@ const deriveProductBlueprintMeta = (product = {}) => {
 };
 
 // Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
-const evaluateBlueprintMatch  String(val).split(',').map(v => v.trim()).filter(Boolean);
-};
-
-// Guarantees every product has structured skinTypes, skinConcerns, ritualStep, sensitivitySafe, sensitivityLabel, and keyActives
-const deriveProductBlueprintMeta = (product = {}) => {
-  const cleanTitle = String(product?.title || '').trim();
-  const cleanCat = String(product?.rawCjData?.categoryName || '').trim();
-  const rawDesc = product?.description || product?.rawCjData?.description || '';
-  const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, ' ').slice(0, 800) : '';
-  const tagList = parseBlueprintList(product?.tags);
-  const corpus = `${cleanTitle} ${cleanCat} ${cleanDesc} ${tagList.join(' ')}`.toLowerCase();
-
-  // 1. Ritual Step
-  let ritualStep = String(product?.ritualStep || product?.essentialSlotLabel || '').trim();
-  if (!ritualStep) {
-    if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
-      ritualStep = 'Makeup & Artistry';
-    } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
-      ritualStep = 'Beauty Tool & Spa';
-    } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
-      ritualStep = 'Step 1: Cleanser';
-    } else if (/\b(toner|facial mist|face mist|rosewater|hydrosol|essence water|toning|refining water|balancing water)\b/i.test(corpus)) {
-      ritualStep = 'Step 2: Toner & Mist';
-    } else if (/\b(eye cream|eye patch|eye patches|eye mask|eye serum|eye gel|under eye|lip balm|lip mask|lip oil|lip scrub|lip plumper|lip sleeping|sunscreen|sunblock|spf|uv protection)\b/i.test(corpus)) {
-      ritualStep = 'Step 5: Eye, Lip & SPF';
-    } else if (/\b(moisturizer|moisturizing|face cream|night cream|day cream|neck cream|barrier cream|lotion|body lotion|body butter|body cream|emulsion|gel cream|balm|sleeping mask|ointment)\b/i.test(corpus)) {
-      ritualStep = 'Step 4: Moisturizer & Cream';
-    } else {
-      ritualStep = 'Step 3: Serum & Essence';
-    }
-  }
-
-  // 2. Skin Concerns / Conditions
-  let skinConcerns = parseBlueprintList(product?.skinConcerns);
-  const addConcern = (c) => {
-    if (c && !skinConcerns.includes(c)) skinConcerns.push(c);
-  };
-  if (skinConcerns.length === 0) {
-    if (/\b(hydrat|hyaluronic|moisture|moisturiz|dry|plump|dewy|water|squalane|glycerin|aloe|snail|mucin|hydrogel|lotion|cream|balm|mist|lip oil|lip balm)\b/i.test(corpus)) {
-      addConcern('Hydration');
-    }
-    if (/\b(anti-aging|anti aging|anti-wrinkle|wrinkle|fine line|firming|lifting|retinol|retinoid|peptide|collagen|elasticity|youth|age-defying|bakuchiol|eye cream|neck|gua sha|jade roller|led mask|massager)\b/i.test(corpus)) {
-      addConcern('Anti-Aging');
-    }
-    if (/\b(acne|blemish|pimple|pore|blackhead|salicylic|bha|aha|pha|glycolic|lactic|exfoliat|scrub|peel|clay|mud|charcoal|tea tree|niacinamide|nicotinamide|oil control|mattif|sebum|purifying|cleanser|scrubber)\b/i.test(corpus)) {
-      addConcern('Acne/Texture');
-    }
-    if (/\b(brighten|whitening|vitamin c|ascorbic|dark spot|hyperpigmentation|even tone|glow|radiance|radiant|luminous|kojic|turmeric|arbutin|pearl|illuminat|niacinamide)\b/i.test(corpus)) {
-      addConcern('Brightening');
-    }
-    if (/\b(sensitive|soothing|calming|barrier|ceramide|centella|cica|aloe|chamomile|rose|panthenol|allantoin|redness|repair|gentle|fragrance-free|micellar|oat)\b/i.test(corpus)) {
-      addConcern('Barrier & Soothing');
-    }
-    if (ritualStep === 'Makeup & Artistry' || /\b(makeup|cosmetic|foundation|concealer|blush|highlighter|lipstick|lip gloss|eyeshadow|mascara|eyeliner|brow|contour|powder|palette)\b/i.test(corpus)) {
-      addConcern('Luminous Makeup');
-    }
-    if (skinConcerns.length === 0) {
-      if (ritualStep === 'Step 1: Cleanser') {
-        addConcern('Acne/Texture');
-        addConcern('Barrier & Soothing');
-      } else if (ritualStep === 'Step 2: Toner & Mist' || ritualStep === 'Step 4: Moisturizer & Cream') {
-        addConcern('Hydration');
-        addConcern('Barrier & Soothing');
-      } else if (ritualStep === 'Step 5: Eye, Lip & SPF' || ritualStep === 'Beauty Tool & Spa') {
-        addConcern('Hydration');
-        addConcern('Anti-Aging');
-      } else {
-        addConcern('Hydration');
-        addConcern('Brightening');
-      }
-    }
-  }
-
-  // 3. Best-Fit Skin Types
-  let skinTypes = parseBlueprintList(product?.skinTypes);
-  const addSkinType = (st) => {
-    if (st && !skinTypes.includes(st)) skinTypes.push(st);
-  };
-  if (skinTypes.length === 0) {
-    if (/\b(dry skin|thirsty|dehydrated|rich cream|nourishing|hydrating|hyaluronic|ceramide|squalane|shea|argan|balm|facial oil|sleeping mask|moisture|night cream|lip oil|lip balm)\b/i.test(corpus) || skinConcerns.includes('Hydration')) {
-      addSkinType('Dry');
-    }
-    if (/\b(oily skin|oil control|mattifying|matte|sebum|salicylic|bha|clay|mud|charcoal|pore|blackhead|tea tree|acne|blemish|pimple|foaming|gel cleanser|lightweight|water gel|setting powder|loose powder)\b/i.test(corpus) || skinConcerns.includes('Acne/Texture')) {
-      addSkinType('Oily');
-    }
-    if (/\b(combination skin|balancing|niacinamide|toner|mist|serum|essence|gel cream|lotion|sheet mask|micellar|vitamin c|cleanser)\b/i.test(corpus) || (skinTypes.includes('Dry') && skinTypes.includes('Oily'))) {
-      addSkinType('Combination');
-    }
-    if (/\b(normal skin|all skin|daily|gentle|balanced|vitamin c|peptide|collagen|brightening|eye|lip|sunscreen|spf)\b/i.test(corpus) || skinConcerns.includes('Brightening') || skinConcerns.includes('Anti-Aging')) {
-      addSkinType('Normal');
-    }
-    if (
-      ritualStep === 'Makeup & Artistry' ||
-      ritualStep === 'Beauty Tool & Spa' ||
-      ritualStep === 'Step 5: Eye, Lip & SPF' ||
-      skinTypes.length === 0 ||
-      skinTypes.length >= 3
-    ) {
-      if (skinTypes.length === 0) {
-        addSkinType('Normal');
-        addSkinType('Dry');
-        addSkinType('Combination');
-        addSkinType('Oily');
-      }
-      addSkinType('All Skin Types');
-    } else if (skinTypes.length === 1) {
-      if (skinTypes[0] === 'Dry') addSkinType('Normal');
-      else if (skinTypes[0] === 'Oily') addSkinType('Combination');
-      else if (skinTypes[0] === 'Combination') addSkinType('Normal');
-      else if (skinTypes[0] === 'Normal') addSkinType('All Skin Types');
-    }
-  }
-
-  // 4. Sensitivity Profile
-  const hasPotentActives = /\b(retinol|retinoid|aha|bha|pha|glycolic|salicylic|lactic acid|peel|peeling|scrub|exfoliant|exfoliating|microneedle|derma roller)\b/i.test(corpus);
-  const sensitivitySafe = product?.sensitivitySafe !== undefined
-    ? Boolean(product.sensitivitySafe)
-    : !hasPotentActives;
-  const sensitivityLabel = (product?.sensitivityLabel && String(product.sensitivityLabel).trim())
-    ? String(product.sensitivityLabel).trim()
-    : (sensitivitySafe
-        ? 'Gentle • High-Sensitivity Safe'
-        : 'Active Formula • Best for Low/Moderate Sensitivity');
-
-  // 5. Key Actives
-  let keyActives = parseBlueprintList(product?.keyActives);
-  const addActive = (act) => {
-    if (act && !keyActives.includes(act) && keyActives.length < 4) keyActives.push(act);
-  };
-  if (keyActives.length === 0) {
-    const activeRules = [
-      { regex: /\b(hyaluronic|sodium hyaluronate)\b/i, name: 'Hyaluronic Acid' },
-      { regex: /\b(ceramide)\b/i, name: 'Barrier Ceramides' },
-      { regex: /\b(niacinamide|nicotinamide|vitamin b3)\b/i, name: 'Niacinamide (B3)' },
-      { regex: /\b(vitamin c|ascorbic)\b/i, name: 'Vitamin C Complex' },
-      { regex: /\b(peptide|matrixyl|argireline)\b/i, name: 'Firming Peptides' },
-      { regex: /\b(collagen)\b/i, name: 'Hydrolyzed Collagen' },
-      { regex: /\b(retinol|retinoid|bakuchiol)\b/i, name: 'Retinol / Cellular Renewal' },
-      { regex: /\b(salicylic|bha|tea tree)\b/i, name: 'Clarifying BHA / Tea Tree' },
-      { regex: /\b(glycolic|lactic|aha|pha|exfoli)\b/i, name: 'Smoothing AHA Complex' },
-      { regex: /\b(centella|cica|aloe|chamomile|calendula|green tea)\b/i, name: 'Soothing Botanical Cica' },
-      { regex: /\b(squalane|argan|rosehip|jojoba|shea|vitamin e)\b/i, name: 'Nourishing Lipid Oils' },
-      { regex: /\b(snail|mucin)\b/i, name: 'Snail Mucin Filtrate' },
-      { regex: /\b(rose|rosewater)\b/i, name: 'Botanical Rosewater' },
-      { regex: /\b(clay|kaolin|bentonite|charcoal|mud)\b/i, name: 'Purifying Mineral Clay' },
-      { regex: /\b(spf|sunscreen|uv|zinc|titanium)\b/i, name: 'Broad-Spectrum UV Shield' }
-    ];
-    for (const rule of activeRules) {
-      if (rule.regex.test(corpus)) addActive(rule.name);
-    }
-    if (keyActives.length === 0) {
-      if (ritualStep === 'Makeup & Artistry') {
-        addActive('Luminous Mineral Pigments');
-        addActive('Weightless Breathable Wear');
-      } else if (ritualStep === 'Beauty Tool & Spa') {
-        addActive('Lymphatic Micro-Circulation');
-        addActive('Artisan Spa Craft');
-      } else {
-        addActive('Hydrating Botanical Complex');
-        addActive('pH-Balanced Conditioning');
-      }
-    }
-  }
-
-  return {
-    skinTypes,
-    skinConcerns,
-    ritualStep,
-    sensitivitySafe,
-    sensitivityLabel,
-    keyActives
-  };
-};
-
-// Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
-const evaluateBlueprintMatch  String(val).split(',').map(v => v.trim()).filter(Boolean);
-};
-
-// Guarantees every product has structured skinTypes, skinConcerns, ritualStep, sensitivitySafe, sensitivityLabel, and keyActives
-const deriveProductBlueprintMeta = (product = {}) => {
-  const cleanTitle = String(product?.title || '').trim();
-  const cleanCat = String(product?.rawCjData?.categoryName || '').trim();
-  const rawDesc = product?.description || product?.rawCjData?.description || '';
-  const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, ' ').slice(0, 800) : '';
-  const tagList = parseBlueprintList(product?.tags);
-  const corpus = `${cleanTitle} ${cleanCat} ${cleanDesc} ${tagList.join(' ')}`.toLowerCase();
-
-  // 1. Ritual Step
-  let ritualStep = String(product?.ritualStep || product?.essentialSlotLabel || '').trim();
-  if (!ritualStep) {
-    if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
-      ritualStep = 'Makeup & Artistry';
-    } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
-      ritualStep = 'Beauty Tool & Spa';
-    } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
-      ritualStep = 'Step 1: Cleanser';
-    } else if (/\b(toner|facial mist|face mist|rosewater|hydrosol|essence water|toning|refining water|balancing water)\b/i.test(corpus)) {
-      ritualStep = 'Step 2: Toner & Mist';
-    } else if (/\b(eye cream|eye patch|eye patches|eye mask|eye serum|eye gel|under eye|lip balm|lip mask|lip oil|lip scrub|lip plumper|lip sleeping|sunscreen|sunblock|spf|uv protection)\b/i.test(corpus)) {
-      ritualStep = 'Step 5: Eye, Lip & SPF';
-    } else if (/\b(moisturizer|moisturizing|face cream|night cream|day cream|neck cream|barrier cream|lotion|body lotion|body butter|body cream|emulsion|gel cream|balm|sleeping mask|ointment)\b/i.test(corpus)) {
-      ritualStep = 'Step 4: Moisturizer & Cream';
-    } else {
-      ritualStep = 'Step 3: Serum & Essence';
-    }
-  }
-
-  // 2. Skin Concerns / Conditions
-  let skinConcerns = parseBlueprintList(product?.skinConcerns);
-  const addConcern = (c) => {
-    if (c && !skinConcerns.includes(c)) skinConcerns.push(c);
-  };
-  if (skinConcerns.length === 0) {
-    if (/\b(hydrat|hyaluronic|moisture|moisturiz|dry|plump|dewy|water|squalane|glycerin|aloe|snail|mucin|hydrogel|lotion|cream|balm|mist|lip oil|lip balm)\b/i.test(corpus)) {
-      addConcern('Hydration');
-    }
-    if (/\b(anti-aging|anti aging|anti-wrinkle|wrinkle|fine line|firming|lifting|retinol|retinoid|peptide|collagen|elasticity|youth|age-defying|bakuchiol|eye cream|neck|gua sha|jade roller|led mask|massager)\b/i.test(corpus)) {
-      addConcern('Anti-Aging');
-    }
-    if (/\b(acne|blemish|pimple|pore|blackhead|salicylic|bha|aha|pha|glycolic|lactic|exfoliat|scrub|peel|clay|mud|charcoal|tea tree|niacinamide|nicotinamide|oil control|mattif|sebum|purifying|cleanser|scrubber)\b/i.test(corpus)) {
-      addConcern('Acne/Texture');
-    }
-    if (/\b(brighten|whitening|vitamin c|ascorbic|dark spot|hyperpigmentation|even tone|glow|radiance|radiant|luminous|kojic|turmeric|arbutin|pearl|illuminat|niacinamide)\b/i.test(corpus)) {
-      addConcern('Brightening');
-    }
-    if (/\b(sensitive|soothing|calming|barrier|ceramide|centella|cica|aloe|chamomile|rose|panthenol|allantoin|redness|repair|gentle|fragrance-free|micellar|oat)\b/i.test(corpus)) {
-      addConcern('Barrier & Soothing');
-    }
-    if (ritualStep === 'Makeup & Artistry' || /\b(makeup|cosmetic|foundation|concealer|blush|highlighter|lipstick|lip gloss|eyeshadow|mascara|eyeliner|brow|contour|powder|palette)\b/i.test(corpus)) {
-      addConcern('Luminous Makeup');
-    }
-    if (skinConcerns.length === 0) {
-      if (ritualStep === 'Step 1: Cleanser') {
-        addConcern('Acne/Texture');
-        addConcern('Barrier & Soothing');
-      } else if (ritualStep === 'Step 2: Toner & Mist' || ritualStep === 'Step 4: Moisturizer & Cream') {
-        addConcern('Hydration');
-        addConcern('Barrier & Soothing');
-      } else if (ritualStep === 'Step 5: Eye, Lip & SPF' || ritualStep === 'Beauty Tool & Spa') {
-        addConcern('Hydration');
-        addConcern('Anti-Aging');
-      } else {
-        addConcern('Hydration');
-        addConcern('Brightening');
-      }
-    }
-  }
-
-  // 3. Best-Fit Skin Types
-  let skinTypes = parseBlueprintList(product?.skinTypes);
-  const addSkinType = (st) => {
-    if (st && !skinTypes.includes(st)) skinTypes.push(st);
-  };
-  if (skinTypes.length === 0) {
-    if (/\b(dry skin|thirsty|dehydrated|rich cream|nourishing|hydrating|hyaluronic|ceramide|squalane|shea|argan|balm|facial oil|sleeping mask|moisture|night cream|lip oil|lip balm)\b/i.test(corpus) || skinConcerns.includes('Hydration')) {
-      addSkinType('Dry');
-    }
-    if (/\b(oily skin|oil control|mattifying|matte|sebum|salicylic|bha|clay|mud|charcoal|pore|blackhead|tea tree|acne|blemish|pimple|foaming|gel cleanser|lightweight|water gel|setting powder|loose powder)\b/i.test(corpus) || skinConcerns.includes('Acne/Texture')) {
-      addSkinType('Oily');
-    }
-    if (/\b(combination skin|balancing|niacinamide|toner|mist|serum|essence|gel cream|lotion|sheet mask|micellar|vitamin c|cleanser)\b/i.test(corpus) || (skinTypes.includes('Dry') && skinTypes.includes('Oily'))) {
-      addSkinType('Combination');
-    }
-    if (/\b(normal skin|all skin|daily|gentle|balanced|vitamin c|peptide|collagen|brightening|eye|lip|sunscreen|spf)\b/i.test(corpus) || skinConcerns.includes('Brightening') || skinConcerns.includes('Anti-Aging')) {
-      addSkinType('Normal');
-    }
-    if (
-      ritualStep === 'Makeup & Artistry' ||
-      ritualStep === 'Beauty Tool & Spa' ||
-      ritualStep === 'Step 5: Eye, Lip & SPF' ||
-      skinTypes.length === 0 ||
-      skinTypes.length >= 3
-    ) {
-      if (skinTypes.length === 0) {
-        addSkinType('Normal');
-        addSkinType('Dry');
-        addSkinType('Combination');
-        addSkinType('Oily');
-      }
-      addSkinType('All Skin Types');
-    } else if (skinTypes.length === 1) {
-      if (skinTypes[0] === 'Dry') addSkinType('Normal');
-      else if (skinTypes[0] === 'Oily') addSkinType('Combination');
-      else if (skinTypes[0] === 'Combination') addSkinType('Normal');
-      else if (skinTypes[0] === 'Normal') addSkinType('All Skin Types');
-    }
-  }
-
-  // 4. Sensitivity Profile
-  const hasPotentActives = /\b(retinol|retinoid|aha|bha|pha|glycolic|salicylic|lactic acid|peel|peeling|scrub|exfoliant|exfoliating|microneedle|derma roller)\b/i.test(corpus);
-  const sensitivitySafe = product?.sensitivitySafe !== undefined
-    ? Boolean(product.sensitivitySafe)
-    : !hasPotentActives;
-  const sensitivityLabel = (product?.sensitivityLabel && String(product.sensitivityLabel).trim())
-    ? String(product.sensitivityLabel).trim()
-    : (sensitivitySafe
-        ? 'Gentle • High-Sensitivity Safe'
-        : 'Active Formula • Best for Low/Moderate Sensitivity');
-
-  // 5. Key Actives
-  let keyActives = parseBlueprintList(product?.keyActives);
-  const addActive = (act) => {
-    if (act && !keyActives.includes(act) && keyActives.length < 4) keyActives.push(act);
-  };
-  if (keyActives.length === 0) {
-    const activeRules = [
-      { regex: /\b(hyaluronic|sodium hyaluronate)\b/i, name: 'Hyaluronic Acid' },
-      { regex: /\b(ceramide)\b/i, name: 'Barrier Ceramides' },
-      { regex: /\b(niacinamide|nicotinamide|vitamin b3)\b/i, name: 'Niacinamide (B3)' },
-      { regex: /\b(vitamin c|ascorbic)\b/i, name: 'Vitamin C Complex' },
-      { regex: /\b(peptide|matrixyl|argireline)\b/i, name: 'Firming Peptides' },
-      { regex: /\b(collagen)\b/i, name: 'Hydrolyzed Collagen' },
-      { regex: /\b(retinol|retinoid|bakuchiol)\b/i, name: 'Retinol / Cellular Renewal' },
-      { regex: /\b(salicylic|bha|tea tree)\b/i, name: 'Clarifying BHA / Tea Tree' },
-      { regex: /\b(glycolic|lactic|aha|pha|exfoli)\b/i, name: 'Smoothing AHA Complex' },
-      { regex: /\b(centella|cica|aloe|chamomile|calendula|green tea)\b/i, name: 'Soothing Botanical Cica' },
-      { regex: /\b(squalane|argan|rosehip|jojoba|shea|vitamin e)\b/i, name: 'Nourishing Lipid Oils' },
-      { regex: /\b(snail|mucin)\b/i, name: 'Snail Mucin Filtrate' },
-      { regex: /\b(rose|rosewater)\b/i, name: 'Botanical Rosewater' },
-      { regex: /\b(clay|kaolin|bentonite|charcoal|mud)\b/i, name: 'Purifying Mineral Clay' },
-      { regex: /\b(spf|sunscreen|uv|zinc|titanium)\b/i, name: 'Broad-Spectrum UV Shield' }
-    ];
-    for (const rule of activeRules) {
-      if (rule.regex.test(corpus)) addActive(rule.name);
-    }
-    if (keyActives.length === 0) {
-      if (ritualStep === 'Makeup & Artistry') {
-        addActive('Luminous Mineral Pigments');
-        addActive('Weightless Breathable Wear');
-      } else if (ritualStep === 'Beauty Tool & Spa') {
-        addActive('Lymphatic Micro-Circulation');
-        addActive('Artisan Spa Craft');
-      } else {
-        addActive('Hydrating Botanical Complex');
-        addActive('pH-Balanced Conditioning');
-      }
-    }
-  }
-
-  return {
-    skinTypes,
-    skinConcerns,
-    ritualStep,
-    sensitivitySafe,
-    sensitivityLabel,
-    keyActives
-  };
-};
-
-// Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
 const evaluateBlueprintMatch = (product = {}, quizAnswers = null, hasCompletedQuiz = null) => {
   const meta = deriveProductBlueprintMeta(product);
 
@@ -8341,6 +7991,521 @@ const AdminAiAssistant = ({ onProductDeleted, onExecutiveAction, pendingPrompt, 
   );
 };
 
+const AdminIonosInbox = ({ onLoadReplyInComposer, onAskOdie, refreshTrigger = 0 }) => {
+  const [emails, setEmails] = useState([]);
+  const [counts, setCounts] = useState({ total: 0, unread: 0, starred: 0, replied: 0, archived: 0 });
+  const [imapTelemetry, setImapTelemetry] = useState({
+    host: 'imap.ionos.com',
+    port: 993,
+    activeUser: 'Susan.Coke@SusansBeautyConsulting.com',
+    connected: false,
+    lastSyncAt: null,
+    lastSyncStatus: 'IDLE',
+    lastError: null
+  });
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedEmail, setSelectedEmail] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [feedback, setFeedback] = useState({ type: '', text: '' });
+  const [inlineReplyBody, setInlineReplyBody] = useState('');
+  const [isSendingReply, setIsSendingReply] = useState(false);
+
+  const fetchInboxEmails = async ({ status = statusFilter, search = searchQuery, sync = false, silent = false } = {}) => {
+    if (!silent) setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams({
+        status,
+        search: search.trim(),
+        limit: '50'
+      });
+      if (sync) params.set('sync', 'true');
+
+      const res = await fetch(`${API_BASE_URL}/api/admin/inbox/emails?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const list = Array.isArray(data.emails) ? data.emails : [];
+        setEmails(list);
+        if (data.counts) setCounts(data.counts);
+        if (data.imapTelemetry) setImapTelemetry(data.imapTelemetry);
+
+        if (selectedEmail) {
+          const updatedSelected = list.find(e => e._id === selectedEmail._id);
+          if (updatedSelected) {
+            setSelectedEmail(updatedSelected);
+          } else if (list.length > 0) {
+            setSelectedEmail(list[0]);
+          } else {
+            setSelectedEmail(null);
+          }
+        } else if (list.length > 0) {
+          setSelectedEmail(list[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch IONOS inbox emails:', err);
+    }
+    if (!silent) setIsLoading(false);
+  };
+
+  useEffect(() => {
+    fetchInboxEmails({ status: statusFilter, search: searchQuery });
+  }, [statusFilter, refreshTrigger]);
+
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    setFeedback({ type: '', text: '' });
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/inbox/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ maxFetch: 50 })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (Array.isArray(data.emails)) setEmails(data.emails);
+        if (data.counts) setCounts(data.counts);
+        if (data.imapTelemetry) setImapTelemetry(data.imapTelemetry);
+        const isErr = data.syncResult?.status === 'error';
+        setFeedback({
+          type: isErr ? 'error' : 'success',
+          text: data.message || (isErr ? data.syncResult?.error : 'Synced IONOS Inbox ✧')
+        });
+        await fetchInboxEmails({ status: statusFilter, search: searchQuery, silent: true });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Could not sync IONOS IMAP inbox.' });
+      }
+    } catch (err) {
+      setFeedback({ type: 'error', text: 'Network error while syncing IONOS inbox.' });
+    }
+    setIsSyncing(false);
+  };
+
+  const handleUpdateEmailFlags = async (emailId, patchBody, e) => {
+    if (e) e.stopPropagation();
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/inbox/emails/${emailId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(patchBody)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.email) {
+        if (data.counts) setCounts(data.counts);
+        setEmails(prev =>
+          prev
+            .map(item => (item._id === emailId ? data.email : item))
+            .filter(item => {
+              if (statusFilter !== 'archived' && item.isArchived) return false;
+              if (statusFilter === 'archived' && !item.isArchived) return false;
+              if (statusFilter === 'unread' && item.isRead) return false;
+              if (statusFilter === 'starred' && !item.isStarred) return false;
+              return true;
+            })
+        );
+        if (selectedEmail && selectedEmail._id === emailId) {
+          setSelectedEmail(data.email);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to update email flags:', err);
+    }
+  };
+
+  const handleDeleteOrArchiveEmail = async (emailId, permanent = false, e) => {
+    if (e) e.stopPropagation();
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/inbox/emails/${emailId}${permanent ? '?permanent=true' : ''}`,
+        {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (data.counts) setCounts(data.counts);
+        setEmails(prev => prev.filter(item => item._id !== emailId));
+        if (selectedEmail && selectedEmail._id === emailId) {
+          setSelectedEmail(null);
+        }
+        setFeedback({ type: 'success', text: data.message || 'Email updated.' });
+      }
+    } catch (err) {
+      console.error('Failed to delete/archive email:', err);
+    }
+  };
+
+  const handleSelectEmail = (emailObj) => {
+    setSelectedEmail(emailObj);
+    setInlineReplyBody('');
+    if (!emailObj.isRead) {
+      handleUpdateEmailFlags(emailObj._id, { isRead: true });
+    }
+  };
+
+  const handleSendInlineReply = async (e) => {
+    e.preventDefault();
+    if (!selectedEmail || !inlineReplyBody.trim()) return;
+    setIsSendingReply(true);
+    setFeedback({ type: '', text: '' });
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/admin/inbox/emails/${selectedEmail._id}/reply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          body: inlineReplyBody.trim()
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setInlineReplyBody('');
+        if (data.counts) setCounts(data.counts);
+        if (data.email) {
+          setSelectedEmail(data.email);
+          setEmails(prev => prev.map(item => (item._id === data.email._id ? data.email : item)));
+        }
+        setFeedback({
+          type: 'success',
+          text: data.message || `Reply dispatched to ${selectedEmail.fromEmail} ✧`
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to dispatch reply.' });
+      }
+    } catch (err) {
+      setFeedback({ type: 'error', text: 'Network error while sending reply.' });
+    }
+    setIsSendingReply(false);
+  };
+
+  const filterOptions = [
+    { key: 'all', label: `All Mail (${counts.total || 0})` },
+    { key: 'unread', label: `Unread (${counts.unread || 0})` },
+    { key: 'starred', label: `★ Starred (${counts.starred || 0})` },
+    { key: 'replied', label: `↩ Replied (${counts.replied || 0})` },
+    { key: 'archived', label: `🗄️ Archived (${counts.archived || 0})` }
+  ];
+
+  return (
+    <div style={{ backgroundColor: '#FFFFFF', padding: '28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.16)', marginBottom: '30px' }}>
+      {/* Top Command Bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', borderBottom: '1px solid #F2D4D7', paddingBottom: '18px', marginBottom: '18px' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.1rem' }}>
+              📥 IONOS Live Email Inbox
+            </h2>
+            <span style={{ backgroundColor: counts.unread > 0 ? '#B38B8F' : '#F6FBF7', color: counts.unread > 0 ? '#FFFFFF' : '#2E7D32', border: `1px solid ${counts.unread > 0 ? '#B38B8F' : '#A5D6A7'}`, borderRadius: '20px', padding: '4px 12px', fontSize: '0.82rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+              {counts.unread > 0 ? `${counts.unread} Unread` : '✓ All Caught Up'}
+            </span>
+            <span style={{ backgroundColor: '#FFF9F9', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '4px 12px', fontSize: '0.78rem', fontFamily: 'sans-serif' }}>
+              {imapTelemetry.activeUser || 'Susan.Coke@SusansBeautyConsulting.com'} • {imapTelemetry.host || 'imap.ionos.com'}:{imapTelemetry.port || 993}
+            </span>
+          </div>
+          <p style={{ margin: '6px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+            {imapTelemetry.lastSyncAt
+              ? `Last synced: ${new Date(imapTelemetry.lastSyncAt).toLocaleString()} (${imapTelemetry.lastSyncStatus})`
+              : 'Auto-syncs every 2 minutes over TLS port 993 with your IONOS mailbox'}
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={handleManualSync}
+            disabled={isSyncing}
+            style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '22px', padding: '10px 18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: isSyncing ? 'not-allowed' : 'pointer', transition: 'all 0.2s ease' }}
+          >
+            {isSyncing ? '🔄 Syncing imap.ionos.com:993...' : '🔄 Sync IONOS Mail Now'}
+          </button>
+          {onAskOdie && (
+            <button
+              type="button"
+              onClick={() => onAskOdie('Please sync my incoming IONOS email inbox and summarize my unread messages.')}
+              style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '22px', padding: '10px 16px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              🐾 Ask Odie to Read Inbox
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Feedback Banner */}
+      {feedback.text && (
+        <div style={{
+          marginBottom: '16px',
+          padding: '11px 16px',
+          borderRadius: '10px',
+          fontFamily: 'sans-serif',
+          fontSize: '0.9rem',
+          backgroundColor: feedback.type === 'error' ? '#FFF5F5' : '#F6FBF7',
+          color: feedback.type === 'error' ? '#C62828' : '#2E7D32',
+          border: `1px solid ${feedback.type === 'error' ? '#FFCDD2' : '#A5D6A7'}`,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <span>{feedback.text}</span>
+          <button
+            type="button"
+            onClick={() => setFeedback({ type: '', text: '' })}
+            style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Filter Pills & Search Input */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '18px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {filterOptions.map(opt => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => setStatusFilter(opt.key)}
+              style={{
+                padding: '7px 14px',
+                borderRadius: '18px',
+                border: statusFilter === opt.key ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                backgroundColor: statusFilter === opt.key ? '#F2D4D7' : '#FFF9F9',
+                color: '#5C5454',
+                fontFamily: 'sans-serif',
+                fontSize: '0.83rem',
+                fontWeight: statusFilter === opt.key ? 'bold' : 'normal',
+                cursor: 'pointer'
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            fetchInboxEmails({ status: statusFilter, search: searchQuery });
+          }}
+          style={{ display: 'flex', gap: '8px', flex: '1 1 280px', maxWidth: '420px' }}
+        >
+          <input
+            type="text"
+            placeholder="Search sender, subject, or message..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{ flex: 1, padding: '8px 14px', borderRadius: '18px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.88rem', outline: 'none' }}
+          />
+          <button
+            type="submit"
+            style={{ padding: '8px 15px', borderRadius: '18px', border: '1px solid #B38B8F', backgroundColor: '#FFF0F2', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.84rem', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            Search
+          </button>
+        </form>
+      </div>
+
+      {/* Dual-Pane Split View: Left Message List + Right Message Reader & Quick Reply */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(290px, 380px) 1fr', gap: '20px', alignItems: 'start' }}>
+        {/* Left Pane: Incoming Email List */}
+        <div style={{ border: '1px solid #E8C5C8', borderRadius: '15px', backgroundColor: '#FFF9F9', maxHeight: '560px', overflowY: 'auto' }}>
+          {isLoading ? (
+            <div style={{ padding: '35px 20px', textAlign: 'center', color: '#8A797A', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontStyle: 'italic' }}>
+              Loading incoming IONOS messages...
+            </div>
+          ) : emails.length === 0 ? (
+            <div style={{ padding: '35px 20px', textAlign: 'center', color: '#8A797A' }}>
+              <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', fontStyle: 'italic', margin: '0 0 8px 0' }}>
+                No incoming emails in this view yet.
+              </p>
+              <p style={{ fontFamily: 'sans-serif', fontSize: '0.82rem', margin: 0 }}>
+                Click "🔄 Sync IONOS Mail Now" to pull messages from imap.ionos.com:993.
+              </p>
+            </div>
+          ) : (
+            emails.map(item => {
+              const isSelected = selectedEmail && selectedEmail._id === item._id;
+              return (
+                <div
+                  key={item._id}
+                  onClick={() => handleSelectEmail(item)}
+                  style={{
+                    padding: '14px 16px',
+                    borderBottom: '1px solid rgba(232, 197, 200, 0.5)',
+                    backgroundColor: isSelected ? '#FFF0F2' : (item.isRead ? '#FFFFFF' : '#FFF9F9'),
+                    borderLeft: isSelected ? '4px solid #B38B8F' : '4px solid transparent',
+                    cursor: 'pointer',
+                    transition: 'background-color 0.15s ease'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
+                      {!item.isRead && (
+                        <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#B38B8F', flexShrink: 0 }} title="Unread" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => handleUpdateEmailFlags(item._id, { isStarred: !item.isStarred }, e)}
+                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: item.isStarred ? '#D4AF37' : '#C8B8B9', fontSize: '1rem', lineHeight: 1 }}
+                        title={item.isStarred ? 'Unstar' : 'Star'}
+                      >
+                        {item.isStarred ? '★' : '☆'}
+                      </button>
+                      <span style={{ fontFamily: 'sans-serif', fontSize: '0.9rem', fontWeight: item.isRead ? '600' : '800', color: '#5C5454', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {item.fromName || item.fromEmail}
+                      </span>
+                    </div>
+                    <span style={{ fontFamily: 'sans-serif', fontSize: '0.74rem', color: '#A89999', flexShrink: 0 }}>
+                      {item.receivedAt ? new Date(item.receivedAt).toLocaleDateString() : ''}
+                    </span>
+                  </div>
+
+                  <div style={{ fontFamily: 'sans-serif', fontSize: '0.86rem', fontWeight: item.isRead ? 'normal' : 'bold', color: '#5C5454', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {item.subject || '(No Subject)'}
+                  </div>
+
+                  <div style={{ fontFamily: 'sans-serif', fontSize: '0.78rem', color: '#8A797A', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '1.35' }}>
+                    {item.snippet || item.textBody || 'No text preview'}
+                  </div>
+
+                  {item.repliedAt && (
+                    <div style={{ marginTop: '6px' }}>
+                      <span style={{ display: 'inline-block', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '1px 8px', fontSize: '0.68rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                        ↩ Replied {new Date(item.repliedAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Right Pane: Selected Email Reader & Threaded Reply Studio */}
+        <div style={{ border: '1px solid #E8C5C8', borderRadius: '15px', backgroundColor: '#FFFFFF', padding: '22px', minHeight: '420px' }}>
+          {!selectedEmail ? (
+            <div style={{ height: '360px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#8A797A', textAlign: 'center' }}>
+              <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontStyle: 'italic', margin: '0 0 8px 0' }}>
+                Select an incoming email to read & reply ✧
+              </p>
+              <p style={{ fontFamily: 'sans-serif', fontSize: '0.86rem', margin: 0 }}>
+                All emails sent to Susan.Coke@SusansBeautyConsulting.com appear here automatically.
+              </p>
+            </div>
+          ) : (
+            <div>
+              {/* Email Reader Header & Action Toolbar */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid #F2D4D7', paddingBottom: '14px', marginBottom: '16px' }}>
+                <div>
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                    {selectedEmail.subject || '(No Subject)'}
+                  </h3>
+                  <div style={{ fontFamily: 'sans-serif', fontSize: '0.86rem', color: '#736A6A', lineHeight: '1.5' }}>
+                    <div>
+                      <strong>From:</strong> {selectedEmail.fromName ? `${selectedEmail.fromName} ` : ''}&lt;{selectedEmail.fromEmail}&gt;
+                    </div>
+                    <div>
+                      <strong>To:</strong> {selectedEmail.to || 'Susan.Coke@SusansBeautyConsulting.com'} •{' '}
+                      <span>{selectedEmail.receivedAt ? new Date(selectedEmail.receivedAt).toLocaleString() : ''}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleUpdateEmailFlags(selectedEmail._id, { isRead: !selectedEmail.isRead })}
+                    style={{ padding: '6px 12px', borderRadius: '14px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.78rem', cursor: 'pointer' }}
+                  >
+                    {selectedEmail.isRead ? '● Mark Unread' : '✓ Mark Read'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleUpdateEmailFlags(selectedEmail._id, { isStarred: !selectedEmail.isStarred })}
+                    style={{ padding: '6px 12px', borderRadius: '14px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.78rem', cursor: 'pointer' }}
+                  >
+                    {selectedEmail.isStarred ? '★ Starred' : '☆ Star'}
+                  </button>
+                  {onLoadReplyInComposer && (
+                    <button
+                      type="button"
+                      onClick={() => onLoadReplyInComposer(selectedEmail)}
+                      style={{ padding: '6px 12px', borderRadius: '14px', border: '1px solid #B38B8F', backgroundColor: '#FFF0F2', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.78rem', fontWeight: 'bold', cursor: 'pointer' }}
+                    >
+                      ↩ Open in Full Composer
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteOrArchiveEmail(selectedEmail._id, false)}
+                    style={{ padding: '6px 12px', borderRadius: '14px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', color: '#8A797A', fontFamily: 'sans-serif', fontSize: '0.78rem', cursor: 'pointer' }}
+                  >
+                    {selectedEmail.isArchived ? '🗑️ Delete' : '🗄️ Archive'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Message Body */}
+              <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '18px', fontFamily: 'sans-serif', fontSize: '0.94rem', color: '#5C5454', whiteSpace: 'pre-wrap', lineHeight: '1.6', maxHeight: '260px', overflowY: 'auto', marginBottom: '18px' }}>
+                {selectedEmail.textBody || selectedEmail.snippet || '(No message content)'}
+              </div>
+
+              {selectedEmail.repliedAt && (
+                <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '10px 14px', marginBottom: '14px', fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#2E7D32' }}>
+                  <strong>↩ Replied on {new Date(selectedEmail.repliedAt).toLocaleString()}:</strong>{' '}
+                  {selectedEmail.lastReplyPreview || 'Reply sent via IONOS SMTP.'}
+                </div>
+              )}
+
+              {/* Direct Threaded Reply Form */}
+              <form onSubmit={handleSendInlineReply} style={{ borderTop: '1px solid #F2D4D7', paddingTop: '14px' }}>
+                <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', color: '#B38B8F', marginBottom: '8px' }}>
+                  ↩ Quick Threaded Reply to {selectedEmail.fromName || selectedEmail.fromEmail}
+                </label>
+                <textarea
+                  rows="4"
+                  placeholder={`Write your reply to ${selectedEmail.fromEmail}...`}
+                  value={inlineReplyBody}
+                  onChange={(e) => setInlineReplyBody(e.target.value)}
+                  style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.92rem', outline: 'none', resize: 'vertical', boxSizing: 'border-box', marginBottom: '10px' }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                  <span style={{ fontFamily: 'sans-serif', fontSize: '0.78rem', color: '#8A797A' }}>
+                    Dispatches via smtp.ionos.com with In-Reply-To headers & logs to Outbox
+                  </span>
+                  <button
+                    type="submit"
+                    disabled={isSendingReply || !inlineReplyBody.trim()}
+                    style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '20px', padding: '9px 20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: (isSendingReply || !inlineReplyBody.trim()) ? 'not-allowed' : 'pointer' }}
+                  >
+                    {isSendingReply ? 'Sending Reply...' : '✉️ Send Reply ✧'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted, onCatalogUpdated, onRefreshAdminData }) => {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('adminActiveTab');
@@ -8360,8 +8525,9 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
   const tabs = ['Inbox', 'Finances', 'Boxes', 'Analytics', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Tests', 'Video', 'Odie'];
   const [pendingOdiePrompt, setPendingOdiePrompt] = useState('');
 
-  const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
+  const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '', inReplyToId: '' });
   const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [inboxRefreshKey, setInboxRefreshKey] = useState(0);
   
   const emailFormRef = React.useRef(null);
   const [emailStatus, setEmailStatus] = useState({ type: '', message: '' });
@@ -8410,7 +8576,8 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
       
       if (res.ok) {
         setEmailStatus({ type: 'success', message: 'Email successfully dispatched! ✧' });
-        setEmailForm({ to: '', subject: '', body: '' }); 
+        setEmailForm({ to: '', subject: '', body: '', inReplyToId: '' });
+        setInboxRefreshKey(prev => prev + 1); 
         
         setTimeout(() => setEmailStatus({ type: '', message: '' }), 4000);
       } else {
@@ -8521,11 +8688,46 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
         </h1>
         
         {activeTab === 'Inbox' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', alignItems: 'start', animation: 'fadeIn 0.5s ease' }}>
+          <div style={{ animation: 'fadeIn 0.5s ease' }}>
+            <AdminIonosInbox
+              refreshTrigger={inboxRefreshKey}
+              onLoadReplyInComposer={(inboundEmail) => {
+                const baseSubj = String(inboundEmail.subject || '').trim();
+                const replySubj = /^re:/i.test(baseSubj) ? baseSubj : `Re: ${baseSubj}`;
+                const quoted = String(inboundEmail.textBody || inboundEmail.snippet || '').trim();
+                setEmailForm({
+                  to: inboundEmail.fromEmail || '',
+                  subject: replySubj,
+                  body: quoted ? `\n\n--- Original Message from ${inboundEmail.fromName || inboundEmail.fromEmail} ---\n${quoted}` : '',
+                  inReplyToId: inboundEmail._id || ''
+                });
+                emailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+              onAskOdie={(promptText) => {
+                setPendingOdiePrompt(promptText);
+                setActiveTab('Odie');
+              }}
+            />
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '30px', alignItems: 'start' }}>
             
             {/* Left Column: Email Composer */}
             <div ref={emailFormRef} style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-              <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Compose Message</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '2.2rem' }}>Compose Message</h2>
+                {emailForm.inReplyToId && (
+                  <span style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '14px', padding: '4px 10px', fontSize: '0.78rem', fontFamily: 'sans-serif' }}>
+                    ↩ Threaded Reply Active{' '}
+                    <button
+                      type="button"
+                      onClick={() => setEmailForm({ ...emailForm, inReplyToId: '' })}
+                      style={{ background: 'none', border: 'none', color: '#B38B8F', fontWeight: 'bold', cursor: 'pointer', marginLeft: '4px' }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
+              </div>
               <form onSubmit={handleSendEmail} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <input 
                   type="email" 
@@ -8636,6 +8838,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
               )}
             </div>
             
+          </div>
           </div>
         )}
 
@@ -8937,6 +9140,9 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
               }
               if (needsBoxesRefresh) {
                 setMonthlyBoxesRefreshKey(prev => prev + 1);
+              }
+              if (actions.includes('syncAndReadIonosInbox') || data.repliedInboundEmail || data.inboundEmails) {
+                setInboxRefreshKey(prev => prev + 1);
               }
               if (onRefreshAdminData) {
                 onRefreshAdminData();
