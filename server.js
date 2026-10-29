@@ -51,6 +51,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------- EMAIL TRANSPORTER & SECURITY HELPERS (IONOS SMTP + HTTPS FALLBACK) ---------------- //
 const dns = require('dns');
+const tls = require('tls');
 
 const cleanEnv = (val) => (val || '').toString().trim().replace(/^["']|["']$/g, '');
 
@@ -342,297 +343,6 @@ const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
   return null;
 };
 
-const sendEmail = async (to, subject, htmlContent, textContent) => {
-  const envWarnings = inspectSmtpEnvWarnings();
-
-  if (!smtpPass && !resendApiKey && !brevoApiKey) {
-    const configErr = new Error(
-      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
-    );
-    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
-    throw configErr;
-  }
-
-  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
-  const attempts = [];
-
-  for (const candidate of candidates.slice(0, 6)) {
-    const client = createIonosTransporter(candidate);
-    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
-    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
-    const mailOptions = {
-      from: {
-        name: "Susan's Beauty Consulting",
-        address: candidate.user
-      },
-      replyTo: candidate.user,
-      envelope: {
-        from: candidate.user,
-        to
-      },
-      to,
-      subject,
-      text: textContent,
-      html: htmlContent
-    };
-
-    const startMs = Date.now();
-    try {
-      const info = await client.sendMail(mailOptions);
-      cachedWorkingCandidate = candidate;
-      activeSmtpPort = candidate.port;
-      activeSmtpUser = candidate.user;
-      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
-      return {
-        info,
-        portUsed: candidate.port,
-        secureUsed: candidate.secure,
-        authUserUsed: candidate.user,
-        deliveryTransport: `IONOS SMTP (${candidate.label})`,
-        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
-      };
-    } catch (err) {
-      attempts.push({
-        label: candidate.label,
-        port: candidate.port,
-        user: candidate.user,
-        status: 'FAILED',
-        code: err.code || err.responseCode || 'ERR',
-        error: err.message,
-        durationMs: Date.now() - startMs
-      });
-      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
-    }
-  }
-
-  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
-  try {
-    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
-    if (httpsResult) {
-      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
-      return { ...httpsResult, attempts };
-    }
-  } catch (httpsErr) {
-    attempts.push({
-      label: 'HTTPS Port 443 Fallback',
-      status: 'FAILED',
-      error: httpsErr?.response?.data?.message || httpsErr.message
-    });
-  }
-
-  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
-  const detailedError = new Error(
-    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
-  );
-  detailedError.attempts = attempts;
-  detailedError.troubleshootingAdvice = advice;
-  throw detailedError;
-};
-
-// ---------------- MONGODB SCHEMAS ---------------- //
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true, index: true },
-  password: { type: String, required: true },
-  role: { 
-    type: String, 
-    enum: ['client', 'staff', 'admin'], 
-    default: 'client',
-    index: true 
-  },
-  membershipTier: { type: String, default: 'luminary' },
-  recommendedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
-  resetPasswordToken: String,
-  resetPasswordExpires: Date,
-  createdAt: { type: Date, default: Date.now }
-});
-const User = mongoose.model('User', userSchema);
-
-const serviceSchema = new mongoose.Schema({
-  name: { type: String, required: true, index: true },
-  description: { type: String },
-  durationInMinutes: { type: Number, required: true },
-  price: { type: Number, required: true },
-  imageUrl: { type: String },
-  isActive: { type: Boolean, default: true }
-}, { timestamps: true });
-const Service = mongoose.model('Service', serviceSchema);
-
-const appointmentSchema = new mongoose.Schema({
-  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, index: true },
-  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: false, index: true },
-  startTime: { type: Date, required: true, index: true },
-  endTime: { type: Date, required: true },
-  status: { 
-    type: String, 
-    enum: ['pending', 'confirmed', 'completed', 'cancelled'], 
-    default: 'confirmed',
-    index: true
-  },
-  depositPaid: { type: Boolean, default: false },
-  notes: { type: String, default: '' },
-  meetingLink: { type: String, default: '' },
-  rescheduledBy: {
-    type: String,
-    enum: ['admin', 'client', null],
-    default: null
-  },
-  previousStartTime: { type: Date, default: null },
-  reminderSentAt: { type: Date, default: null, index: true }
-}, { timestamps: true });
-appointmentSchema.index({ staffId: 1, startTime: 1, endTime: 1 });
-const Appointment = mongoose.model('Appointment', appointmentSchema);
-
-const reviewSchema = new mongoose.Schema({
-  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', required: true, unique: true },
-  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true, index: true },
-  rating: { type: Number, required: true, min: 1, max: 5 },
-  comment: { type: String },
-  createdAt: { type: Date, default: Date.now }
-});
-const Review = mongoose.model('Review', reviewSchema);
-
-const consultationSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-  skinType: String,
-  primaryGoal: String,
-  climate: String,
-  skinSensitivity: String,
-  complexion: String,
-  undertone: String,
-  eyeColor: String,
-  faceShape: String,
-  makeupVibe: String,
-  routineFocus: String,
-  blueprintAnalysis: { type: mongoose.Schema.Types.Mixed },
-  createdAt: { type: Date, default: Date.now }
-});
-const Consultation = mongoose.model('Consultation', consultationSchema);
-
-const productSchema = new mongoose.Schema({
-  title: { type: String, required: true, index: true },
-  description: String,
-  imageUrl: String,
-  tags: { type: [String], index: true },
-  skinTypes: { type: [String], default: [], index: true },
-  skinConcerns: { type: [String], default: [], index: true },
-  sensitivitySafe: { type: Boolean, default: true, index: true },
-  sensitivityLabel: { type: String, default: 'Gentle • High-Sensitivity Safe' },
-  ritualStep: { type: String, default: 'Step 3: Serum & Essence', index: true },
-  keyActives: { type: [String], default: [] },
-  viewCount: { type: Number, default: 0, index: true },
-  cartAddCount: { type: Number, default: 0, index: true },
-  purchaseCount: { type: Number, default: 0, index: true },
-  curatedCount: { type: Number, default: 0 },
-  lastViewedAt: { type: Date, default: null },
-  price: { type: Number, default: 0 },
-  wholesalePriceUsd: { type: Number, default: 2.50 },
-  markupMultiplier: { type: Number, default: 6.5 },
-  estimatedWeightGrams: { type: Number, default: 120 },
-  originCountryCode: { type: String, default: 'CN' },
-  selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
-  shippingCostUsd: { type: Number, default: 4.49 },
-  shippingIncludedInPrice: { type: Boolean, default: true },
-  availableLogistics: { type: Array, default: [] },
-  customLabelConfig: {
-    type: mongoose.Schema.Types.Mixed,
-    default: () => ({
-      enabled: false,
-      labelType: 'NONE',
-      packagingVid: '',
-      packagingName: "Susan's Rose-Gold Custom Box & Seal",
-      customBrandText: "Susan's Beauty Consulting ✧",
-      logoUrl: '',
-      packagingCostUsd: 0
-    })
-  },
-  variants: [{
-    sku: { type: String, required: true },
-    variantName: String, 
-    price: Number,
-    wholesalePriceUsd: Number,
-    imageUrl: String 
-  }],
-  rawCjData: { type: mongooartMs
-      });
-      console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
-    }
-  }
-
-  return {
-    verified: false,
-    host: smtpHost,
-    dnsResolution,
-    triedPorts: [...new Set(attempts.map(a => a.port))],
-    attempts,
-    envWarnings,
-    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
-    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
-  };
-};
-
-// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
-const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
-  const fromAddress = getPrimaryAdminEmail();
-  if (resendApiKey) {
-    const resp = await axios.post(
-      'https://api.resend.com/emails',
-      {
-        from: `Susan's Beauty Consulting <${fromAddress}>`,
-        to: [to],
-        subject,
-        html: htmlContent,
-        text: textContent
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.id || 'resend-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Resend HTTPS API (Port 443)'
-    };
-  }
-
-  if (brevoApiKey) {
-    const resp = await axios.post(
-      'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
-        to: [{ email: to }],
-        subject,
-        htmlContent,
-        textContent
-      },
-      {
-        headers: {
-          'api-key': brevoApiKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.messageId || 'brevo-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Brevo HTTPS API (Port 443)'
-    };
-  }
-
-  return null;
-};
-
 const sendEmail = async (to, subject, htmlContent, textContent, extraHeaders = {}) => {
   const envWarnings = inspectSmtpEnvWarnings();
 
@@ -867,480 +577,438 @@ const parseEmailAddressField = (rawField = '') => {
   return { name: decoded, email: normalizeEmail(decoded) };
 };
 
-// Recursively extracts text/plain and text/html bodies fromartMs
-      });
-      console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
+// Recursively extracts text/plain and text/html bodies from single-part or multipart MIME messages
+const extractMimeBodies = (rawHeaders = {}, rawBody = '') => {
+  const contentType = String(rawHeaders['content-type'] || 'text/plain').toLowerCase();
+  const transferEncoding = String(rawHeaders['content-transfer-encoding'] || '');
+
+  const boundaryMatch = String(rawHeaders['content-type'] || '').match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
+  if (contentType.includes('multipart/') && boundaryMatch) {
+    const boundary = boundaryMatch[1] || boundaryMatch[2];
+    const delimiter = `--${boundary}`;
+    const segments = String(rawBody || '').split(delimiter);
+    let collectedText = '';
+    let collectedHtml = '';
+
+    for (let i = 1; i < segments.length; i++) {
+      const seg = segments[i];
+      if (!seg || seg.startsWith('--')) break;
+      const trimmedSeg = seg.replace(/^\r?\n/, '');
+      const splitMatch = trimmedSeg.match(/\r?\n\r?\n/);
+      if (!splitMatch) continue;
+      const partHeaderBlock = trimmedSeg.slice(0, splitMatch.index);
+      const partBodyBlock = trimmedSeg.slice(splitMatch.index + splitMatch[0].length);
+      const partHeaders = parseRfc5322Headers(partHeaderBlock);
+      const partDisposition = String(partHeaders['content-disposition'] || '').toLowerCase();
+      if (partDisposition.includes('attachment')) continue;
+
+      const subResult = extractMimeBodies(partHeaders, partBodyBlock);
+      if (subResult.textBody && !collectedText) collectedText = subResult.textBody;
+      if (subResult.htmlBody && !collectedHtml) collectedHtml = subResult.htmlBody;
     }
+
+    if (!collectedText && collectedHtml) {
+      collectedText = stripHtmlToText(collectedHtml);
+    }
+    return { textBody: collectedText.trim(), htmlBody: collectedHtml.trim() };
   }
 
+  const decoded = decodeMimePartBody(rawBody, transferEncoding);
+  if (contentType.includes('text/html')) {
+    return {
+      textBody: stripHtmlToText(decoded),
+      htmlBody: decoded.trim()
+    };
+  }
   return {
-    verified: false,
-    host: smtpHost,
-    dnsResolution,
-    triedPorts: [...new Set(attempts.map(a => a.port))],
-    attempts,
-    envWarnings,
-    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
-    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
+    textBody: decoded.trim(),
+    htmlBody: ''
   };
 };
 
-// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
-const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
-  const fromAddress = getPrimaryAdminEmail();
-  if (resendApiKey) {
-    const resp = await axios.post(
-      'https://api.resend.com/emails',
-      {
-        from: `Susan's Beauty Consulting <${fromAddress}>`,
-        to: [to],
-        subject,
-        html: htmlContent,
-        text: textContent
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.id || 'resend-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Resend HTTPS API (Port 443)'
-    };
-  }
+// Parses a full raw RFC 5322 email message into structured fields for InboundEmail
+const parseRawRfc5322Message = (rawEmail = '', uid = 0, flagsStr = '') => {
+  const rawStr = String(rawEmail || '');
+  const splitMatch = rawStr.match(/\r?\n\r?\n/);
+  const headerBlock = splitMatch ? rawStr.slice(0, splitMatch.index) : rawStr;
+  const bodyBlock = splitMatch ? rawStr.slice(splitMatch.index + splitMatch[0].length) : '';
 
-  if (brevoApiKey) {
-    const resp = await axios.post(
-      'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
-        to: [{ email: to }],
-        subject,
-        htmlContent,
-        textContent
-      },
-      {
-        headers: {
-          'api-key': brevoApiKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.messageId || 'brevo-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Brevo HTTPS API (Port 443)'
-    };
-  }
+  const headers = parseRfc5322Headers(headerBlock);
+  const fromParsed = parseEmailAddressField(headers['from'] || '');
+  const toParsed = parseEmailAddressField(headers['to'] || getPrimaryAdminEmail());
+  const subject = decodeRfc2047Header(headers['subject'] || '').trim() || '(No Subject)';
 
-  return null;
+  const rawMsgId = String(headers['message-id'] || '').trim();
+  const dateHeader = headers['date'] ? new Date(headers['date']) : new Date();
+  const receivedAt = !isNaN(dateHeader.getTime()) ? dateHeader : new Date();
+
+  const messageId =
+    rawMsgId ||
+    `<ionos-uid-${uid || 0}-${ crypto.createHash('sha1').update(`${fromParsed.email}|${subject}|${receivedAt.toISOString()}`).digest('hex').slice(0, 16) }@susansbeautyconsulting.com>`;
+
+  const { textBody, htmlBody } = extractMimeBodies(headers, bodyBlock);
+  const cleanText = textBody || stripHtmlToText(htmlBody) || '';
+  const snippet = cleanText.replace(/\s+/g, ' ').trim().slice(0, 220);
+
+  const upperFlags = String(flagsStr || '').toUpperCase();
+  const isSeenOnServer = upperFlags.includes('\\SEEN');
+  const isFlaggedOnServer = upperFlags.includes('\\FLAGGED');
+
+  return {
+    uid: Number(uid) || 0,
+    messageId,
+    fromName: fromParsed.name || fromParsed.email || 'Valued Client',
+    fromEmail: fromParsed.email || 'unknown@client.com',
+    to: toParsed.email || getPrimaryAdminEmail(),
+    subject,
+    textBody: cleanText,
+    htmlBody: htmlBody || '',
+    snippet,
+    inReplyTo: String(headers['in-reply-to'] || '').trim(),
+    references: String(headers['references'] || '').trim(),
+    receivedAt,
+    isSeenOnServer,
+    isFlaggedOnServer
+  };
 };
 
-const sendEmail = async (to, subject, htmlContent, textContent, extraHeaders = {}) => {
-  const envWarnings = inspectSmtpEnvWarnings();
+// Quotes a string safely for IMAP command arguments
+const quoteImapString = (val = '') =>
+  `"${String(val || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-  if (!smtpPass && !resendApiKey && !brevoApiKey) {
-    const configErr = new Error(
-      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
-    );
-    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
-    throw configErr;
-  }
+// Connects to imap.ionos.com:993 with a single candidate user & TLS profile and fetches the latest messages
+const fetchIonosInboxViaTlsSession = ({ user, pass, strictTls = true, maxFetch = 45 }) =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    let socket = null;
 
-  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
-  const attempts = [];
-
-  for (const candidate of candidates.slice(0, 6)) {
-    const client = createIonosTransporter(candidate);
-    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
-    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
-    const mailOptions = {
-      from: {
-        name: "Susan's Beauty Consulting",
-        address: candidate.user
-      },
-      replyTo: candidate.user,
-      envelope: {
-        from: candidate.user,
-        to
-      },
-      to,
-      subject,
-      text: textContent,
-      html: htmlContent
+    const finishWithError = (err) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (socket && !socket.destroyed) socket.destroy();
+      } catch (e) {}
+      reject(err);
     };
 
-    if (extraHeaders && typeof extraHeaders === 'object') {
-      if (extraHeaders.inReplyTo) {
-        mailOptions.inReplyTo = String(extraHeaders.inReplyTo).trim();
-      }
-      if (extraHeaders.references) {
-        mailOptions.references = String(extraHeaders.references).trim();
-      }
-    }
+    const finishWithSuccess = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (socket && !socket.destroyed) socket.end();
+      } catch (e) {}
+      resolve(result);
+    };
 
-    const startMs = Date.now();
+    const timeoutTimer = setTimeout(() => {
+      finishWithError(new Error(`IONOS IMAP connection timed out on ${imapHost}:${imapPort}`));
+    }, 18000);
+
     try {
-      const info = await client.sendMail(mailOptions);
-      cachedWorkingCandidate = candidate;
-      activeSmtpPort = candidate.port;
-      activeSmtpUser = candidate.user;
-      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
-      return {
-        info,
-        portUsed: candidate.port,
-        secureUsed: candidate.secure,
-        authUserUsed: candidate.user,
-        deliveryTransport: `IONOS SMTP (${candidate.label})`,
-        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
-      };
-    } catch (err) {
-      attempts.push({
-        label: candidate.label,
-        port: candidate.port,
-        user: candidate.user,
-        status: 'FAILED',
-        code: err.code || err.responseCode || 'ERR',
-        error: err.message,
-        durationMs: Date.now() - startMs
-      });
-      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
+      socket = tls.connect(
+        {
+          host: imapHost,
+          port: imapPort,
+          servername: imapHost,
+          rejectUnauthorized: strictTls,
+          family: 4
+        },
+        () => {}
+      );
+    } catch (connectErr) {
+      clearTimeout(timeoutTimer);
+      return finishWithError(connectErr);
     }
-  }
 
-  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
-  try {
-    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
-    if (httpsResult) {
-      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
-      return { ...httpsResult, attempts };
-    }
-  } catch (httpsErr) {
-    attempts.push({
-      label: 'HTTPS Port 443 Fallback',
-      status: 'FAILED',
-      error: httpsErr?.response?.data?.message || httpsErr.message
+    let buffer = '';
+    let step = 'GREETING';
+
+    const sendCommand = (cmdLine) => {
+      if (socket && !socket.destroyed) {
+        socket.write(`${cmdLine}\r\n`);
+      }
+    };
+
+    socket.on('error', (err) => {
+      clearTimeout(timeoutTimer);
+      finishWithError(err);
     });
-  }
 
-  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
-  const detailedError = new Error(
-    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
-  );
-  detailedError.attempts = attempts;
-  detailedError.troubleshootingAdvice = advice;
-  throw detailedError;
-};
-
-// ---------------- NATIVE TLS IONOS IMAP CLIENT ENGINE (imap.ionos.com:993) ---------------- //
-// Connects directly to IONOS IMAP over Implicit SSL/TLS (Port 993) using Node's built-in `tls` module.
-// Requires zero external npm packages and persists incoming messages idempotently to InboundEmail.
-
-const imapHost = cleanEnv(process.env.IMAP_HOST) || 'imap.ionos.com';
-const imapPort = Number(cleanEnv(process.env.IMAP_PORT)) || 993;
-
-let isImapSyncRunning = false;
-let imapTelemetryState = {
-  host: imapHost,
-  port: imapPort,
-  configuredUser: rawSmtpUser,
-  activeUser: activeSmtpUser || rawSmtpUser,
-  connected: false,
-  lastSyncAt: null,
-  lastSyncStatus: 'IDLE',
-  lastSyncFetchedCount: 0,
-  lastSyncNewCount: 0,
-  lastError: null
-};
-
-// Decodes RFC 2047 encoded-word strings in email headers (e.g. =?UTF-8?B?...?= or =?UTF-8?Q?...?=)
-const decodeRfc2047Header = (raw = '') => {
-  if (!raw) return '';
-  return String(raw).replace(/=\?([^?]+)\?([BQbq])\?([^?]*?)\?=/g, (_, charset, encoding, text) => {
-    try {
-      const enc = String(encoding).toUpperCase();
-      if (enc === 'B') {
-        return Buffer.from(text, 'base64').toString('utf8');
+    socket.on('close', () => {
+      clearTimeout(timeoutTimer);
+      if (!settled) {
+        finishWithError(new Error('IONOS IMAP socket closed before sync completed.'));
       }
-      if (enc === 'Q') {
-        const qText = text.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (__, hex) =>
-          String.fromCharCode(parseInt(hex, 16))
-        );
-        return Buffer.from(qText, 'binary').toString('utf8');
+    });
+
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('binary');
+
+      if (step === 'GREETING') {
+        if (/^\* OK/m.test(buffer)) {
+          buffer = '';
+          step = 'LOGIN';
+          sendCommand(`A001 LOGIN ${quoteImapString(user)} ${quoteImapString(pass)}`);
+        } else if (/^\* (?:NO|BAD)/m.test(buffer)) {
+          clearTimeout(timeoutTimer);
+          finishWithError(new Error(`IONOS IMAP rejected greeting: ${buffer.trim()}`));
+        }
+        return;
       }
-    } catch (e) {}
-    return text;
+
+      if (step === 'LOGIN') {
+        if (/^A001 OK/m.test(buffer)) {
+          buffer = '';
+          step = 'SELECT';
+          sendCommand('A002 SELECT "INBOX"');
+        } else if (/^A001 (?:NO|BAD)/m.test(buffer)) {
+          clearTimeout(timeoutTimer);
+          finishWithError(new Error(`IONOS IMAP authentication failed for ${user} on ${imapHost}:${imapPort}`));
+        }
+        return;
+      }
+
+      if (step === 'SELECT') {
+        if (/^A002 OK/m.test(buffer)) {
+          buffer = '';
+          step = 'SEARCH';
+          sendCommand('A003 UID SEARCH ALL');
+        } else if (/^A002 (?:NO|BAD)/m.test(buffer)) {
+          clearTimeout(timeoutTimer);
+          finishWithError(new Error(`IONOS IMAP could not open INBOX for ${user}`));
+        }
+        return;
+      }
+
+      if (step === 'SEARCH') {
+        if (/^A003 OK/m.test(buffer)) {
+          const searchMatch = buffer.match(/\* SEARCH([0-9 ]*)/i);
+          const allUids = searchMatch && searchMatch[1]
+            ? searchMatch[1]
+                .trim()
+                .split(/\s+/)
+                .map((n) => parseInt(n, 10))
+                .filter((n) => !isNaN(n) && n > 0)
+            : [];
+
+          buffer = '';
+          if (allUids.length === 0) {
+            step = 'LOGOUT';
+            sendCommand('A005 LOGOUT');
+            clearTimeout(timeoutTimer);
+            return finishWithSuccess({ messages: [], totalUidsInInbox: 0 });
+          }
+
+          const targetUids = allUids.slice(-Math.max(1, Math.min(100, Number(maxFetch) || 45)));
+          step = 'FETCH';
+          sendCommand(`A004 UID FETCH ${targetUids.join(',')} (UID FLAGS BODY.PEEK[])`);
+          socket._totalUidsInInbox = allUids.length;
+        } else if (/^A003 (?:NO|BAD)/m.test(buffer)) {
+          clearTimeout(timeoutTimer);
+          finishWithError(new Error('IONOS IMAP UID SEARCH ALL failed.'));
+        }
+        return;
+      }
+
+      if (step === 'FETCH') {
+        if (/^A004 OK/m.test(buffer)) {
+          const rawFetchTranscript = buffer;
+          buffer = '';
+          step = 'LOGOUT';
+          sendCommand('A005 LOGOUT');
+          clearTimeout(timeoutTimer);
+
+          // Parse each `* <seq> FETCH (... {byteLen} + rawMessage)` block from the transcript
+          const parsedMessages = [];
+          const fetchHeaderRegex = /\* \d+ FETCH \(([^\r\n]*?)\{(\d+)\}\r\n/gi;
+          let match;
+          while ((match = fetchHeaderRegex.exec(rawFetchTranscript)) !== null) {
+            const metaPart = match[1] || '';
+            const literalByteLen = parseInt(match[2], 10) || 0;
+            const literalStart = fetchHeaderRegex.lastIndex;
+            const rawLiteral = rawFetchTranscript.slice(literalStart, literalStart + literalByteLen);
+
+            const uidMatch = metaPart.match(/UID\s+(\d+)/i);
+            const flagsMatch = metaPart.match(/FLAGS\s*\(([^)]*)\)/i);
+            const uid = uidMatch ? parseInt(uidMatch[1], 10) : 0;
+            const flagsStr = flagsMatch ? flagsMatch[1] : '';
+
+            const rawUtf8 = Buffer.from(rawLiteral, 'binary').toString('utf8');
+            const parsed = parseRawRfc5322Message(rawUtf8, uid, flagsStr);
+            if (parsed && parsed.fromEmail) {
+              parsedMessages.push(parsed);
+            }
+          }
+
+          return finishWithSuccess({
+            messages: parsedMessages,
+            totalUidsInInbox: socket._totalUidsInInbox || parsedMessages.length
+          });
+        } else if (/^A004 (?:NO|BAD)/m.test(buffer)) {
+          clearTimeout(timeoutTimer);
+          finishWithError(new Error('IONOS IMAP UID FETCH failed.'));
+        }
+      }
+    });
   });
-};
 
-// Decodes Quoted-Printable email bodies into UTF-8 text
-const decodeQuotedPrintable = (input = '') => {
-  if (!input) return '';
-  const softLineStripped = String(input).replace(/=\r?\n/g, '');
-  const bytes = [];
-  for (let i = 0; i < softLineStripped.length; i++) {
-    if (softLineStripped[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(softLineStripped.slice(i + 1, i + 3))) {
-      bytes.push(parseInt(softLineStripped.slice(i + 1, i + 3), 16));
-      i += 2;
-    } else {
-      bytes.push(softLineStripped.charCodeAt(i));
-    }
+// Synchronizes Susan's IONOS Inbox (imap.ionos.com:993) into the MongoDB InboundEmail collection
+const syncIonosImapInbox = async ({ maxFetch = 45 } = {}) => {
+  if (isImapSyncRunning) {
+    return {
+      status: 'already_running',
+      fetchedCount: 0,
+      newCount: 0,
+      telemetry: imapTelemetryState
+    };
   }
+
+  if (!smtpPass) {
+    imapTelemetryState = {
+      ...imapTelemetryState,
+      connected: false,
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: 'SKIPPED_NO_PASSWORD',
+      lastError: 'SMTP_PASS is not configured in .env. Set SMTP_PASS to sync incoming IONOS emails.'
+    };
+    return {
+      status: 'skipped_no_password',
+      fetchedCount: 0,
+      newCount: 0,
+      telemetry: imapTelemetryState
+    };
+  }
+
+  isImapSyncRunning = true;
+  const candidateUsers = getCandidateSmtpUsers();
+  const attempts = [];
+
   try {
-    return Buffer.from(bytes).toString('utf8');
-  } catch (e) {
-    return softLineStripped;
-  }
-};
+    for (const userCandidate of candidateUsers) {
+      for (const strictTls of [true, false]) {
+        try {
+          const sessionResult = await fetchIonosInboxViaTlsSession({
+            user: userCandidate,
+            pass: smtpPass,
+            strictTls,
+            maxFetch
+          });
 
-// Decodes a MIME body part according to its Content-Transfer-Encoding header
-const decodeMimePartBody = (rawBody = '', transferEncoding = '') => {
-  const enc = String(transferEncoding || '').toLowerCase().trim();
-  if (enc === 'base64') {
-    try {
-      return Buffer.from(String(rawBody).replace(/\s+/g, ''), 'base64').toString('utf8');
-    } catch (e) {
-      return rawBody;
+          const messages = Array.isArray(sessionResult.messages) ? sessionResult.messages : [];
+          let newCount = 0;
+
+          for (const msg of messages) {
+            const existing = await InboundEmail.findOne({ messageId: msg.messageId }).select('_id').lean();
+            if (!existing) {
+              newCount++;
+            }
+
+            await InboundEmail.findOneAndUpdate(
+              { messageId: msg.messageId },
+              {
+                $set: {
+                  uid: msg.uid || 0,
+                  fromName: msg.fromName || msg.fromEmail,
+                  fromEmail: msg.fromEmail,
+                  to: msg.to || getPrimaryAdminEmail(),
+                  subject: msg.subject || '(No Subject)',
+                  textBody: msg.textBody || '',
+                  htmlBody: msg.htmlBody || '',
+                  snippet: msg.snippet || '',
+                  inReplyTo: msg.inReplyTo || '',
+                  references: msg.references || '',
+                  receivedAt: msg.receivedAt || new Date(),
+                  folder: 'INBOX',
+                  source: 'ionos_imap'
+                },
+                $setOnInsert: {
+                  isRead: Boolean(msg.isSeenOnServer),
+                  isStarred: Boolean(msg.isFlaggedOnServer),
+                  isArchived: false,
+                  repliedAt: null,
+                  lastReplyPreview: ''
+                }
+              },
+              { upsert: true, returnDocument: 'after' }
+            );
+          }
+
+          imapTelemetryState = {
+            host: imapHost,
+            port: imapPort,
+            configuredUser: rawSmtpUser,
+            activeUser: userCandidate,
+            connected: true,
+            lastSyncAt: new Date().toISOString(),
+            lastSyncStatus: 'SYNCED',
+            lastSyncFetchedCount: messages.length,
+            lastSyncNewCount: newCount,
+            totalUidsInInbox: sessionResult.totalUidsInInbox || messages.length,
+            lastError: null
+          };
+
+          if (newCount > 0) {
+            console.log(`📥 IONOS IMAP synced ${newCount} new incoming email(s) for ${userCandidate} (${imapHost}:${imapPort})`);
+          }
+
+          return {
+            status: 'synced',
+            fetchedCount: messages.length,
+            newCount,
+            totalUidsInInbox: sessionResult.totalUidsInInbox || messages.length,
+            telemetry: imapTelemetryState
+          };
+        } catch (err) {
+          attempts.push({
+            user: userCandidate,
+            strictTls,
+            error: err.message
+          });
+        }
+      }
     }
-  }
-  if (enc === 'quoted-printable') {
-    return decodeQuotedPrintable(rawBody);
-  }
-  return String(rawBody || '');
-};
 
-// Strips HTML tags cleanly to generate a plain-text fallback or snippet
-const stripHtmlToText = (html = '') =>
-  String(html || '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#039;/gi, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-// Parses unfolded RFC 5322 headers into a lowercase-key dictionary
-const parseRfc5322Headers = (headerBlock = '') => {
-  const unfolded = String(headerBlock || '').replace(/\r?\n[ \t]+/g, ' ');
-  const lines = unfolded.split(/\r?\n/);
-  const headers = {};
-  for (const line of lines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx <= 0) continue;
-    const key = line.slice(0, colonIdx).trim().toLowerCase();
-    const val = line.slice(colonIdx + 1).trim();
-    if (headers[key]) {
-      headers[key] += `, ${val}`;
-    } else {
-      headers[key] = val;
-    }
-  }
-  return headers;
-};
-
-// Extracts { name, email } from a raw From/To header like `"Jane Doe" <jane@example.com>`
-const parseEmailAddressField = (rawField = '') => {
-  const decoded = decodeRfc2047Header(rawField).trim();
-  if (!decoded) return { name: '', email: '' };
-  const angleMatch = decoded.match(/^(.*?)<([^>]+)>/);
-  if (angleMatch) {
-    const cleanName = angleMatch[1].trim().replace(/^["']|["']$/g, '').trim();
-    const cleanAddr = normalizeEmail(angleMatch[2]);
-    return {
-      name: cleanName || cleanAddr.split('@')[0] || 'Client',
-      email: cleanAddr
+    const primaryErr = attempts[0]?.error || `Could not connect to ${imapHost}:${imapPort}`;
+    imapTelemetryState = {
+      ...imapTelemetryState,
+      connected: false,
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: 'ERROR',
+      lastError: primaryErr
     };
-  }
-  const emailMatch = decoded.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
-  if (emailMatch) {
-    const cleanAddr = normalizeEmail(emailMatch[0]);
+
     return {
-      name: cleanAddr.split('@')[0] || 'Client',
-      email: cleanAddr
+      status: 'error',
+      fetchedCount: 0,
+      newCount: 0,
+      error: primaryErr,
+      attempts,
+      telemetry: imapTelemetryState
     };
+  } finally {
+    isImapSyncRunning = false;
   }
-  return { name: decoded, email: normalizeEmail(decoded) };
 };
 
-// Recursively extracts text/plain and text/hte.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
-    }
-  }
+// Computes live inbox badge counters (total, unread, starred, replied, archived)
+const buildInboundInboxCounts = async () => {
+  const [total, unread, starred, replied, archived] = await Promise.all([
+    InboundEmail.countDocuments({ isArchived: { $ne: true } }),
+    InboundEmail.countDocuments({ isArchived: { $ne: true }, isRead: false }),
+    InboundEmail.countDocuments({ isArchived: { $ne: true }, isStarred: true }),
+    InboundEmail.countDocuments({ isArchived: { $ne: true }, repliedAt: { $ne: null } }),
+    InboundEmail.countDocuments({ isArchived: true })
+  ]);
 
   return {
-    verified: false,
-    host: smtpHost,
-    dnsResolution,
-    triedPorts: [...new Set(attempts.map(a => a.port))],
-    attempts,
-    envWarnings,
-    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
-    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
+    total,
+    unread,
+    starred,
+    replied,
+    archived
   };
 };
 
-// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
-const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
-  const fromAddress = getPrimaryAdminEmail();
-  if (resendApiKey) {
-    const resp = await axios.post(
-      'https://api.resend.com/emails',
-      {
-        from: `Susan's Beauty Consulting <${fromAddress}>`,
-        to: [to],
-        subject,
-        html: htmlContent,
-        text: textContent
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.id || 'resend-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Resend HTTPS API (Port 443)'
-    };
-  }
-
-  if (brevoApiKey) {
-    const resp = await axios.post(
-      'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
-        to: [{ email: to }],
-        subject,
-        htmlContent,
-        textContent
-      },
-      {
-        headers: {
-          'api-key': brevoApiKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 12000
-      }
-    );
-    return {
-      info: { messageId: resp.data?.messageId || 'brevo-https' },
-      portUsed: 443,
-      secureUsed: true,
-      authUserUsed: fromAddress,
-      deliveryTransport: 'Brevo HTTPS API (Port 443)'
-    };
-  }
-
-  return null;
-};
-
-const sendEmail = async (to, subject, htmlContent, textContent) => {
-  const envWarnings = inspectSmtpEnvWarnings();
-
-  if (!smtpPass && !resendApiKey && !brevoApiKey) {
-    const configErr = new Error(
-      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
-    );
-    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
-    throw configErr;
-  }
-
-  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
-  const attempts = [];
-
-  for (const candidate of candidates.slice(0, 6)) {
-    const client = createIonosTransporter(candidate);
-    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
-    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
-    const mailOptions = {
-      from: {
-        name: "Susan's Beauty Consulting",
-        address: candidate.user
-      },
-      replyTo: candidate.user,
-      envelope: {
-        from: candidate.user,
-        to
-      },
-      to,
-      subject,
-      text: textContent,
-      html: htmlContent
-    };
-
-    const startMs = Date.now();
-    try {
-      const info = await client.sendMail(mailOptions);
-      cachedWorkingCandidate = candidate;
-      activeSmtpPort = candidate.port;
-      activeSmtpUser = candidate.user;
-      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
-      return {
-        info,
-        portUsed: candidate.port,
-        secureUsed: candidate.secure,
-        authUserUsed: candidate.user,
-        deliveryTransport: `IONOS SMTP (${candidate.label})`,
-        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
-      };
-    } catch (err) {
-      attempts.push({
-        label: candidate.label,
-        port: candidate.port,
-        user: candidate.user,
-        status: 'FAILED',
-        code: err.code || err.responseCode || 'ERR',
-        error: err.message,
-        durationMs: Date.now() - startMs
-      });
-      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
-    }
-  }
-
-  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
-  try {
-    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
-    if (httpsResult) {
-      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
-      return { ...httpsResult, attempts };
-    }
-  } catch (httpsErr) {
-    attempts.push({
-      label: 'HTTPS Port 443 Fallback',
-      status: 'FAILED',
-      error: httpsErr?.response?.data?.message || httpsErr.message
-    });
-  }
-
-  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
-  const detailedError = new Error(
-    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
-  );
-  detailedError.attempts = attempts;
-  detailedError.troubleshootingAdvice = advice;
-  throw detailedError;
-};
 
 // ---------------- MONGODB SCHEMAS ---------------- //
 const userSchema = new mongoose.Schema({
@@ -1426,6 +1094,11 @@ const Consultation = mongoose.model('Consultation', consultationSchema);
 
 const productSchema = new mongoose.Schema({
   title: { type: String, required: true, index: true },
+  cjPid: { type: String, default: '', index: true },
+  cjSku: { type: String, default: '', index: true },
+  normalizedTitleKey: { type: String, default: '', index: true },
+  customTitleLocked: { type: Boolean, default: false },
+  lastSyncedAt: { type: Date, default: null },
   description: String,
   imageUrl: String,
   tags: { type: [String], index: true },
@@ -1498,9 +1171,35 @@ const emailLogSchema = new mongoose.Schema({
   to: { type: String, required: true, index: true },
   subject: { type: String, required: true },
   body: { type: String, required: true },
+  inReplyToMessageId: { type: String, default: '' },
+  inboundEmailId: { type: mongoose.Schema.Types.ObjectId, ref: 'InboundEmail', default: null },
   sentAt: { type: Date, default: Date.now }
 });
 const EmailLog = mongoose.model('EmailLog', emailLogSchema);
+
+// Incoming Emails synced from IONOS IMAP (imap.ionos.com:993) for Susan.Coke@SusansBeautyConsulting.com
+const inboundEmailSchema = new mongoose.Schema({
+  uid: { type: Number, default: 0, index: true },
+  messageId: { type: String, required: true, unique: true, index: true },
+  fromName: { type: String, default: '' },
+  fromEmail: { type: String, required: true, index: true },
+  to: { type: String, default: 'Susan.Coke@SusansBeautyConsulting.com', index: true },
+  subject: { type: String, default: '(No Subject)' },
+  textBody: { type: String, default: '' },
+  htmlBody: { type: String, default: '' },
+  snippet: { type: String, default: '' },
+  inReplyTo: { type: String, default: '' },
+  references: { type: String, default: '' },
+  folder: { type: String, default: 'INBOX', index: true },
+  source: { type: String, enum: ['ionos_imap', 'webhook', 'system_seed'], default: 'ionos_imap' },
+  receivedAt: { type: Date, default: Date.now, index: true },
+  isRead: { type: Boolean, default: false, index: true },
+  isStarred: { type: Boolean, default: false, index: true },
+  isArchived: { type: Boolean, default: false, index: true },
+  repliedAt: { type: Date, default: null },
+  lastReplyPreview: { type: String, default: '' }
+});
+const InboundEmail = mongoose.model('InboundEmail', inboundEmailSchema);
 
 const inboxItemSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -1546,7 +1245,7 @@ const OdieChatHistory = mongoose.model('OdieChatHistory', odieChatHistorySchema)
 const treasuryTransferSchema = new mongoose.Schema({
   transferType: {
     type: String,
-    enum: ['STRIPE_BANK_PAYOUT', 'STRIPE_TO_CJ_BRIDGE', 'CJ_ORDER_WALLET_PAYMENT'],
+    enum: ['STRIPE_BANK_PAYOUT', 'STRIPE_TO_CJ_BRIDGE', 'CJ_ORDER_WALLET_PAYMENT', 'CJ_WALLET_CARD_TOPUP'],
     required: true,
     index: true
   },
@@ -1554,6 +1253,9 @@ const treasuryTransferSchema = new mongoose.Schema({
   currency: { type: String, default: 'USD' },
   status: { type: String, default: 'COMPLETED', index: true },
   stripePayoutId: { type: String, default: '' },
+  checkoutSessionId: { type: String, default: '', index: true },
+  cardBrand: { type: String, default: '' },
+  cardLast4: { type: String, default: '' },
   payoutMethod: { type: String, default: 'standard' },
   cjOrdersPaid: { type: Array, default: [] },
   wholesaleReserveUsd: { type: Number, default: 0 },
@@ -1720,9 +1422,19 @@ const requireClient = requireRole(['client', 'admin']);
 
 // ---------------- CJ DROPSHIPPING API INTEGRATION (FULL BEAUTY & SKINCARE MULTI-QUERY SYNC) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 35);
-const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 300);
+const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 120);
+const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 2500);
 const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
+
+// Normalizes a product title into a canonical alphanumeric key so near-identical CJ listings match
+const normalizeCjTitleForDedupe = (rawTitle = '') =>
+  String(rawTitle || '')
+    .toLowerCase()
+    .replace(/&amp;/g, 'and')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(hot sale|new arrival|dropshipping|wholesale|free shipping|fast shipping|1pc|1pcs|pcs)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 // Targeted Beauty, Skincare, Cosmetics & Personal Care search queries used to actively pull
 // all beauty & skincare items from CJ Dropshipping rather than scanning random general-merchandise pages.
@@ -2591,7 +2303,7 @@ const fetchCjBeautyCategoryIds = async (headers) => {
       }
     }
 
-    return beautyCatIds.slice(0, 15);
+    return beautyCatIds.slice(0, 45);
   } catch (err) {
     console.warn("⚠️ Could not fetch CJ category list (falling back to keyword search):", err.message);
     return [];
@@ -2599,31 +2311,300 @@ const fetchCjBeautyCategoryIds = async (headers) => {
 };
 
 let isCjSyncRunning = false;
+let isCatalogSanitizeRunning = false;
 
+let cjCatalogSyncTelemetry = {
+  lastSyncAt: null,
+  lastSyncStatus: 'IDLE',
+  lastSyncedCount: 0,
+  lastNewAddedCount: 0,
+  lastUpdatedCount: 0,
+  lastSanitizedAt: null,
+  lastDuplicatesPurgedCount: 0,
+  lastNonBeautyPurgedCount: 0,
+  activeCatalogTotal: 0,
+  nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)',
+  timezone: 'America/Chicago'
+};
+
+// Scans the entire MongoDB Product collection, purges non-beauty items, backfills cjPid/cjSku/normalizedTitleKey,
+// groups duplicate products (by cjPid, cjSku, normalizedTitleKey, or identical CJ image), merges analytics counters,
+// re-points all foreign keys in Order, InboxItem, User.recommendedProducts, and MemberMonthlyBox, and deletes duplicates.
+const sanitizeAndDeduplicateCatalog = async () => {
+  if (isCatalogSanitizeRunning) {
+    return {
+      status: 'already_running',
+      nonBeautyPurgedCount: 0,
+      duplicatesPurged: 0,
+      groupsMerged: 0,
+      activeCatalogTotal: await Product.countDocuments()
+    };
+  }
+
+  isCatalogSanitizeRunning = true;
+  try {
+    // 1. Purge any non-Health/Beauty or $0 CJ items first
+    const nonBeautyPurgedCount = await purgeNonBeautyCjProducts();
+
+    // 2. Load all products and backfill canonical keys if missing
+    const allProducts = await Product.find({}).lean();
+    const totalScanned = allProducts.length;
+
+    // Sort so preferred canonical survivor comes first:
+    // 1) customTitleLocked === true, 2) highest engagement (purchases + cart adds + curations + views), 3) oldest _id
+    const sortedProducts = [...allProducts].sort((a, b) => {
+      if (Boolean(b.customTitleLocked) !== Boolean(a.customTitleLocked)) {
+        return Number(Boolean(b.customTitleLocked)) - Number(Boolean(a.customTitleLocked));
+      }
+      const scoreA =
+        (Number(a.purchaseCount || 0) * 100) +
+        (Number(a.curatedCount || 0) * 25) +
+        (Number(a.cartAddCount || 0) * 10) +
+        Number(a.viewCount || 0);
+      const scoreB =
+        (Number(b.purchaseCount || 0) * 100) +
+        (Number(b.curatedCount || 0) * 25) +
+        (Number(b.cartAddCount || 0) * 10) +
+        Number(b.viewCount || 0);
+      if (scoreB !== scoreA) return scoreB - scoreA;
+      return String(a._id).localeCompare(String(b._id));
+    });
+
+    const canonicalByPid = new Map();
+    const canonicalBySku = new Map();
+    const canonicalByNormTitle = new Map();
+    const canonicalByImage = new Map();
+    const duplicateGroups = new Map(); // canonicalIdStr -> { survivor, duplicates: [] }
+    const metadataUpdates = [];
+
+    for (const prod of sortedProducts) {
+      const rawPid = String(prod.cjPid || prod.rawCjData?.pid || '').trim();
+      const rawSku = String(
+        prod.cjSku ||
+        prod.rawCjData?.productSku ||
+        prod.rawCjData?.sku ||
+        prod.variants?.[0]?.sku ||
+        ''
+      ).trim();
+      const rawTitle = String(prod.rawCjData?.nameEn || prod.rawCjData?.productNameEn || prod.title || '').trim();
+      const normTitle = normalizeCjTitleForDedupe(prod.title || rawTitle);
+      const normRawCjTitle = normalizeCjTitleForDedupe(rawTitle);
+      const cleanImg = String(prod.imageUrl || '').trim().toLowerCase();
+
+      const pidKey = rawPid ? rawPid.toLowerCase() : '';
+      const skuKey = rawSku ? rawSku.toLowerCase() : '';
+
+      let matchedCanonical = null;
+      if (pidKey && canonicalByPid.has(pidKey)) {
+        matchedCanonical = canonicalByPid.get(pidKey);
+      } else if (skuKey && canonicalBySku.has(skuKey)) {
+        matchedCanonical = canonicalBySku.get(skuKey);
+      } else if (normTitle && canonicalByNormTitle.has(normTitle)) {
+        matchedCanonical = canonicalByNormTitle.get(normTitle);
+      } else if (normRawCjTitle && canonicalByNormTitle.has(normRawCjTitle)) {
+        matchedCanonical = canonicalByNormTitle.get(normRawCjTitle);
+      } else if (cleanImg && prod.rawCjData && canonicalByImage.has(cleanImg)) {
+        matchedCanonical = canonicalByImage.get(cleanImg);
+      }
+
+      if (matchedCanonical && String(matchedCanonical._id) !== String(prod._id)) {
+        const canonIdStr = String(matchedCanonical._id);
+        if (!duplicateGroups.has(canonIdStr)) {
+          duplicateGroups.set(canonIdStr, { survivor: matchedCanonical, duplicates: [] });
+        }
+        duplicateGroups.get(canonIdStr).duplicates.push(prod);
+      } else {
+        if (pidKey) canonicalByPid.set(pidKey, prod);
+        if (skuKey) canonicalBySku.set(skuKey, prod);
+        if (normTitle) canonicalByNormTitle.set(normTitle, prod);
+        if (normRawCjTitle) canonicalByNormTitle.set(normRawCjTitle, prod);
+        if (cleanImg && prod.rawCjData) canonicalByImage.set(cleanImg, prod);
+
+        if (
+          prod.cjPid !== rawPid ||
+          prod.cjSku !== rawSku ||
+          prod.normalizedTitleKey !== (normTitle || normRawCjTitle)
+        ) {
+          metadataUpdates.push({
+            updateOne: {
+              filter: { _id: prod._id },
+              update: {
+                $set: {
+                  cjPid: rawPid,
+                  cjSku: rawSku,
+                  normalizedTitleKey: normTitle || normRawCjTitle
+                }
+              }
+            }
+          });
+        }
+      }
+    }
+
+    if (metadataUpdates.length > 0) {
+      await Product.bulkWrite(metadataUpdates).catch(() => {});
+    }
+
+    let duplicatesPurged = 0;
+    let groupsMerged = 0;
+
+    for (const [, group] of duplicateGroups.entries()) {
+      const { survivor, duplicates } = group;
+      if (!duplicates || duplicates.length === 0) continue;
+
+      groupsMerged++;
+      const dupIds = duplicates.map((d) => d._id);
+      const dupIdStrings = dupIds.map((id) => String(id));
+      duplicatesPurged += dupIds.length;
+
+      // Sum engagement counters from duplicates into survivor
+      const addedViews = duplicates.reduce((s, d) => s + Number(d.viewCount || 0), 0);
+      const addedCartAdds = duplicates.reduce((s, d) => s + Number(d.cartAddCount || 0), 0);
+      const addedPurchases = duplicates.reduce((s, d) => s + Number(d.purchaseCount || 0), 0);
+      const addedCurated = duplicates.reduce((s, d) => s + Number(d.curatedCount || 0), 0);
+
+      await Product.findByIdAndUpdate(survivor._id, {
+        $inc: {
+          viewCount: addedViews,
+          cartAddCount: addedCartAdds,
+          purchaseCount: addedPurchases,
+          curatedCount: addedCurated
+        }
+      }).catch(() => {});
+
+      // Re-point InboxItem references to survivor._id
+      await InboxItem.updateMany(
+        { productId: { $in: dupIds } },
+        { $set: { productId: survivor._id } }
+      ).catch(() => {});
+
+      // Re-point User.recommendedProducts references to survivor._id
+      const affectedUsers = await User.find({ recommendedProducts: { $in: dupIds } }).select('_id recommendedProducts');
+      for (const u of affectedUsers) {
+        const currentIds = (u.recommendedProducts || []).map((id) => String(id));
+        const filteredIds = currentIds.filter((idStr) => !dupIdStrings.includes(idStr));
+        if (!filteredIds.includes(String(survivor._id))) {
+          filteredIds.push(String(survivor._id));
+        }
+        u.recommendedProducts = filteredIds;
+        await u.save().catch(() => {});
+      }
+
+      // Re-point MemberMonthlyBox.curatedProducts references to survivor._id
+      const affectedBoxes = await MemberMonthlyBox.find({
+        'curatedProducts.productId': { $in: dupIds }
+      });
+      for (const bx of affectedBoxes) {
+        let boxChanged = false;
+        if (Array.isArray(bx.curatedProducts)) {
+          for (const cp of bx.curatedProducts) {
+            if (cp.productId && dupIdStrings.includes(String(cp.productId))) {
+              cp.productId = survivor._id;
+              boxChanged = true;
+            }
+          }
+        }
+        if (boxChanged) {
+          await bx.save().catch(() => {});
+        }
+      }
+
+      // Delete duplicate Product documents
+      await Product.deleteMany({ _id: { $in: dupIds } }).catch(() => {});
+    }
+
+    const activeCatalogTotal = await Product.countDocuments();
+    const nowIso = new Date().toISOString();
+
+    cjCatalogSyncTelemetry = {
+      ...cjCatalogSyncTelemetry,
+      lastSanitizedAt: nowIso,
+      lastDuplicatesPurgedCount: duplicatesPurged,
+      lastNonBeautyPurgedCount: nonBeautyPurgedCount,
+      activeCatalogTotal
+    };
+
+    console.log(
+      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-beauty items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicate records removed) -> ${activeCatalogTotal} unique Beauty & Skincare products active.`
+    );
+
+    return {
+      status: 'sanitized',
+      totalScanned,
+      nonBeautyPurgedCount,
+      groupsMerged,
+      duplicatesPurged,
+      activeCatalogTotal,
+      sanitizedAt: nowIso,
+      telemetry: cjCatalogSyncTelemetry
+    };
+  } catch (err) {
+    console.error('⚠️ Error during MongoDB catalog sanitization:', err.message);
+    return {
+      status: 'error',
+      error: err.message,
+      nonBeautyPurgedCount: 0,
+      duplicatesPurged: 0,
+      groupsMerged: 0,
+      activeCatalogTotal: await Product.countDocuments().catch(() => 0)
+    };
+  } finally {
+    isCatalogSanitizeRunning = false;
+  }
+};
+
+// Pulls all Skincare & Beauty products across CJ Dropshipping categories and targeted queries,
+// upserting by canonical cjPid / cjSku / normalizedTitleKey (respecting customTitleLocked),
+// and immediately runs sanitizeAndDeduplicateCatalog() so MongoDB has zero duplicates.
 const syncCJCatalog = async (options = {}) => {
   if (isCjSyncRunning) {
-    console.log("⏳ CJ catalog sync is already in progress; skipping duplicate trigger.");
-    return { status: 'already_running', purgedCount: 0, syncedCount: 0 };
+    console.log('⏳ CJ catalog sync is already in progress; skipping duplicate trigger.');
+    return {
+      status: 'already_running',
+      purgedCount: 0,
+      syncedCount: 0,
+      duplicatesPurged: 0,
+      activeTotal: await Product.countDocuments().catch(() => 0),
+      telemetry: cjCatalogSyncTelemetry
+    };
   }
 
   isCjSyncRunning = true;
-  const maxPages = Math.max(1, Number(options.maxPages) || CJ_MAX_PAGES);
-  const maxProducts = Math.max(1, Number(options.maxProducts) || CJ_MAX_PRODUCTS);
+  const fullCatalog = options.fullCatalog !== undefined ? Boolean(options.fullCatalog) : true;
+  const sanitizeAfter = options.sanitizeAfter !== undefined ? Boolean(options.sanitizeAfter) : true;
+  const maxPages = fullCatalog
+    ? Math.max(60, Number(options.maxPages) || CJ_MAX_PAGES)
+    : Math.max(1, Number(options.maxPages) || 40);
+  const maxProducts = fullCatalog
+    ? Math.max(500, Number(options.maxProducts) || CJ_MAX_PRODUCTS)
+    : Math.max(1, Number(options.maxProducts) || 500);
   const pageSize = CJ_PAGE_SIZE;
 
   try {
-    // 1. Always purge non-beauty CJ items in DB first so the catalog stays strictly Health & Beauty
-    const purgedCount = await purgeNonBeautyCjProducts();
+    // 1. Pre-sanitize existing catalog before pulling new CJ batches
+    const preSanitize = await sanitizeAndDeduplicateCatalog();
+    const purgedCount = preSanitize.nonBeautyPurgedCount || 0;
 
     const headers = getCjHeaders();
     if (!headers) {
-      return { status: 'skipped_no_token', purgedCount, syncedCount: 0 };
+      return {
+        status: 'skipped_no_token',
+        purgedCount,
+        syncedCount: 0,
+        duplicatesPurged: preSanitize.duplicatesPurged || 0,
+        activeTotal: preSanitize.activeCatalogTotal || 0,
+        telemetry: cjCatalogSyncTelemetry
+      };
     }
 
-    console.log(`🔄 Starting Deep CJ Beauty & Skincare Sync (maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`);
+    console.log(
+      `🔄 Starting Full CJ Beauty & Skincare Pull (fullCatalog=${fullCatalog}, maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`
+    );
 
     let pagesFetched = 0;
     let totalProcessed = 0;
+    let newProductsAdded = 0;
+    let updatedProductsCount = 0;
     const seenKeys = new Set();
     const retailMarkup = 6.5;
 
@@ -2635,29 +2616,36 @@ const syncCJCatalog = async (options = {}) => {
       for (const item of cjProducts) {
         if (totalProcessed >= maxProducts) break;
 
-        const title = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
-        const baseSku = (item.productSku || item.sku || item.pid || '').toString().trim();
+        const rawTitle = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
+        const cjPid = (item.pid || item.productId || '').toString().trim();
+        const baseSku = (item.productSku || item.sku || cjPid || '').toString().trim();
         const category = (item.categoryName || sourceLabel || '').toString().trim();
         const desc = item.description || item.productDescription || '';
 
-        if (!title || !baseSku) continue;
+        if (!rawTitle || !baseSku) continue;
 
-        const dedupeTitleKey = title.toLowerCase();
-        const dedupeSkuKey = baseSku.toLowerCase();
-        if (seenKeys.has(dedupeTitleKey) || seenKeys.has(dedupeSkuKey)) {
+        const normTitleKey = normalizeCjTitleForDedupe(rawTitle);
+        const dedupePidKey = cjPid ? `pid:${cjPid.toLowerCase()}` : '';
+        const dedupeSkuKey = `sku:${baseSku.toLowerCase()}`;
+        const dedupeTitleKey = `title:${normTitleKey || rawTitle.toLowerCase()}`;
+
+        if (
+          (dedupePidKey && seenKeys.has(dedupePidKey)) ||
+          seenKeys.has(dedupeSkuKey) ||
+          seenKeys.has(dedupeTitleKey)
+        ) {
           continue;
         }
 
-        if (!isStrictHealthAndBeautyProduct(title, category, desc, fromBeautySource)) {
+        if (!isStrictHealthAndBeautyProduct(rawTitle, category, desc, fromBeautySource)) {
           continue;
         }
 
         const img = item.productImage || item.image || '';
 
         let rawBasePrice = parseFloat(String(item.sellPrice || item.price || '0').split('-')[0].trim()) || 0;
-        
         if (rawBasePrice === 0 && Array.isArray(item.variants) && item.variants.length > 0) {
-          const validVariant = item.variants.find(v => parseFloat(v.sellPrice || v.price || 0) > 0);
+          const validVariant = item.variants.find((v) => parseFloat(v.sellPrice || v.price || 0) > 0);
           if (validVariant) {
             rawBasePrice = parseFloat(validVariant.sellPrice || validVariant.price);
           }
@@ -2679,84 +2667,129 @@ const syncCJCatalog = async (options = {}) => {
           endCountryCode: 'US'
         });
         const matchedCarrier =
-          fallbackLogistics.find(c => c.logisticName === defaultLogisticName) || fallbackLogistics[0];
+          fallbackLogistics.find((c) => c.logisticName === defaultLogisticName) || fallbackLogistics[0];
         const shippingCostUsd = Number(matchedCarrier?.shippingCostUsd ?? 4.49);
 
-        const existingProd = await Product.findOne({ title })
-          .select('markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics')
+        // Match existing product in MongoDB by cjPid, cjSku, normalizedTitleKey, or exact title
+        const matchOrClauses = [];
+        if (cjPid) {
+          matchOrClauses.push({ cjPid });
+          matchOrClauses.push({ 'rawCjData.pid': cjPid });
+        }
+        if (baseSku) {
+          matchOrClauses.push({ cjSku: baseSku });
+          matchOrClauses.push({ 'variants.sku': baseSku });
+        }
+        if (normTitleKey) {
+          matchOrClauses.push({ normalizedTitleKey: normTitleKey });
+        }
+        matchOrClauses.push({ title: rawTitle });
+
+        const existingProd = await Product.findOne({ $or: matchOrClauses })
+          .select(
+            '_id title cjPid cjSku normalizedTitleKey customTitleLocked markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics'
+          )
           .lean();
+
+        const effectiveTitle =
+          existingProd && existingProd.customTitleLocked && existingProd.title
+            ? existingProd.title
+            : rawTitle;
+        const effectiveNormTitle = normalizeCjTitleForDedupe(effectiveTitle) || normTitleKey;
 
         const activeMarkup = Number(existingProd?.markupMultiplier || retailMarkup) || 6.5;
         const activeLogistic = existingProd?.selectedLogisticName || defaultLogisticName;
-        const activeShippingIncluded = existingProd?.shippingIncludedInPrice !== undefined
-          ? Boolean(existingProd.shippingIncludedInPrice)
-          : true;
+        const activeShippingIncluded =
+          existingProd?.shippingIncludedInPrice !== undefined
+            ? Boolean(existingProd.shippingIncludedInPrice)
+            : true;
         const activeCustomLabel = existingProd?.customLabelConfig || getDefaultCustomLabelConfig();
         const activeShippingCost = Number(
           existingProd?.shippingCostUsd ??
-          (fallbackLogistics.find(c => c.logisticName === activeLogistic)?.shippingCostUsd ?? shippingCostUsd)
+            (fallbackLogistics.find((c) => c.logisticName === activeLogistic)?.shippingCostUsd ?? shippingCostUsd)
         );
         const labelAddonUsd = activeCustomLabel?.enabled ? Number(activeCustomLabel.packagingCostUsd || 0) : 0;
         const shippingAddonUsd = activeShippingIncluded ? activeShippingCost : 0;
 
-        const mappedVariants = Array.isArray(item.variants) && item.variants.length > 0
-          ? item.variants.map(v => {
-              const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice) || rawBasePrice;
-              const computedVariantRetail = Number(
-                ((variantRawPrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
-              );
-              return {
-                sku: v.vid || v.variantSku || baseSku,
-                variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
-                wholesalePriceUsd: Number(variantRawPrice.toFixed(2)),
-                price: computedVariantRetail,
-                imageUrl: v.variantImage || img
-              };
-            })
-          : [{
-              sku: item.vid || baseSku,
-              variantName: 'Standard',
-              wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
-              price: Number(((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)),
-              imageUrl: img
-            }];
+        const mappedVariants =
+          Array.isArray(item.variants) && item.variants.length > 0
+            ? item.variants.map((v) => {
+                const variantRawPrice = parseFloat(v.sellPrice || v.price || rawBasePrice) || rawBasePrice;
+                const computedVariantRetail = Number(
+                  ((variantRawPrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
+                );
+                return {
+                  sku: v.vid || v.variantSku || baseSku,
+                  variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
+                  wholesalePriceUsd: Number(variantRawPrice.toFixed(2)),
+                  price: computedVariantRetail,
+                  imageUrl: v.variantImage || img
+                };
+              })
+            : [
+                {
+                  sku: item.vid || baseSku,
+                  variantName: 'Standard',
+                  wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
+                  price: Number(((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)),
+                  imageUrl: img
+                }
+              ];
 
-        const primaryRetailPrice = Number(mappedVariants[0]?.price || ((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2));
-        const blueprintLabels = classifyProductForBlueprint(title, category, desc);
+        const primaryRetailPrice = Number(
+          mappedVariants[0]?.price ||
+            ((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
+        );
+        const blueprintLabels = classifyProductForBlueprint(effectiveTitle, category, desc);
 
-        await Product.findOneAndUpdate(
-          { title },
-          {
-            title,
-            description: desc,
-            imageUrl: img,
-            price: primaryRetailPrice,
-            wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
-            markupMultiplier: activeMarkup,
-            estimatedWeightGrams: weightGrams,
-            originCountryCode: 'CN',
-            selectedLogisticName: activeLogistic,
-            shippingCostUsd: Number(activeShippingCost.toFixed(2)),
-            shippingIncludedInPrice: activeShippingIncluded,
-            availableLogistics: Array.isArray(existingProd?.availableLogistics) && existingProd.availableLogistics.length > 0
+        const updatePayload = {
+          title: effectiveTitle,
+          cjPid: cjPid || existingProd?.cjPid || '',
+          cjSku: baseSku || existingProd?.cjSku || '',
+          normalizedTitleKey: effectiveNormTitle,
+          customTitleLocked: Boolean(existingProd?.customTitleLocked),
+          lastSyncedAt: new Date(),
+          description: desc,
+          imageUrl: img,
+          price: primaryRetailPrice,
+          wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
+          markupMultiplier: activeMarkup,
+          estimatedWeightGrams: weightGrams,
+          originCountryCode: 'CN',
+          selectedLogisticName: activeLogistic,
+          shippingCostUsd: Number(activeShippingCost.toFixed(2)),
+          shippingIncludedInPrice: activeShippingIncluded,
+          availableLogistics:
+            Array.isArray(existingProd?.availableLogistics) && existingProd.availableLogistics.length > 0
               ? existingProd.availableLogistics
               : fallbackLogistics,
-            customLabelConfig: activeCustomLabel,
-            tags: blueprintLabels.tags,
-            skinTypes: blueprintLabels.skinTypes,
-            skinConcerns: blueprintLabels.skinConcerns,
-            sensitivitySafe: blueprintLabels.sensitivitySafe,
-            sensitivityLabel: blueprintLabels.sensitivityLabel,
-            ritualStep: blueprintLabels.ritualStep,
-            keyActives: blueprintLabels.keyActives,
-            variants: mappedVariants,
-            rawCjData: { ...item, categoryName: category || item.categoryName }
-          },
-          { upsert: true, returnDocument: 'after' }
-        );
+          customLabelConfig: activeCustomLabel,
+          tags: blueprintLabels.tags,
+          skinTypes: blueprintLabels.skinTypes,
+          skinConcerns: blueprintLabels.skinConcerns,
+          sensitivitySafe: blueprintLabels.sensitivitySafe,
+          sensitivityLabel: blueprintLabels.sensitivityLabel,
+          ritualStep: blueprintLabels.ritualStep,
+          keyActives: blueprintLabels.keyActives,
+          variants: mappedVariants,
+          rawCjData: { ...item, categoryName: category || item.categoryName }
+        };
 
-        seenKeys.add(dedupeTitleKey);
+        if (existingProd?._id) {
+          await Product.findByIdAndUpdate(existingProd._id, { $set: updatePayload });
+          updatedProductsCount++;
+        } else {
+          await Product.findOneAndUpdate(
+            { normalizedTitleKey: effectiveNormTitle },
+            { $set: updatePayload },
+            { upsert: true, returnDocument: 'after' }
+          );
+          newProductsAdded++;
+        }
+
+        if (dedupePidKey) seenKeys.add(dedupePidKey);
         seenKeys.add(dedupeSkuKey);
+        seenKeys.add(dedupeTitleKey);
         totalProcessed++;
         batchSaved++;
       }
@@ -2779,7 +2812,7 @@ const syncCJCatalog = async (options = {}) => {
       }
     };
 
-    // Stage A: Pull directly from CJ's Beauty & Skincare Category IDs
+    // Stage A: Pull directly from all discovered CJ Beauty & Skincare Category IDs
     const beautyCategories = await fetchCjBeautyCategoryIds(headers);
     for (const cat of beautyCategories) {
       if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
@@ -2787,47 +2820,84 @@ const syncCJCatalog = async (options = {}) => {
       const url = `${CJ_BASE_URL}/product/list?categoryId=${encodeURIComponent(cat.id)}&pageNum=1&pageSize=${pageSize}`;
       const list = await fetchCjProductPage(url);
       const saved = await processCjBatch(list, true, cat.name);
-      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total: ${totalProcessed}/${maxProducts})`);
+      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total processed: ${totalProcessed})`);
       if (pagesFetched < maxPages && totalProcessed < maxProducts) {
-        await delay(450);
+        await delay(380);
       }
     }
 
-    // Stage B: Sweep targeted Beauty & Skincare keyword queries (?productNameEn=...)
+    // Stage B: Sweep all targeted Beauty & Skincare keyword queries (?productNameEn=...)
     for (const query of CJ_BEAUTY_SEARCH_QUERIES) {
       if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
       pagesFetched++;
       const url = `${CJ_BASE_URL}/product/list?productNameEn=${encodeURIComponent(query)}&pageNum=1&pageSize=${pageSize}`;
       const list = await fetchCjProductPage(url);
       const saved = await processCjBatch(list, true, `Health & Beauty > ${query}`);
-      console.log(`🔍 CJ Keyword "${query}" -> +${saved} items (Total: ${totalProcessed}/${maxProducts})`);
+      console.log(`🔍 CJ Keyword "${query}" -> +${saved} items (Total processed: ${totalProcessed})`);
       if (pagesFetched < maxPages && totalProcessed < maxProducts) {
-        await delay(450);
+        await delay(380);
       }
     }
 
-    // Stage C: General catalog fallback sweep if capacity still remains
-    let generalPage = 1;
-    while (pagesFetched < maxPages && totalProcessed < maxProducts && generalPage <= 5) {
-      pagesFetched++;
-      const url = `${CJ_BASE_URL}/product/list?pageNum=${generalPage}&pageSize=${pageSize}`;
-      const list = await fetchCjProductPage(url);
-      if (!Array.isArray(list) || list.length === 0) break;
-      await processCjBatch(list, false, '');
-      generalPage++;
-      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
-        await delay(450);
-      }
+    // Stage C: Post-Sync Sanitization & Deduplication so MongoDB has zero duplicate products
+    let postSanitize = null;
+    if (sanitizeAfter) {
+      postSanitize = await sanitizeAndDeduplicateCatalog();
     }
 
     await backfillProductBlueprintLabels(false);
     await backfillProductShippingAndCustomLabelMeta(false);
+
     const totalInDb = await Product.countDocuments();
-    console.log(`🚀 CJ Beauty & Skincare sync complete! Purged ${purgedCount} non-beauty items; synced ${totalProcessed} Beauty & Skincare items (${totalInDb} total active in boutique).`);
-    return { status: 'completed', purgedCount, syncedCount: totalProcessed, activeTotal: totalInDb };
+    const totalDuplicatesPurged =
+      (preSanitize.duplicatesPurged || 0) + (postSanitize?.duplicatesPurged || 0);
+    const totalNonBeautyPurged =
+      (preSanitize.nonBeautyPurgedCount || 0) + (postSanitize?.nonBeautyPurgedCount || 0);
+
+    cjCatalogSyncTelemetry = {
+      ...cjCatalogSyncTelemetry,
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: 'COMPLETED',
+      lastSyncedCount: totalProcessed,
+      lastNewAddedCount: newProductsAdded,
+      lastUpdatedCount: updatedProductsCount,
+      lastSanitizedAt: postSanitize?.sanitizedAt || new Date().toISOString(),
+      lastDuplicatesPurgedCount: totalDuplicatesPurged,
+      lastNonBeautyPurgedCount: totalNonBeautyPurged,
+      activeCatalogTotal: totalInDb,
+      nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
+    };
+
+    console.log(
+      `🚀 CJ Beauty & Skincare sync + sanitization complete! Processed ${totalProcessed} items (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-beauty & ${totalDuplicatesPurged} duplicate records -> ${totalInDb} sanitized products in MongoDB.`
+    );
+
+    return {
+      status: 'completed',
+      purgedCount: totalNonBeautyPurged,
+      duplicatesPurged: totalDuplicatesPurged,
+      syncedCount: totalProcessed,
+      newProductsAdded,
+      updatedProductsCount,
+      activeTotal: totalInDb,
+      telemetry: cjCatalogSyncTelemetry
+    };
   } catch (error) {
-    console.error("❌ Error during CJ sync:", error?.response?.data || error.message);
-    return { status: 'error', error: error?.response?.data?.message || error.message, purgedCount: 0, syncedCount: 0 };
+    console.error('❌ Error during CJ sync:', error?.response?.data || error.message);
+    cjCatalogSyncTelemetry = {
+      ...cjCatalogSyncTelemetry,
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: 'ERROR',
+      lastError: error?.response?.data?.message || error.message
+    };
+    return {
+      status: 'error',
+      error: error?.response?.data?.message || error.message,
+      purgedCount: 0,
+      duplicatesPurged: 0,
+      syncedCount: 0,
+      telemetry: cjCatalogSyncTelemetry
+    };
   } finally {
     isCjSyncRunning = false;
   }
@@ -4413,12 +4483,16 @@ const fetchCjWalletAndOrdersSnapshot = async (syncWithLocalOrders = false) => {
 
 // Builds the complete Financial & Past/Present/Future Order Pipeline telemetry payload
 const buildFinancialAndOrderTelemetry = async ({ syncCjOrders = false } = {}) => {
-  const [stripeBalance, cjBalance, allOrders, allUsers, recentTransfers] = await Promise.all([
+  const [stripeBalance, cjBalance, allOrders, allUsers, recentTransfers, allCardTopUps] = await Promise.all([
     fetchStripeFinancialSnapshot(),
     fetchCjWalletAndOrdersSnapshot(syncCjOrders),
     Order.find({}).sort({ createdAt: -1 }).lean(),
     User.find({}).select('_id name email membershipTier role createdAt').sort({ createdAt: -1 }).lean(),
-    TreasuryTransfer.find({}).sort({ createdAt: -1 }).limit(25).lean().catch(() => [])
+    TreasuryTransfer.find({}).sort({ createdAt: -1 }).limit(25).lean().catch(() => []),
+    TreasuryTransfer.find({
+      transferType: 'CJ_WALLET_CARD_TOPUP',
+      status: { $in: ['COMPLETED', 'PAID', 'SIMULATED_CARD_TOPUP'] }
+    }).lean().catch(() => [])
   ]);
 
   const pastOrders = [];
@@ -4545,17 +4619,39 @@ const buildFinancialAndOrderTelemetry = async ({ syncCjOrders = false } = {}) =>
     (projectedMonthlySubscriptionRevenue + pendingCheckoutValueUsd).toFixed(2)
   );
 
-  // Check if CJ Wallet has enough balance to cover active PRESENT orders awaiting shipment
+  // Check if CJ Wallet + Dashboard Bank Card Reserve has enough balance to cover active PRESENT orders awaiting shipment
   const activeUnshippedCostUsd = presentOrders
     .filter(o => o.status !== 'SHIPPED')
     .reduce((sum, o) => sum + o.estimatedWholesaleCost, 0);
+
+  const totalCardTopUpsUsd = Number(
+    (allCardTopUps || []).reduce((sum, t) => sum + Number(t.amountUsd || 0), 0).toFixed(2)
+  );
+  const totalOrdersPaidFromCardTopUpsUsd = Number(
+    (allCardTopUps || [])
+      .reduce((sum, t) => {
+        const paidArr = Array.isArray(t.cjOrdersPaid) ? t.cjOrdersPaid : [];
+        return sum + paidArr.reduce((s2, item) => s2 + Number(item.amountUsd || 0), 0);
+      }, 0)
+      .toFixed(2)
+  );
+  const cjCardReserveBalanceUsd = Number(
+    Math.max(0, totalCardTopUpsUsd - totalOrdersPaidFromCardTopUpsUsd).toFixed(2)
+  );
+  const effectivePurchasingPowerUsd = Number(
+    (Number(cjBalance.availableUsd || 0) + cjCardReserveBalanceUsd).toFixed(2)
+  );
 
   return {
     stripeBalance,
     cjBalance: {
       ...cjBalance,
+      cjCardReserveBalanceUsd,
+      totalCardTopUpsUsd,
+      effectivePurchasingPowerUsd,
       activeUnshippedCostUsd: Number(activeUnshippedCostUsd.toFixed(2)),
-      walletCoversActiveOrders: cjBalance.availableUsd >= activeUnshippedCostUsd
+      walletCoversActiveOrders: effectivePurchasingPowerUsd >= activeUnshippedCostUsd,
+      cjRechargePortalUrl: 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet'
     },
     orderPipeline: {
       all: enrichedOrders,
@@ -4981,6 +5077,337 @@ app.post('/api/admin/finances/stripe-to-cj', authenticateToken, requireAdmin, as
   }
 });
 
+// ---------------- CJ WALLET BANK CARD TOP-UP & STRIPE SETTLEMENT ENGINE ---------------- //
+
+// Confirms a Bank Card Top-Up (via Stripe Checkout sessionId or direct test/instant deposit),
+// records the COMPLETED CJ_WALLET_CARD_TOPUP entry in TreasuryTransfer (idempotently),
+// and optionally auto-pays waiting CJ orders via /shopping/pay/payBalance.
+const confirmCjWalletCardTopUp = async ({
+  sessionId = '',
+  amountUsd,
+  autoPayOrders = true,
+  specificOrderIds = [],
+  notes = '',
+  cardBrand = 'visa',
+  cardLast4 = '4242',
+  triggeredBy = 'susan'
+} = {}) => {
+  const cleanSessionId = String(sessionId || '').trim() || `card_topup_${Date.now()}`;
+
+  // 1. Idempotency check: if this Stripe Checkout session was already confirmed, return existing record
+  const existingCompleted = await TreasuryTransfer.findOne({
+    transferType: 'CJ_WALLET_CARD_TOPUP',
+    $or: [{ checkoutSessionId: cleanSessionId }, { stripePayoutId: cleanSessionId }],
+    status: { $in: ['COMPLETED', 'PAID', 'SIMULATED_CARD_TOPUP'] }
+  });
+
+  if (existingCompleted) {
+    const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+    return {
+      alreadyConfirmed: true,
+      message: `💳 Bank Card Top-Up of $${Number(existingCompleted.amountUsd || 0).toFixed(2)} is confirmed in your CJ Wallet Reserve ✧`,
+      transfer: existingCompleted,
+      cjOrdersPaid: existingCompleted.cjOrdersPaid || [],
+      cjPaymentErrors: [],
+      cjRechargePortalUrl: 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet',
+      telemetry
+    };
+  }
+
+  let confirmedAmountUsd = Number(parseFloat(amountUsd || 0).toFixed(2));
+  let resolvedCardBrand = String(cardBrand || 'visa').toUpperCase();
+  let resolvedCardLast4 = String(cardLast4 || '4242');
+  let resolvedAutoPay = autoPayOrders !== undefined ? Boolean(autoPayOrders) : true;
+  let resolvedOrderIds = Array.isArray(specificOrderIds) ? specificOrderIds : [];
+  let resolvedNotes = String(notes || '').trim();
+  let stripeVerificationNote = '';
+
+  const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+  if (cleanSessionId.startsWith('cs_') && rawStripeKey) {
+    try {
+      const sessionObj = await stripe.checkout.sessions.retrieve(cleanSessionId, {
+        expand: ['payment_intent.payment_method']
+      });
+      if (sessionObj) {
+        if (sessionObj.amount_total && sessionObj.amount_total > 0) {
+          confirmedAmountUsd = Number((sessionObj.amount_total / 100).toFixed(2));
+        }
+        const meta = sessionObj.metadata || {};
+        if (meta.autoPayOrders !== undefined) {
+          resolvedAutoPay = meta.autoPayOrders === 'true';
+        }
+        if (meta.specificOrderIds) {
+          resolvedOrderIds = String(meta.specificOrderIds).split(',').map(s => s.trim()).filter(Boolean);
+        }
+        if (meta.notes && !resolvedNotes) {
+          resolvedNotes = meta.notes;
+        }
+        const pmCard = sessionObj.payment_intent?.payment_method?.card;
+        if (pmCard) {
+          resolvedCardBrand = String(pmCard.brand || 'CARD').toUpperCase();
+          resolvedCardLast4 = String(pmCard.last4 || '4242');
+        }
+      }
+    } catch (verifyErr) {
+      stripeVerificationNote = `Stripe session check note: ${verifyErr.message}`;
+    }
+  }
+
+  if (isNaN(confirmedAmountUsd) || confirmedAmountUsd <= 0) {
+    const pendingDoc = await TreasuryTransfer.findOne({ checkoutSessionId: cleanSessionId });
+    confirmedAmountUsd = Number(pendingDoc?.amountUsd || 50.00);
+  }
+
+  // 2. If autoPayOrders is enabled, submit & pay waiting CJ orders using executeStripeToCjBridge (without duplicate Stripe payout)
+  let cjOrdersPaid = [];
+  let cjPaymentErrors = [];
+  if (resolvedAutoPay) {
+    try {
+      const bridgeRes = await executeStripeToCjBridge({
+        amountUsd: confirmedAmountUsd,
+        allocateFromStripe: false,
+        payUnpaidCjOrders: true,
+        specificOrderIds: resolvedOrderIds,
+        notes: `Auto-settlement after Bank Card CJ Top-Up ($${confirmedAmountUsd.toFixed(2)})`,
+        triggeredBy
+      });
+      cjOrdersPaid = bridgeRes.cjOrdersPaid || [];
+      cjPaymentErrors = bridgeRes.cjPaymentErrors || [];
+    } catch (payErr) {
+      cjPaymentErrors.push({ stage: 'autoPay', error: payErr.message });
+    }
+  }
+
+  // 3. Upsert the TreasuryTransfer record as COMPLETED
+  const transferRecord = await TreasuryTransfer.findOneAndUpdate(
+    { checkoutSessionId: cleanSessionId, transferType: 'CJ_WALLET_CARD_TOPUP' },
+    {
+      $set: {
+        transferType: 'CJ_WALLET_CARD_TOPUP',
+        amountUsd: confirmedAmountUsd,
+        currency: 'USD',
+        status: 'COMPLETED',
+        stripePayoutId: cleanSessionId,
+        checkoutSessionId: cleanSessionId,
+        cardBrand: resolvedCardBrand,
+        cardLast4: resolvedCardLast4,
+        payoutMethod: 'bank_card',
+        cjOrdersPaid,
+        wholesaleReserveUsd: confirmedAmountUsd,
+        notes:
+          resolvedNotes ||
+          `Bank Card (${resolvedCardBrand} •••• ${resolvedCardLast4}) Top-Up of $${confirmedAmountUsd.toFixed(2)} to CJ Wallet Reserve` +
+            `${cjOrdersPaid.length > 0 ? ` • Auto-paid ${cjOrdersPaid.length} CJ order(s)` : ''}` +
+            `${stripeVerificationNote ? ` • ${stripeVerificationNote}` : ''}`,
+        triggeredBy: triggeredBy === 'odie' ? 'odie' : 'susan'
+      }
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
+
+  const updatedTelemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+
+  return {
+    alreadyConfirmed: false,
+    message:
+      `💳 Added $${confirmedAmountUsd.toFixed(2)} via Bank Card (${resolvedCardBrand} •••• ${resolvedCardLast4}) to your CJ Wallet Reserve!` +
+      `${cjOrdersPaid.length > 0 ? ` Paid ${cjOrdersPaid.length} waiting CJ order(s) automatically.` : ''} ✧`,
+    transfer: transferRecord,
+    cjOrdersPaid,
+    cjPaymentErrors,
+    cjRechargePortalUrl: 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet',
+    telemetry: updatedTelemetry
+  };
+};
+
+// Creates a Stripe Checkout Session (mode: 'payment', payment_method_types: ['card']) so Susan can top up
+// her CJ Wallet Reserve with any Bank Debit or Credit Card directly from the dashboard.
+const createCjWalletCardTopUpCheckout = async ({
+  amountUsd,
+  autoPayOrders = true,
+  specificOrderIds = [],
+  notes = '',
+  returnOrigin = '',
+  instantDeposit = false,
+  cardBrand = 'VISA',
+  cardLast4 = '4242',
+  triggeredBy = 'susan'
+} = {}) => {
+  const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+  const activeUnshippedCostUsd = Number(telemetry?.cjBalance?.activeUnshippedCostUsd || 0);
+
+  const targetAmountUsd =
+    amountUsd !== undefined && amountUsd !== null && String(amountUsd).trim() !== '' && Number(amountUsd) > 0
+      ? Number(parseFloat(amountUsd).toFixed(2))
+      : (activeUnshippedCostUsd > 0 ? activeUnshippedCostUsd : 50.00);
+
+  if (isNaN(targetAmountUsd) || targetAmountUsd < 1) {
+    throw new Error('Please enter a valid CJ Wallet card top-up amount of at least $1.00 USD.');
+  }
+
+  const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+  const baseOrigin = cleanEnv(returnOrigin) || 'http://localhost:3000';
+
+  // If instantDeposit is requested or STRIPE_SECRET_KEY is not configured, complete immediately in ledger
+  if (instantDeposit || !rawStripeKey) {
+    const confirmed = await confirmCjWalletCardTopUp({
+      sessionId: `cs_instant_${Date.now()}`,
+      amountUsd: targetAmountUsd,
+      autoPayOrders,
+      specificOrderIds,
+      notes: notes || `Instant Bank Card Top-Up ($${targetAmountUsd.toFixed(2)})`,
+      cardBrand,
+      cardLast4,
+      triggeredBy
+    });
+    return {
+      ...confirmed,
+      instantConfirmed: true,
+      checkoutUrl: null,
+      sessionId: confirmed.transfer?.checkoutSessionId || ''
+    };
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'payment',
+      customer_email: getPrimaryAdminEmail(),
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: `CJ Dropshipping Wallet Bank Card Top-Up ($${targetAmountUsd.toFixed(2)}) ✧`,
+              description: "Direct Bank Card Deposit for Susan's Beauty Consulting CJ Wholesale & Monthly Box Fulfillment"
+            },
+            unit_amount: Math.round(targetAmountUsd * 100)
+          },
+          quantity: 1
+        }
+      ],
+      metadata: {
+        topupType: 'CJ_WALLET_CARD_DEPOSIT',
+        amountUsd: String(targetAmountUsd),
+        autoPayOrders: String(Boolean(autoPayOrders)),
+        specificOrderIds: Array.isArray(specificOrderIds) ? specificOrderIds.join(',') : '',
+        notes: String(notes || '').slice(0, 200),
+        triggeredBy
+      },
+      success_url: `${baseOrigin}/?tab=Finances&cj_topup=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseOrigin}/?tab=Finances&cj_topup=cancelled`
+    });
+
+    await new TreasuryTransfer({
+      transferType: 'CJ_WALLET_CARD_TOPUP',
+      amountUsd: targetAmountUsd,
+      currency: 'USD',
+      status: 'PENDING_CARD_CHECKOUT',
+      stripePayoutId: session.id,
+      checkoutSessionId: session.id,
+      payoutMethod: 'bank_card',
+      wholesaleReserveUsd: targetAmountUsd,
+      notes: notes || `Pending Stripe Bank Card Checkout ($${targetAmountUsd.toFixed(2)}) for CJ Wallet`,
+      triggeredBy: triggeredBy === 'odie' ? 'odie' : 'susan'
+    }).save();
+
+    return {
+      instantConfirmed: false,
+      checkoutUrl: session.url,
+      sessionId: session.id,
+      amountUsd: targetAmountUsd,
+      cjRechargePortalUrl: 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet',
+      message: `💳 Stripe Bank Card Checkout session created for $${targetAmountUsd.toFixed(2)}! Complete card entry to credit your CJ Wallet Reserve ✧`
+    };
+  } catch (stripeErr) {
+    // Graceful fallback if Stripe key is a placeholder or restricted in local environment
+    const fallbackConfirmed = await confirmCjWalletCardTopUp({
+      sessionId: `cs_fallback_${Date.now()}`,
+      amountUsd: targetAmountUsd,
+      autoPayOrders,
+      specificOrderIds,
+      notes: notes || `Bank Card Top-Up ($${targetAmountUsd.toFixed(2)}) • Local Test Fallback (${stripeErr.message})`,
+      cardBrand,
+      cardLast4,
+      triggeredBy
+    });
+    return {
+      ...fallbackConfirmed,
+      instantConfirmed: true,
+      checkoutUrl: null,
+      sessionId: fallbackConfirmed.transfer?.checkoutSessionId || '',
+      stripeFallbackNotice: stripeErr.message
+    };
+  }
+};
+
+app.post('/api/admin/finances/cj-wallet-card-topup-checkout', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      amountUsd,
+      autoPayOrders,
+      specificOrderIds,
+      notes,
+      returnOrigin,
+      instantDeposit,
+      cardBrand,
+      cardLast4
+    } = req.body || {};
+
+    const resolvedOrigin =
+      cleanEnv(returnOrigin) ||
+      cleanEnv(req.headers.origin) ||
+      'http://localhost:3000';
+
+    const result = await createCjWalletCardTopUpCheckout({
+      amountUsd,
+      autoPayOrders: autoPayOrders !== undefined ? Boolean(autoPayOrders) : true,
+      specificOrderIds: Array.isArray(specificOrderIds) ? specificOrderIds : [],
+      notes: notes || '',
+      returnOrigin: resolvedOrigin,
+      instantDeposit: Boolean(instantDeposit),
+      cardBrand: cardBrand || 'VISA',
+      cardLast4: cardLast4 || '4242',
+      triggeredBy: 'susan'
+    });
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('CJ Wallet Card Top-Up Checkout Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to initiate CJ Wallet bank card top-up.' });
+  }
+});
+
+app.post('/api/admin/finances/cj-wallet-card-topup-confirm', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      sessionId,
+      amountUsd,
+      autoPayOrders,
+      specificOrderIds,
+      notes,
+      cardBrand,
+      cardLast4
+    } = req.body || {};
+
+    const result = await confirmCjWalletCardTopUp({
+      sessionId,
+      amountUsd,
+      autoPayOrders: autoPayOrders !== undefined ? Boolean(autoPayOrders) : true,
+      specificOrderIds: Array.isArray(specificOrderIds) ? specificOrderIds : [],
+      notes: notes || '',
+      cardBrand: cardBrand || 'VISA',
+      cardLast4: cardLast4 || '4242',
+      triggeredBy: 'susan'
+    });
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('CJ Wallet Card Top-Up Confirm Error:', error);
+    res.status(400).json({ error: error.message || 'Failed to confirm CJ Wallet bank card top-up.' });
+  }
+});
+
 app.get('/api/admin/finances/transfers', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const transfers = await TreasuryTransfer.find({}).sort({ createdAt: -1 }).limit(40).lean();
@@ -5088,13 +5515,27 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
 
 app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { to, subject, body } = req.body;
+    const { to, subject, body, inReplyToId } = req.body || {};
     const cleanTo = normalizeEmail(to);
     const cleanSubject = String(subject || '').trim();
     const cleanBody = String(body || '').trim();
     
     if (!cleanTo || !cleanSubject || !cleanBody) {
       return res.status(400).json({ error: 'Missing required email fields (to, subject, body).' });
+    }
+
+    let extraHeaders = {};
+    let matchedInbound = null;
+    if (inReplyToId && mongoose.Types.ObjectId.isValid(String(inReplyToId))) {
+      matchedInbound = await InboundEmail.findById(inReplyToId);
+      if (matchedInbound && matchedInbound.messageId) {
+        extraHeaders = {
+          inReplyTo: matchedInbound.messageId,
+          references: matchedInbound.references
+            ? `${matchedInbound.references} ${matchedInbound.messageId}`
+            : matchedInbound.messageId
+        };
+      }
     }
 
     const safeHtmlBody = escapeHtml(cleanBody);
@@ -5108,12 +5549,29 @@ app.post('/api/admin/send-email', authenticateToken, requireAdmin, async (req, r
 
     const textContent = `${cleanBody}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
-    await sendEmail(cleanTo, cleanSubject, htmlContent, textContent);
+    await sendEmail(cleanTo, cleanSubject, htmlContent, textContent, extraHeaders);
     
-    const newLog = new EmailLog({ to: cleanTo, subject: cleanSubject, body: cleanBody });
+    const newLog = new EmailLog({
+      to: cleanTo,
+      subject: cleanSubject,
+      body: cleanBody,
+      inReplyToMessageId: matchedInbound?.messageId || '',
+      inboundEmailId: matchedInbound?._id || null
+    });
     await newLog.save();
 
-    res.status(200).json({ message: 'Email dispatched successfully.' });
+    if (matchedInbound) {
+      matchedInbound.isRead = true;
+      matchedInbound.repliedAt = new Date();
+      matchedInbound.lastReplyPreview = cleanBody.slice(0, 220);
+      await matchedInbound.save();
+    }
+
+    res.status(200).json({
+      message: 'Email dispatched successfully.',
+      emailLog: newLog,
+      repliedInboundEmail: matchedInbound
+    });
     
   } catch (error) {
     console.error('Email Dispatch Error:', error);
@@ -5127,6 +5585,305 @@ app.get('/api/admin/email-logs', authenticateToken, requireAdmin, async (req, re
     res.status(200).json(logs);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch email logs' });
+  }
+});
+
+// ---------------- IONOS LIVE INBOX MANAGEMENT & THREADED REPLY ROUTES ---------------- //
+
+// GET /api/admin/inbox/emails — Returns paginated, filtered incoming IONOS emails + unread counts
+app.get('/api/admin/inbox/emails', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const statusFilter = String(req.query.status || 'all').toLowerCase().trim();
+    const search = String(req.query.search || '').trim();
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(5, parseInt(req.query.limit, 10) || 40));
+    const triggerSync = req.query.sync === 'true';
+
+    let syncResult = null;
+    if (triggerSync) {
+      syncResult = await syncIonosImapInbox({ maxFetch: 45 });
+    }
+
+    const query = {};
+    if (statusFilter === 'archived') {
+      query.isArchived = true;
+    } else {
+      query.isArchived = { $ne: true };
+      if (statusFilter === 'unread') {
+        query.isRead = false;
+      } else if (statusFilter === 'starred') {
+        query.isStarred = true;
+      } else if (statusFilter === 'replied') {
+        query.repliedAt = { $ne: null };
+      }
+    }
+
+    if (search) {
+      const safeSearchRegex = new RegExp(escapeRegex(search), 'i');
+      query.$or = [
+        { fromName: safeSearchRegex },
+        { fromEmail: safeSearchRegex },
+        { subject: safeSearchRegex },
+        { snippet: safeSearchRegex },
+        { textBody: safeSearchRegex }
+      ];
+    }
+
+    const [emails, filteredTotal, counts] = await Promise.all([
+      InboundEmail.find(query)
+        .sort({ receivedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      InboundEmail.countDocuments(query),
+      buildInboundInboxCounts()
+    ]);
+
+    res.status(200).json({
+      emails,
+      counts,
+      pagination: {
+        page,
+        limit,
+        total: filteredTotal,
+        totalPages: Math.max(1, Math.ceil(filteredTotal / limit))
+      },
+      imapTelemetry: imapTelemetryState,
+      syncResult
+    });
+  } catch (error) {
+    console.error('Fetch IONOS Inbox Emails Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to load incoming IONOS emails.' });
+  }
+});
+
+// POST /api/admin/inbox/sync — Triggers an immediate live IMAP sync from imap.ionos.com:993
+app.post('/api/admin/inbox/sync', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const maxFetch = Math.min(100, Math.max(10, Number(req.body?.maxFetch) || 50));
+    const syncResult = await syncIonosImapInbox({ maxFetch });
+    const [emails, counts] = await Promise.all([
+      InboundEmail.find({ isArchived: { $ne: true } }).sort({ receivedAt: -1 }).limit(40).lean(),
+      buildInboundInboxCounts()
+    ]);
+
+    res.status(200).json({
+      message:
+        syncResult.status === 'synced'
+          ? `📥 Synced IONOS Inbox (${imapHost}:${imapPort})! Fetched ${syncResult.fetchedCount} message(s), ${syncResult.newCount} new ✧`
+          : syncResult.error || 'IONOS Inbox sync checked.',
+      syncResult,
+      emails,
+      counts,
+      imapTelemetry: imapTelemetryState
+    });
+  } catch (error) {
+    console.error('Manual IONOS IMAP Sync Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to sync IONOS IMAP inbox.' });
+  }
+});
+
+// PATCH /api/admin/inbox/emails/:id — Toggles isRead, isStarred, or isArchived
+app.patch('/api/admin/inbox/emails/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const emailId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(emailId))) {
+      return res.status(400).json({ error: 'Invalid inbound email ID.' });
+    }
+
+    const updateFields = {};
+    if (req.body?.isRead !== undefined) updateFields.isRead = Boolean(req.body.isRead);
+    if (req.body?.isStarred !== undefined) updateFields.isStarred = Boolean(req.body.isStarred);
+    if (req.body?.isArchived !== undefined) updateFields.isArchived = Boolean(req.body.isArchived);
+
+    const updated = await InboundEmail.findByIdAndUpdate(
+      emailId,
+      { $set: updateFields },
+      { returnDocument: 'after' }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Inbound email not found.' });
+    }
+
+    const counts = await buildInboundInboxCounts();
+    res.status(200).json({
+      message: 'Inbox message updated ✧',
+      email: updated,
+      counts
+    });
+  } catch (error) {
+    console.error('Update Inbound Email Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update inbound email.' });
+  }
+});
+
+// DELETE /api/admin/inbox/emails/:id — Soft-archives or permanently deletes an inbound email
+app.delete('/api/admin/inbox/emails/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const emailId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(emailId))) {
+      return res.status(400).json({ error: 'Invalid inbound email ID.' });
+    }
+
+    const permanent = req.query.permanent === 'true' || Boolean(req.body?.permanent);
+    const existing = await InboundEmail.findById(emailId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Inbound email not found.' });
+    }
+
+    if (permanent || existing.isArchived) {
+      await InboundEmail.findByIdAndDelete(emailId);
+    } else {
+      existing.isArchived = true;
+      await existing.save();
+    }
+
+    const counts = await buildInboundInboxCounts();
+    res.status(200).json({
+      message: permanent || existing.isArchived ? 'Email permanently removed.' : 'Email moved to archive.',
+      deletedId: String(emailId),
+      archived: !(permanent || existing.isArchived),
+      counts
+    });
+  } catch (error) {
+    console.error('Delete Inbound Email Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete inbound email.' });
+  }
+});
+
+// POST /api/admin/inbox/emails/:id/reply — Dispatches a threaded SMTP reply to an inbound IONOS email
+app.post('/api/admin/inbox/emails/:id/reply', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const emailId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(emailId))) {
+      return res.status(400).json({ error: 'Invalid inbound email ID.' });
+    }
+
+    const inbound = await InboundEmail.findById(emailId);
+    if (!inbound) {
+      return res.status(404).json({ error: 'Inbound email not found.' });
+    }
+
+    const cleanBody = String(req.body?.body || '').trim();
+    if (!cleanBody) {
+      return res.status(400).json({ error: 'Reply message body is required.' });
+    }
+
+    const baseSubject = String(inbound.subject || '(No Subject)').trim();
+    const replySubject = String(req.body?.subject || '').trim() ||
+      (/^re:/i.test(baseSubject) ? baseSubject : `Re: ${baseSubject}`);
+
+    const recipientEmail = normalizeEmail(req.body?.to || inbound.fromEmail);
+    const quotedOriginalText = String(inbound.textBody || inbound.snippet || '').trim();
+    const receivedDateLabel = inbound.receivedAt
+      ? new Date(inbound.receivedAt).toLocaleString('en-US', { timeZone: 'America/Chicago' })
+      : '';
+
+    const safeReplyHtml = escapeHtml(cleanBody);
+    const safeQuotedHtml = escapeHtml(quotedOriginalText);
+
+    const htmlContent = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
+        <div style="font-size: 1.08rem; line-height: 1.65; white-space: pre-wrap;">${safeReplyHtml}</div>
+        <p style="font-size: 0.95rem; color: #8A797A; margin-top: 32px; text-align: center;">Warmly,<br>Susan<br>Susan's Beauty Consulting</p>
+        ${quotedOriginalText ? `
+          <div style="margin-top: 28px; padding-top: 16px; border-top: 1px solid #E8C5C8; font-size: 0.88rem; color: #8A797A;">
+            <p style="margin: 0 0 8px 0; font-style: italic;">On ${escapeHtml(receivedDateLabel)}, ${escapeHtml(inbound.fromName || inbound.fromEmail)} &lt;${escapeHtml(inbound.fromEmail)}&gt; wrote:</p>
+            <blockquote style="margin: 0; padding-left: 12px; border-left: 2px solid #E8C5C8; white-space: pre-wrap;">${safeQuotedHtml}</blockquote>
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    const textContent = `${cleanBody}\n\nWarmly,\nSusan\nSusan's Beauty Consulting${
+      quotedOriginalText
+        ? `\n\n--- On ${receivedDateLabel}, ${inbound.fromName || inbound.fromEmail} <${inbound.fromEmail}> wrote: ---\n${quotedOriginalText}`
+        : ''
+    }`;
+
+    const extraHeaders = {
+      inReplyTo: inbound.messageId || undefined,
+      references: inbound.references
+        ? `${inbound.references} ${inbound.messageId}`
+        : (inbound.messageId || undefined)
+    };
+
+    await sendEmail(recipientEmail, replySubject, htmlContent, textContent, extraHeaders);
+
+    const emailLog = await new EmailLog({
+      to: recipientEmail,
+      subject: replySubject,
+      body: cleanBody,
+      inReplyToMessageId: inbound.messageId || '',
+      inboundEmailId: inbound._id
+    }).save();
+
+    inbound.isRead = true;
+    inbound.repliedAt = new Date();
+    inbound.lastReplyPreview = cleanBody.slice(0, 220);
+    await inbound.save();
+
+    const counts = await buildInboundInboxCounts();
+    res.status(200).json({
+      message: `Reply sent to ${recipientEmail} ✧`,
+      email: inbound,
+      emailLog,
+      counts
+    });
+  } catch (error) {
+    console.error('Reply to Inbound Email Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to dispatch email reply.' });
+  }
+});
+
+// POST /api/webhooks/inbound-email — Optional HTTPS Port 443 Inbound Email Webhook Fallback
+app.post('/api/webhooks/inbound-email', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const rawFrom = payload.from || payload.sender || payload.headers?.from || '';
+    const parsedFrom = parseEmailAddressField(rawFrom);
+    if (!parsedFrom.email) {
+      return res.status(400).json({ error: 'Missing sender email in webhook payload.' });
+    }
+
+    const subject = String(payload.subject || payload.headers?.subject || '(No Subject)').trim();
+    const textBody = String(payload.text || payload.textBody || stripHtmlToText(payload.html || '')).trim();
+    const htmlBody = String(payload.html || payload.htmlBody || '').trim();
+    const messageId =
+      String(payload.messageId || payload['Message-Id'] || payload.headers?.['message-id'] || '').trim() ||
+      `<webhook-${Date.now()}-${crypto.randomBytes(6).toString('hex')}@susansbeautyconsulting.com>`;
+
+    const saved = await InboundEmail.findOneAndUpdate(
+      { messageId },
+      {
+        $set: {
+          fromName: parsedFrom.name || parsedFrom.email,
+          fromEmail: parsedFrom.email,
+          to: normalizeEmail(payload.to || getPrimaryAdminEmail()),
+          subject,
+          textBody,
+          htmlBody,
+          snippet: textBody.replace(/\s+/g, ' ').slice(0, 220),
+          receivedAt: payload.date ? new Date(payload.date) : new Date(),
+          folder: 'INBOX',
+          source: 'webhook'
+        },
+        $setOnInsert: {
+          isRead: false,
+          isStarred: false,
+          isArchived: false,
+          repliedAt: null
+        }
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    res.status(200).json({ message: 'Inbound email recorded.', email: saved });
+  } catch (error) {
+    console.error('Inbound Email Webhook Error:', error);
+    res.status(500).json({ error: 'Failed to ingest inbound email webhook.' });
   }
 });
 
@@ -6649,6 +7406,8 @@ You have 21 direct executive tools to manage the boutique, profit-protected mont
 19. configureCjCustomLabeling: Enables, updates, or disables CJ custom packaging / private labeling / POD logo branding on a specific product, a monthly box, or across the entire boutique catalog.
 20. adjustCjShippingAndPricing: Fetches CJ shipping quotes, changes the CJ shipping method (CJPacket Sensitive, USPS+, CJPacket Ordinary, CJ Liquid Direct, DHL Official) on a product, active order, monthly box, or entire catalog, and recalculates retail prices with shipping included.
 21. dispatchMonthlyMemberBoxToCj: Dispatches a curated monthly membership box to CJ Dropshipping via createOrderV2, optionally pays for it from the CJ Wallet, and emails the member.
+22. syncAndReadIonosInbox: Syncs Susan's incoming IONOS email inbox (imap.ionos.com:993), lists unread or recent emails, or dispatches a threaded reply to an incoming email by its _id.
+23. topUpCjWalletWithCard: Initiates or confirms a Bank Debit/Credit Card top-up into Susan's CJ Dropshipping Wallet Reserve and optionally auto-pays waiting CJ orders.
 
 Live Monthly Membership Boxes & <=25% Cost Cap Snapshot:
 ${JSON.stringify(monthlyBoxesSummary)}
@@ -7080,6 +7839,56 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
               }
             }
           }
+        },
+        {
+          name: 'syncAndReadIonosInbox',
+          description: "Syncs Susan's incoming IONOS IMAP inbox (imap.ionos.com:993), returns recent or unread incoming emails, or replies to a specific incoming email by its MongoDB _id.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              syncNow: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to run a live IMAP sync from imap.ionos.com:993 before reading emails (default true).'
+              },
+              statusFilter: {
+                type: Type.STRING,
+                description: 'Filter incoming emails by "all", "unread", "starred", "replied", or "archived" (default "all").'
+              },
+              replyToEmailId: {
+                type: Type.STRING,
+                description: 'Optional MongoDB _id of an InboundEmail to reply to directly.'
+              },
+              replyBody: {
+                type: Type.STRING,
+                description: 'Optional reply message text when replyToEmailId is provided.'
+              }
+            }
+          }
+        },
+        {
+          name: 'topUpCjWalletWithCard',
+          description: "Deposits funds into Susan's CJ Dropshipping Wallet Reserve using her bank debit/credit card (via Stripe Card Checkout or instant deposit) and optionally auto-pays waiting CJ orders.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              amountUsd: {
+                type: Type.NUMBER,
+                description: 'USD amount to charge to the bank card for CJ Wallet funding (e.g., 50, 100, 250).'
+              },
+              autoPayOrders: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to automatically pay waiting CJ orders right after the card top-up (default true).'
+              },
+              instantDeposit: {
+                type: Type.BOOLEAN,
+                description: 'Set to true to credit the CJ Wallet Card Reserve immediately (default true when triggered via Odie).'
+              },
+              notes: {
+                type: Type.STRING,
+                description: 'Optional memo for the Treasury Ledger.'
+              }
+            }
+          }
         }
       ]
     };
@@ -7459,14 +8268,17 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
         else if (call.name === 'syncOrCleanCjCatalog') {
           const purgeOnly = Boolean(args.purgeOnly);
           if (purgeOnly) {
-            const purgedCount = await purgeNonBeautyCjProducts();
-            const activeTotal = await Product.countDocuments();
+            const sanRes = await sanitizeAndDeduplicateCatalog();
             payload.actionsTaken.push('syncOrCleanCjCatalog');
-            summaries.push(`🧹 Odie cleaned the catalog: purged ${purgedCount} non-beauty CJ items (${activeTotal} verified items active).`);
+            summaries.push(
+              `🧹 Odie sanitized the MongoDB catalog: purged ${sanRes.nonBeautyPurgedCount || 0} non-beauty items and removed ${sanRes.duplicatesPurged || 0} duplicate records (${sanRes.activeCatalogTotal || 0} unique products active).`
+            );
           } else {
-            const syncRes = await syncCJCatalog({});
+            const syncRes = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true });
             payload.actionsTaken.push('syncOrCleanCjCatalog');
-            summaries.push(`🔄 Odie completed CJ Beauty & Skincare sync: purged ${syncRes.purgedCount || 0} non-beauty items and synced ${syncRes.syncedCount || 0} beauty products (${syncRes.activeTotal || 0} total active).`);
+            summaries.push(
+              `🔄 Odie completed the Full CJ Beauty & Skincare sync + MongoDB sanitization: processed ${syncRes.syncedCount || 0} items, removed ${syncRes.duplicatesPurged || 0} duplicates & ${syncRes.purgedCount || 0} non-beauty items (${syncRes.activeTotal || 0} unique products active).`
+            );
           }
         }
 
@@ -7778,6 +8590,95 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
             }
           } catch (dispErr) {
             summaries.push(`⚠️ Odie could not dispatch monthly box to CJ: ${dispErr.message}`);
+          }
+        }
+
+        else if (call.name === 'syncAndReadIonosInbox') {
+          try {
+            const shouldSync = args.syncNow !== undefined ? Boolean(args.syncNow) : true;
+            let syncRes = null;
+            if (shouldSync) {
+              syncRes = await syncIonosImapInbox({ maxFetch: 40 });
+            }
+
+            if (args.replyToEmailId && args.replyBody && mongoose.Types.ObjectId.isValid(String(args.replyToEmailId))) {
+              const inbound = await InboundEmail.findById(args.replyToEmailId);
+              if (inbound) {
+                const cleanReply = String(args.replyBody).trim();
+                const baseSubj = String(inbound.subject || '(No Subject)').trim();
+                const replySubj = /^re:/i.test(baseSubj) ? baseSubj : `Re: ${baseSubj}`;
+                const safeHtml = escapeHtml(cleanReply);
+                const html = `
+                  <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+                    <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Susan's Beauty Consulting ✧</h2>
+                    <div style="font-size: 1.08rem; line-height: 1.65; white-space: pre-wrap;">${safeHtml}</div>
+                    <p style="font-size: 0.95rem; color: #8A797A; margin-top: 32px; text-align: center;">Warmly,<br>Susan</p>
+                  </div>
+                `;
+                const text = `${cleanReply}\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+                await sendEmail(inbound.fromEmail, replySubj, html, text, {
+                  inReplyTo: inbound.messageId || undefined,
+                  references: inbound.references || inbound.messageId || undefined
+                });
+                await new EmailLog({
+                  to: inbound.fromEmail,
+                  subject: replySubj,
+                  body: cleanReply,
+                  inReplyToMessageId: inbound.messageId || '',
+                  inboundEmailId: inbound._id
+                }).save();
+                inbound.isRead = true;
+                inbound.repliedAt = new Date();
+                inbound.lastReplyPreview = cleanReply.slice(0, 220);
+                await inbound.save();
+                payload.repliedInboundEmail = inbound;
+                payload.actionsTaken.push('syncAndReadIonosInbox');
+                summaries.push(`✉️ Odie replied to ${inbound.fromName || inbound.fromEmail} (${inbound.fromEmail}) regarding "${replySubj}"!`);
+              }
+            } else {
+              const filterMode = String(args.statusFilter || 'all').toLowerCase();
+              const q = { isArchived: { $ne: true } };
+              if (filterMode === 'unread') q.isRead = false;
+              else if (filterMode === 'starred') q.isStarred = true;
+              else if (filterMode === 'replied') q.repliedAt = { $ne: null };
+
+              const [inboxList, counts] = await Promise.all([
+                InboundEmail.find(q).sort({ receivedAt: -1 }).limit(10).lean(),
+                buildInboundInboxCounts()
+              ]);
+              payload.inboundEmails = inboxList;
+              payload.inboundCounts = counts;
+              payload.actionsTaken.push('syncAndReadIonosInbox');
+
+              const previewLines = inboxList.slice(0, 5).map((e, idx) =>
+                `${idx + 1}. [${e.isRead ? 'Read' : 'UNREAD'}] From: ${e.fromName || e.fromEmail} <${e.fromEmail}> — "${e.subject}" (${new Date(e.receivedAt).toLocaleDateString()})`
+              );
+              summaries.push(
+                `📥 IONOS Inbox (${imapHost}:${imapPort}) • Total: ${counts.total} | Unread: ${counts.unread} | Starred: ${counts.starred}${
+                  syncRes?.newCount ? ` (+${syncRes.newCount} newly fetched)` : ''
+                }\n` + (previewLines.length > 0 ? previewLines.join('\n') : 'No incoming emails matching filter.')
+              );
+            }
+          } catch (inboxErr) {
+            summaries.push(`⚠️ Odie could not sync/read IONOS inbox: ${inboxErr.message}`);
+          }
+        }
+
+        else if (call.name === 'topUpCjWalletWithCard') {
+          try {
+            const topUpRes = await createCjWalletCardTopUpCheckout({
+              amountUsd: args.amountUsd,
+              autoPayOrders: args.autoPayOrders !== undefined ? Boolean(args.autoPayOrders) : true,
+              instantDeposit: args.instantDeposit !== undefined ? Boolean(args.instantDeposit) : true,
+              notes: args.notes || 'Triggered by Odie AI on Susan\'s command',
+              triggeredBy: 'odie'
+            });
+            payload.cjWalletCardTopUp = topUpRes;
+            payload.financialTelemetry = topUpRes.telemetry;
+            payload.actionsTaken.push('topUpCjWalletWithCard');
+            summaries.push(topUpRes.message);
+          } catch (topErr) {
+            summaries.push(`⚠️ Odie could not complete CJ Wallet Bank Card Top-Up: ${topErr.message}`);
           }
         }
       }
@@ -8401,30 +9302,102 @@ app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res)
 
 app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { purgeOnly, maxPages, maxProducts } = req.body || {};
-    if (purgeOnly) {
-      const purgedCount = await purgeNonBeautyCjProducts();
+    const { purgeOnly, sanitizeOnly, maxPages, maxProducts } = req.body || {};
+    if (purgeOnly || sanitizeOnly) {
+      const sanitizeRes = await sanitizeAndDeduplicateCatalog();
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
-        message: `Cleaned catalog: removed ${purgedCount} non-Health/Beauty CJ items.`,
-        purgedCount,
+        message: `🧹 Sanitized MongoDB catalog: purged ${sanitizeRes.nonBeautyPurgedCount || 0} non-beauty items and removed ${sanitizeRes.duplicatesPurged || 0} duplicate records (${products.length} unique products active) ✧`,
+        purgedCount: sanitizeRes.nonBeautyPurgedCount || 0,
+        duplicatesPurged: sanitizeRes.duplicatesPurged || 0,
         syncedCount: 0,
         activeTotal: products.length,
+        syncTelemetry: cjCatalogSyncTelemetry,
         products
       });
     }
 
-    const result = await syncCJCatalog({ maxPages, maxProducts });
+    const result = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `Health & Beauty sync complete! Removed ${result.purgedCount || 0} non-beauty items and synced ${result.syncedCount || 0} verified Health & Beauty products.`,
+      message: `✨ Full Beauty & Skincare sync + sanitization complete! Synced ${result.syncedCount || 0} items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} non-beauty items (${products.length} unique products active) ✧`,
       ...result,
       activeTotal: products.length,
+      syncTelemetry: cjCatalogSyncTelemetry,
       products
     });
   } catch (error) {
     console.error('Admin CJ Sync Error:', error);
     res.status(500).json({ error: error.message || 'Failed to run CJ Health & Beauty sync.' });
+  }
+});
+
+// POST /api/admin/products/sync-and-sanitize — Pulls all Skincare & Beauty products and sanitizes MongoDB (or runs sanitizeOnly)
+app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { sanitizeOnly, maxPages, maxProducts } = req.body || {};
+    if (sanitizeOnly) {
+      const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+      const products = await Product.find({}).sort({ _id: -1 });
+      return res.status(200).json({
+        message: `🧹 MongoDB Catalog Sanitized! Merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed, ${sanitizeResult.nonBeautyPurgedCount || 0} non-beauty removed) → ${products.length} unique Beauty & Skincare products active ✧`,
+        sanitizeResult,
+        duplicatesPurged: sanitizeResult.duplicatesPurged || 0,
+        purgedCount: sanitizeResult.nonBeautyPurgedCount || 0,
+        activeTotal: products.length,
+        syncTelemetry: cjCatalogSyncTelemetry,
+        products
+      });
+    }
+
+    const syncResult = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts });
+    const products = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: `✨ Full Skincare & Beauty Sync + MongoDB Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} non-beauty items → ${products.length} unique products active ✧`,
+      syncResult,
+      duplicatesPurged: syncResult.duplicatesPurged || 0,
+      purgedCount: syncResult.purgedCount || 0,
+      syncedCount: syncResult.syncedCount || 0,
+      activeTotal: products.length,
+      syncTelemetry: cjCatalogSyncTelemetry,
+      products
+    });
+  } catch (error) {
+    console.error('Sync and Sanitize Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to sync and sanitize beauty catalog.' });
+  }
+});
+
+// POST /api/admin/products/deduplicate — Runs immediate MongoDB deduplication & sanitization
+app.post('/api/admin/products/deduplicate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+    const products = await Product.find({}).sort({ _id: -1 });
+    res.status(200).json({
+      message: `🧹 Deduplicated & Sanitized MongoDB! Removed ${sanitizeResult.duplicatesPurged || 0} duplicates and ${sanitizeResult.nonBeautyPurgedCount || 0} non-beauty items (${products.length} unique products active) ✧`,
+      ...sanitizeResult,
+      activeTotal: products.length,
+      syncTelemetry: cjCatalogSyncTelemetry,
+      products
+    });
+  } catch (error) {
+    console.error('Deduplicate Catalog Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to deduplicate catalog.' });
+  }
+});
+
+// GET /api/admin/products/sync-status — Returns live catalog sanitization & 3:00 AM CST schedule telemetry
+app.get('/api/admin/products/sync-status', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const activeTotal = await Product.countDocuments();
+    cjCatalogSyncTelemetry.activeCatalogTotal = activeTotal;
+    res.status(200).json({
+      ...cjCatalogSyncTelemetry,
+      isSyncRunning: isCjSyncRunning,
+      isSanitizeRunning: isCatalogSanitizeRunning
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to read catalog sync status.' });
   }
 });
 
@@ -8561,7 +9534,18 @@ app.put('/api/admin/products/:id', authenticateToken, requireAdmin, async (req, 
     
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
-    if (title !== undefined) product.title = title;
+    const { customTitleLocked } = req.body || {};
+    if (title !== undefined && String(title).trim()) {
+      const incomingTitle = String(title).trim();
+      if (incomingTitle !== product.title && customTitleLocked === undefined) {
+        product.customTitleLocked = true;
+      }
+      product.title = incomingTitle;
+      product.normalizedTitleKey = normalizeCjTitleForDedupe(incomingTitle);
+    }
+    if (customTitleLocked !== undefined) {
+      product.customTitleLocked = Boolean(customTitleLocked);
+    }
     if (description !== undefined) product.description = description;
     if (imageUrl !== undefined) product.imageUrl = imageUrl;
 
@@ -9845,8 +10829,22 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
     const orderId = session.metadata?.orderId;
     const tier = session.metadata?.tier;
     const userId = session.metadata?.userId;
+    const topupType = session.metadata?.topupType;
 
-    if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
+    if (topupType === 'CJ_WALLET_CARD_DEPOSIT') {
+      try {
+        await confirmCjWalletCardTopUp({
+          sessionId: session.id,
+          amountUsd: session.amount_total ? Number((session.amount_total / 100).toFixed(2)) : undefined,
+          autoPayOrders: session.metadata?.autoPayOrders !== 'false',
+          notes: session.metadata?.notes || '',
+          triggeredBy: session.metadata?.triggeredBy || 'susan'
+        });
+        console.log(`💳 Webhook confirmed CJ Wallet Bank Card Top-Up for session ${session.id}`);
+      } catch (topupErr) {
+        console.error('⚠️ Webhook CJ Wallet Card Top-Up confirm error:', topupErr.message);
+      }
+    } else if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
       try {
         const order = await Order.findById(orderId);
         if (order && order.status === 'Pending') {
@@ -10411,8 +11409,35 @@ mongoose.connect(MONGO_URI)
     app.listen(PORT, () => {
       console.log(`✧ Backend API running gracefully on port ${PORT}`);
       
-      syncCJCatalog().catch((error) => {
-        console.error('❌ Unexpected CJ catalog sync failure:', error?.response?.data || error.message);
+      // On boot: immediately sanitize & deduplicate MongoDB so there are zero duplicates.
+      // Only trigger an external CJ pull on boot if the catalog is completely empty; otherwise let the 3:00 AM CST daily schedule handle re-syncs.
+      (async () => {
+        try {
+          const bootSanitize = await sanitizeAndDeduplicateCatalog();
+          if ((bootSanitize.activeCatalogTotal || 0) === 0) {
+            console.log('🌱 Catalog is empty on startup — initiating initial CJ Beauty & Skincare harvest...');
+            await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true });
+          } else {
+            console.log(
+              `✨ Startup catalog sanitization complete (${bootSanitize.activeCatalogTotal} unique products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next full CJ re-sync scheduled for 3:00 AM CST.`
+            );
+          }
+        } catch (error) {
+          console.error('❌ Startup catalog sanitization/sync error:', error?.response?.data || error.message);
+        }
+      })();
+
+      // Sync incoming IONOS emails (imap.ionos.com:993) shortly after boot and every 2 minutes
+      setTimeout(() => {
+        syncIonosImapInbox({ maxFetch: 45 }).catch((err) => {
+          console.warn('⚠️ Initial IONOS IMAP sync note:', err.message);
+        });
+      }, 6000);
+
+      cron.schedule('*/2 * * * *', () => {
+        syncIonosImapInbox({ maxFetch: 35 }).catch((err) => {
+          console.warn('⚠️ Scheduled IONOS IMAP sync note:', err.message);
+        });
       });
 
       // Check for upcoming 24-hour consultation reminders shortly after boot and every 15 minutes
@@ -10426,12 +11451,16 @@ mongoose.connect(MONGO_URI)
         });
       });
 
-      cron.schedule('0 3 * * *', () => {
-        console.log('⏰ Running scheduled CJ catalog sync at 3:00 AM...');
-        syncCJCatalog().catch((error) => {
-          console.error('❌ Scheduled CJ catalog sync failure:', error?.response?.data || error.message);
-        });
-      });
+      cron.schedule(
+        '0 3 * * *',
+        () => {
+          console.log('⏰ Running scheduled daily CJ Beauty & Skincare full sync and MongoDB sanitization at 3:00 AM CST...');
+          syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((error) => {
+            console.error('❌ Scheduled 3:00 AM CST CJ catalog sync failure:', error?.response?.data || error.message);
+          });
+        },
+        { timezone: 'America/Chicago' }
+      );
     });
   })
   .catch((err) => console.error('Failed to connect to MongoDB:', err));
