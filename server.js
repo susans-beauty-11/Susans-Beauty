@@ -51,7 +51,6 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------- EMAIL TRANSPORTER & SECURITY HELPERS (IONOS SMTP + HTTPS FALLBACK) ---------------- //
 const dns = require('dns');
-const tls = require('tls');
 
 const cleanEnv = (val) => (val || '').toString().trim().replace(/^["']|["']$/g, '');
 
@@ -266,6 +265,297 @@ const verifySmtpConnection = async () => {
         code: err.code || err.responseCode || 'ERR',
         error: err.message,
         durationMs: Date.now() - startMs
+      });
+      console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
+    }
+  }
+
+  return {
+    verified: false,
+    host: smtpHost,
+    dnsResolution,
+    triedPorts: [...new Set(attempts.map(a => a.port))],
+    attempts,
+    envWarnings,
+    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
+    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
+  };
+};
+
+// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
+const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
+  const fromAddress = getPrimaryAdminEmail();
+  if (resendApiKey) {
+    const resp = await axios.post(
+      'https://api.resend.com/emails',
+      {
+        from: `Susan's Beauty Consulting <${fromAddress}>`,
+        to: [to],
+        subject,
+        html: htmlContent,
+        text: textContent
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.id || 'resend-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Resend HTTPS API (Port 443)'
+    };
+  }
+
+  if (brevoApiKey) {
+    const resp = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
+        to: [{ email: to }],
+        subject,
+        htmlContent,
+        textContent
+      },
+      {
+        headers: {
+          'api-key': brevoApiKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.messageId || 'brevo-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Brevo HTTPS API (Port 443)'
+    };
+  }
+
+  return null;
+};
+
+const sendEmail = async (to, subject, htmlContent, textContent) => {
+  const envWarnings = inspectSmtpEnvWarnings();
+
+  if (!smtpPass && !resendApiKey && !brevoApiKey) {
+    const configErr = new Error(
+      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
+    );
+    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
+    throw configErr;
+  }
+
+  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
+  const attempts = [];
+
+  for (const candidate of candidates.slice(0, 6)) {
+    const client = createIonosTransporter(candidate);
+    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
+    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
+    const mailOptions = {
+      from: {
+        name: "Susan's Beauty Consulting",
+        address: candidate.user
+      },
+      replyTo: candidate.user,
+      envelope: {
+        from: candidate.user,
+        to
+      },
+      to,
+      subject,
+      text: textContent,
+      html: htmlContent
+    };
+
+    const startMs = Date.now();
+    try {
+      const info = await client.sendMail(mailOptions);
+      cachedWorkingCandidate = candidate;
+      activeSmtpPort = candidate.port;
+      activeSmtpUser = candidate.user;
+      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
+      return {
+        info,
+        portUsed: candidate.port,
+        secureUsed: candidate.secure,
+        authUserUsed: candidate.user,
+        deliveryTransport: `IONOS SMTP (${candidate.label})`,
+        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
+      };
+    } catch (err) {
+      attempts.push({
+        label: candidate.label,
+        port: candidate.port,
+        user: candidate.user,
+        status: 'FAILED',
+        code: err.code || err.responseCode || 'ERR',
+        error: err.message,
+        durationMs: Date.now() - startMs
+      });
+      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
+    }
+  }
+
+  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
+  try {
+    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
+    if (httpsResult) {
+      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
+      return { ...httpsResult, attempts };
+    }
+  } catch (httpsErr) {
+    attempts.push({
+      label: 'HTTPS Port 443 Fallback',
+      status: 'FAILED',
+      error: httpsErr?.response?.data?.message || httpsErr.message
+    });
+  }
+
+  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
+  const detailedError = new Error(
+    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
+  );
+  detailedError.attempts = attempts;
+  detailedError.troubleshootingAdvice = advice;
+  throw detailedError;
+};
+
+// ---------------- MONGODB SCHEMAS ---------------- //
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, index: true },
+  password: { type: String, required: true },
+  role: { 
+    type: String, 
+    enum: ['client', 'staff', 'admin'], 
+    default: 'client',
+    index: true 
+  },
+  membershipTier: { type: String, default: 'luminary' },
+  recommendedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  resetPasswordToken: String,
+  resetPasswordExpires: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+const User = mongoose.model('User', userSchema);
+
+const serviceSchema = new mongoose.Schema({
+  name: { type: String, required: true, index: true },
+  description: { type: String },
+  durationInMinutes: { type: Number, required: true },
+  price: { type: Number, required: true },
+  imageUrl: { type: String },
+  isActive: { type: Boolean, default: true }
+}, { timestamps: true });
+const Service = mongoose.model('Service', serviceSchema);
+
+const appointmentSchema = new mongoose.Schema({
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, index: true },
+  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: false, index: true },
+  startTime: { type: Date, required: true, index: true },
+  endTime: { type: Date, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending', 'confirmed', 'completed', 'cancelled'], 
+    default: 'confirmed',
+    index: true
+  },
+  depositPaid: { type: Boolean, default: false },
+  notes: { type: String, default: '' },
+  meetingLink: { type: String, default: '' },
+  rescheduledBy: {
+    type: String,
+    enum: ['admin', 'client', null],
+    default: null
+  },
+  previousStartTime: { type: Date, default: null },
+  reminderSentAt: { type: Date, default: null, index: true }
+}, { timestamps: true });
+appointmentSchema.index({ staffId: 1, startTime: 1, endTime: 1 });
+const Appointment = mongoose.model('Appointment', appointmentSchema);
+
+const reviewSchema = new mongoose.Schema({
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', required: true, unique: true },
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  serviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true, index: true },
+  rating: { type: Number, required: true, min: 1, max: 5 },
+  comment: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+const Review = mongoose.model('Review', reviewSchema);
+
+const consultationSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  skinType: String,
+  primaryGoal: String,
+  climate: String,
+  skinSensitivity: String,
+  complexion: String,
+  undertone: String,
+  eyeColor: String,
+  faceShape: String,
+  makeupVibe: String,
+  routineFocus: String,
+  blueprintAnalysis: { type: mongoose.Schema.Types.Mixed },
+  createdAt: { type: Date, default: Date.now }
+});
+const Consultation = mongoose.model('Consultation', consultationSchema);
+
+const productSchema = new mongoose.Schema({
+  title: { type: String, required: true, index: true },
+  description: String,
+  imageUrl: String,
+  tags: { type: [String], index: true },
+  skinTypes: { type: [String], default: [], index: true },
+  skinConcerns: { type: [String], default: [], index: true },
+  sensitivitySafe: { type: Boolean, default: true, index: true },
+  sensitivityLabel: { type: String, default: 'Gentle • High-Sensitivity Safe' },
+  ritualStep: { type: String, default: 'Step 3: Serum & Essence', index: true },
+  keyActives: { type: [String], default: [] },
+  viewCount: { type: Number, default: 0, index: true },
+  cartAddCount: { type: Number, default: 0, index: true },
+  purchaseCount: { type: Number, default: 0, index: true },
+  curatedCount: { type: Number, default: 0 },
+  lastViewedAt: { type: Date, default: null },
+  price: { type: Number, default: 0 },
+  wholesalePriceUsd: { type: Number, default: 2.50 },
+  markupMultiplier: { type: Number, default: 6.5 },
+  estimatedWeightGrams: { type: Number, default: 120 },
+  originCountryCode: { type: String, default: 'CN' },
+  selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
+  shippingCostUsd: { type: Number, default: 4.49 },
+  shippingIncludedInPrice: { type: Boolean, default: true },
+  availableLogistics: { type: Array, default: [] },
+  customLabelConfig: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      enabled: false,
+      labelType: 'NONE',
+      packagingVid: '',
+      packagingName: "Susan's Rose-Gold Custom Box & Seal",
+      customBrandText: "Susan's Beauty Consulting ✧",
+      logoUrl: '',
+      packagingCostUsd: 0
+    })
+  },
+  variants: [{
+    sku: { type: String, required: true },
+    variantName: String, 
+    price: Number,
+    wholesalePriceUsd: Number,
+    imageUrl: String 
+  }],
+  rawCjData: { type: mongooartMs
       });
       console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
     }
