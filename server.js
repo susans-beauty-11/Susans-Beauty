@@ -577,6 +577,318 @@ const parseEmailAddressField = (rawField = '') => {
   return { name: decoded, email: normalizeEmail(decoded) };
 };
 
+// Recursively extracts text/plain and text/html bodies fromartMs
+      });
+      console.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
+    }
+  }
+
+  return {
+    verified: false,
+    host: smtpHost,
+    dnsResolution,
+    triedPorts: [...new Set(attempts.map(a => a.port))],
+    attempts,
+    envWarnings,
+    error: attempts[0]?.error || 'All IONOS SMTP verification attempts failed.',
+    troubleshootingAdvice: buildSmtpTroubleshootingAdvice(attempts, envWarnings)
+  };
+};
+
+// Optional HTTPS Port 443 Fallback (Resend or Brevo) when cloud hosts block outbound SMTP ports 465/587
+const sendViaHttpsFallback = async (to, subject, htmlContent, textContent) => {
+  const fromAddress = getPrimaryAdminEmail();
+  if (resendApiKey) {
+    const resp = await axios.post(
+      'https://api.resend.com/emails',
+      {
+        from: `Susan's Beauty Consulting <${fromAddress}>`,
+        to: [to],
+        subject,
+        html: htmlContent,
+        text: textContent
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.id || 'resend-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Resend HTTPS API (Port 443)'
+    };
+  }
+
+  if (brevoApiKey) {
+    const resp = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: "Susan's Beauty Consulting", email: fromAddress },
+        to: [{ email: to }],
+        subject,
+        htmlContent,
+        textContent
+      },
+      {
+        headers: {
+          'api-key': brevoApiKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 12000
+      }
+    );
+    return {
+      info: { messageId: resp.data?.messageId || 'brevo-https' },
+      portUsed: 443,
+      secureUsed: true,
+      authUserUsed: fromAddress,
+      deliveryTransport: 'Brevo HTTPS API (Port 443)'
+    };
+  }
+
+  return null;
+};
+
+const sendEmail = async (to, subject, htmlContent, textContent, extraHeaders = {}) => {
+  const envWarnings = inspectSmtpEnvWarnings();
+
+  if (!smtpPass && !resendApiKey && !brevoApiKey) {
+    const configErr = new Error(
+      'SMTP_PASS is missing in environment variables. Add SMTP_PASS="your_ionos_password" to .env.'
+    );
+    console.error(`⚠️ Cannot send email to ${to}:`, configErr.message);
+    throw configErr;
+  }
+
+  const candidates = smtpPass ? buildSmtpCandidateMatrix() : [];
+  const attempts = [];
+
+  for (const candidate of candidates.slice(0, 6)) {
+    const client = createIonosTransporter(candidate);
+    // Strictly align From header and SMTP envelope with the exact authenticated IONOS mailbox
+    // so IONOS never rejects with 550-5.7.1 "Sender address is not allowed"
+    const mailOptions = {
+      from: {
+        name: "Susan's Beauty Consulting",
+        address: candidate.user
+      },
+      replyTo: candidate.user,
+      envelope: {
+        from: candidate.user,
+        to
+      },
+      to,
+      subject,
+      text: textContent,
+      html: htmlContent
+    };
+
+    if (extraHeaders && typeof extraHeaders === 'object') {
+      if (extraHeaders.inReplyTo) {
+        mailOptions.inReplyTo = String(extraHeaders.inReplyTo).trim();
+      }
+      if (extraHeaders.references) {
+        mailOptions.references = String(extraHeaders.references).trim();
+      }
+    }
+
+    const startMs = Date.now();
+    try {
+      const info = await client.sendMail(mailOptions);
+      cachedWorkingCandidate = candidate;
+      activeSmtpPort = candidate.port;
+      activeSmtpUser = candidate.user;
+      console.log(`✉️ Email dispatched via ${candidate.label} to ${to}: "${subject}"`);
+      return {
+        info,
+        portUsed: candidate.port,
+        secureUsed: candidate.secure,
+        authUserUsed: candidate.user,
+        deliveryTransport: `IONOS SMTP (${candidate.label})`,
+        attempts: [...attempts, { label: candidate.label, status: 'SENT', durationMs: Date.now() - startMs }]
+      };
+    } catch (err) {
+      attempts.push({
+        label: candidate.label,
+        port: candidate.port,
+        user: candidate.user,
+        status: 'FAILED',
+        code: err.code || err.responseCode || 'ERR',
+        error: err.message,
+        durationMs: Date.now() - startMs
+      });
+      console.warn(`⚠️ SMTP send failed on ${candidate.label} to ${to}: ${err.message}`);
+    }
+  }
+
+  // Try HTTPS API fallback (Port 443) if configured and SMTP ports failed
+  try {
+    const httpsResult = await sendViaHttpsFallback(to, subject, htmlContent, textContent);
+    if (httpsResult) {
+      console.log(`✉️ Email dispatched via ${httpsResult.deliveryTransport} to ${to}`);
+      return { ...httpsResult, attempts };
+    }
+  } catch (httpsErr) {
+    attempts.push({
+      label: 'HTTPS Port 443 Fallback',
+      status: 'FAILED',
+      error: httpsErr?.response?.data?.message || httpsErr.message
+    });
+  }
+
+  const advice = buildSmtpTroubleshootingAdvice(attempts, envWarnings);
+  const detailedError = new Error(
+    `IONOS SMTP delivery failed (${attempts[0]?.error || 'Connection error'}). ${advice[0] || ''}`
+  );
+  detailedError.attempts = attempts;
+  detailedError.troubleshootingAdvice = advice;
+  throw detailedError;
+};
+
+// ---------------- NATIVE TLS IONOS IMAP CLIENT ENGINE (imap.ionos.com:993) ---------------- //
+// Connects directly to IONOS IMAP over Implicit SSL/TLS (Port 993) using Node's built-in `tls` module.
+// Requires zero external npm packages and persists incoming messages idempotently to InboundEmail.
+
+const imapHost = cleanEnv(process.env.IMAP_HOST) || 'imap.ionos.com';
+const imapPort = Number(cleanEnv(process.env.IMAP_PORT)) || 993;
+
+let isImapSyncRunning = false;
+let imapTelemetryState = {
+  host: imapHost,
+  port: imapPort,
+  configuredUser: rawSmtpUser,
+  activeUser: activeSmtpUser || rawSmtpUser,
+  connected: false,
+  lastSyncAt: null,
+  lastSyncStatus: 'IDLE',
+  lastSyncFetchedCount: 0,
+  lastSyncNewCount: 0,
+  lastError: null
+};
+
+// Decodes RFC 2047 encoded-word strings in email headers (e.g. =?UTF-8?B?...?= or =?UTF-8?Q?...?=)
+const decodeRfc2047Header = (raw = '') => {
+  if (!raw) return '';
+  return String(raw).replace(/=\?([^?]+)\?([BQbq])\?([^?]*?)\?=/g, (_, charset, encoding, text) => {
+    try {
+      const enc = String(encoding).toUpperCase();
+      if (enc === 'B') {
+        return Buffer.from(text, 'base64').toString('utf8');
+      }
+      if (enc === 'Q') {
+        const qText = text.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (__, hex) =>
+          String.fromCharCode(parseInt(hex, 16))
+        );
+        return Buffer.from(qText, 'binary').toString('utf8');
+      }
+    } catch (e) {}
+    return text;
+  });
+};
+
+// Decodes Quoted-Printable email bodies into UTF-8 text
+const decodeQuotedPrintable = (input = '') => {
+  if (!input) return '';
+  const softLineStripped = String(input).replace(/=\r?\n/g, '');
+  const bytes = [];
+  for (let i = 0; i < softLineStripped.length; i++) {
+    if (softLineStripped[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(softLineStripped.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(softLineStripped.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(softLineStripped.charCodeAt(i));
+    }
+  }
+  try {
+    return Buffer.from(bytes).toString('utf8');
+  } catch (e) {
+    return softLineStripped;
+  }
+};
+
+// Decodes a MIME body part according to its Content-Transfer-Encoding header
+const decodeMimePartBody = (rawBody = '', transferEncoding = '') => {
+  const enc = String(transferEncoding || '').toLowerCase().trim();
+  if (enc === 'base64') {
+    try {
+      return Buffer.from(String(rawBody).replace(/\s+/g, ''), 'base64').toString('utf8');
+    } catch (e) {
+      return rawBody;
+    }
+  }
+  if (enc === 'quoted-printable') {
+    return decodeQuotedPrintable(rawBody);
+  }
+  return String(rawBody || '');
+};
+
+// Strips HTML tags cleanly to generate a plain-text fallback or snippet
+const stripHtmlToText = (html = '') =>
+  String(html || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+// Parses unfolded RFC 5322 headers into a lowercase-key dictionary
+const parseRfc5322Headers = (headerBlock = '') => {
+  const unfolded = String(headerBlock || '').replace(/\r?\n[ \t]+/g, ' ');
+  const lines = unfolded.split(/\r?\n/);
+  const headers = {};
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const key = line.slice(0, colonIdx).trim().toLowerCase();
+    const val = line.slice(colonIdx + 1).trim();
+    if (headers[key]) {
+      headers[key] += `, ${val}`;
+    } else {
+      headers[key] = val;
+    }
+  }
+  return headers;
+};
+
+// Extracts { name, email } from a raw From/To header like `"Jane Doe" <jane@example.com>`
+const parseEmailAddressField = (rawField = '') => {
+  const decoded = decodeRfc2047Header(rawField).trim();
+  if (!decoded) return { name: '', email: '' };
+  const angleMatch = decoded.match(/^(.*?)<([^>]+)>/);
+  if (angleMatch) {
+    const cleanName = angleMatch[1].trim().replace(/^["']|["']$/g, '').trim();
+    const cleanAddr = normalizeEmail(angleMatch[2]);
+    return {
+      name: cleanName || cleanAddr.split('@')[0] || 'Client',
+      email: cleanAddr
+    };
+  }
+  const emailMatch = decoded.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
+  if (emailMatch) {
+    const cleanAddr = normalizeEmail(emailMatch[0]);
+    return {
+      name: cleanAddr.split('@')[0] || 'Client',
+      email: cleanAddr
+    };
+  }
+  return { name: decoded, email: normalizeEmail(decoded) };
+};
+
 // Recursively extracts text/plain and text/hte.warn(`⚠️ SMTP verify failed on ${candidate.label}: ${err.message}`);
     }
   }
