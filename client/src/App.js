@@ -602,6 +602,181 @@ const deriveProductBlueprintMeta = (product = {}) => {
 };
 
 // Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
+const evaluateBlueprintMatch  String(val).split(',').map(v => v.trim()).filter(Boolean);
+};
+
+// Guarantees every product has structured skinTypes, skinConcerns, ritualStep, sensitivitySafe, sensitivityLabel, and keyActives
+const deriveProductBlueprintMeta = (product = {}) => {
+  const cleanTitle = String(product?.title || '').trim();
+  const cleanCat = String(product?.rawCjData?.categoryName || '').trim();
+  const rawDesc = product?.description || product?.rawCjData?.description || '';
+  const cleanDesc = typeof rawDesc === 'string' ? rawDesc.replace(/<[^>]*>?/gm, ' ').slice(0, 800) : '';
+  const tagList = parseBlueprintList(product?.tags);
+  const corpus = `${cleanTitle} ${cleanCat} ${cleanDesc} ${tagList.join(' ')}`.toLowerCase();
+
+  // 1. Ritual Step
+  let ritualStep = String(product?.ritualStep || product?.essentialSlotLabel || '').trim();
+  if (!ritualStep) {
+    if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
+      ritualStep = 'Makeup & Artistry';
+    } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
+      ritualStep = 'Beauty Tool & Spa';
+    } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
+      ritualStep = 'Step 1: Cleanser';
+    } else if (/\b(toner|facial mist|face mist|rosewater|hydrosol|essence water|toning|refining water|balancing water)\b/i.test(corpus)) {
+      ritualStep = 'Step 2: Toner & Mist';
+    } else if (/\b(eye cream|eye patch|eye patches|eye mask|eye serum|eye gel|under eye|lip balm|lip mask|lip oil|lip scrub|lip plumper|lip sleeping|sunscreen|sunblock|spf|uv protection)\b/i.test(corpus)) {
+      ritualStep = 'Step 5: Eye, Lip & SPF';
+    } else if (/\b(moisturizer|moisturizing|face cream|night cream|day cream|neck cream|barrier cream|lotion|body lotion|body butter|body cream|emulsion|gel cream|balm|sleeping mask|ointment)\b/i.test(corpus)) {
+      ritualStep = 'Step 4: Moisturizer & Cream';
+    } else {
+      ritualStep = 'Step 3: Serum & Essence';
+    }
+  }
+
+  // 2. Skin Concerns / Conditions
+  let skinConcerns = parseBlueprintList(product?.skinConcerns);
+  const addConcern = (c) => {
+    if (c && !skinConcerns.includes(c)) skinConcerns.push(c);
+  };
+  if (skinConcerns.length === 0) {
+    if (/\b(hydrat|hyaluronic|moisture|moisturiz|dry|plump|dewy|water|squalane|glycerin|aloe|snail|mucin|hydrogel|lotion|cream|balm|mist|lip oil|lip balm)\b/i.test(corpus)) {
+      addConcern('Hydration');
+    }
+    if (/\b(anti-aging|anti aging|anti-wrinkle|wrinkle|fine line|firming|lifting|retinol|retinoid|peptide|collagen|elasticity|youth|age-defying|bakuchiol|eye cream|neck|gua sha|jade roller|led mask|massager)\b/i.test(corpus)) {
+      addConcern('Anti-Aging');
+    }
+    if (/\b(acne|blemish|pimple|pore|blackhead|salicylic|bha|aha|pha|glycolic|lactic|exfoliat|scrub|peel|clay|mud|charcoal|tea tree|niacinamide|nicotinamide|oil control|mattif|sebum|purifying|cleanser|scrubber)\b/i.test(corpus)) {
+      addConcern('Acne/Texture');
+    }
+    if (/\b(brighten|whitening|vitamin c|ascorbic|dark spot|hyperpigmentation|even tone|glow|radiance|radiant|luminous|kojic|turmeric|arbutin|pearl|illuminat|niacinamide)\b/i.test(corpus)) {
+      addConcern('Brightening');
+    }
+    if (/\b(sensitive|soothing|calming|barrier|ceramide|centella|cica|aloe|chamomile|rose|panthenol|allantoin|redness|repair|gentle|fragrance-free|micellar|oat)\b/i.test(corpus)) {
+      addConcern('Barrier & Soothing');
+    }
+    if (ritualStep === 'Makeup & Artistry' || /\b(makeup|cosmetic|foundation|concealer|blush|highlighter|lipstick|lip gloss|eyeshadow|mascara|eyeliner|brow|contour|powder|palette)\b/i.test(corpus)) {
+      addConcern('Luminous Makeup');
+    }
+    if (skinConcerns.length === 0) {
+      if (ritualStep === 'Step 1: Cleanser') {
+        addConcern('Acne/Texture');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 2: Toner & Mist' || ritualStep === 'Step 4: Moisturizer & Cream') {
+        addConcern('Hydration');
+        addConcern('Barrier & Soothing');
+      } else if (ritualStep === 'Step 5: Eye, Lip & SPF' || ritualStep === 'Beauty Tool & Spa') {
+        addConcern('Hydration');
+        addConcern('Anti-Aging');
+      } else {
+        addConcern('Hydration');
+        addConcern('Brightening');
+      }
+    }
+  }
+
+  // 3. Best-Fit Skin Types
+  let skinTypes = parseBlueprintList(product?.skinTypes);
+  const addSkinType = (st) => {
+    if (st && !skinTypes.includes(st)) skinTypes.push(st);
+  };
+  if (skinTypes.length === 0) {
+    if (/\b(dry skin|thirsty|dehydrated|rich cream|nourishing|hydrating|hyaluronic|ceramide|squalane|shea|argan|balm|facial oil|sleeping mask|moisture|night cream|lip oil|lip balm)\b/i.test(corpus) || skinConcerns.includes('Hydration')) {
+      addSkinType('Dry');
+    }
+    if (/\b(oily skin|oil control|mattifying|matte|sebum|salicylic|bha|clay|mud|charcoal|pore|blackhead|tea tree|acne|blemish|pimple|foaming|gel cleanser|lightweight|water gel|setting powder|loose powder)\b/i.test(corpus) || skinConcerns.includes('Acne/Texture')) {
+      addSkinType('Oily');
+    }
+    if (/\b(combination skin|balancing|niacinamide|toner|mist|serum|essence|gel cream|lotion|sheet mask|micellar|vitamin c|cleanser)\b/i.test(corpus) || (skinTypes.includes('Dry') && skinTypes.includes('Oily'))) {
+      addSkinType('Combination');
+    }
+    if (/\b(normal skin|all skin|daily|gentle|balanced|vitamin c|peptide|collagen|brightening|eye|lip|sunscreen|spf)\b/i.test(corpus) || skinConcerns.includes('Brightening') || skinConcerns.includes('Anti-Aging')) {
+      addSkinType('Normal');
+    }
+    if (
+      ritualStep === 'Makeup & Artistry' ||
+      ritualStep === 'Beauty Tool & Spa' ||
+      ritualStep === 'Step 5: Eye, Lip & SPF' ||
+      skinTypes.length === 0 ||
+      skinTypes.length >= 3
+    ) {
+      if (skinTypes.length === 0) {
+        addSkinType('Normal');
+        addSkinType('Dry');
+        addSkinType('Combination');
+        addSkinType('Oily');
+      }
+      addSkinType('All Skin Types');
+    } else if (skinTypes.length === 1) {
+      if (skinTypes[0] === 'Dry') addSkinType('Normal');
+      else if (skinTypes[0] === 'Oily') addSkinType('Combination');
+      else if (skinTypes[0] === 'Combination') addSkinType('Normal');
+      else if (skinTypes[0] === 'Normal') addSkinType('All Skin Types');
+    }
+  }
+
+  // 4. Sensitivity Profile
+  const hasPotentActives = /\b(retinol|retinoid|aha|bha|pha|glycolic|salicylic|lactic acid|peel|peeling|scrub|exfoliant|exfoliating|microneedle|derma roller)\b/i.test(corpus);
+  const sensitivitySafe = product?.sensitivitySafe !== undefined
+    ? Boolean(product.sensitivitySafe)
+    : !hasPotentActives;
+  const sensitivityLabel = (product?.sensitivityLabel && String(product.sensitivityLabel).trim())
+    ? String(product.sensitivityLabel).trim()
+    : (sensitivitySafe
+        ? 'Gentle • High-Sensitivity Safe'
+        : 'Active Formula • Best for Low/Moderate Sensitivity');
+
+  // 5. Key Actives
+  let keyActives = parseBlueprintList(product?.keyActives);
+  const addActive = (act) => {
+    if (act && !keyActives.includes(act) && keyActives.length < 4) keyActives.push(act);
+  };
+  if (keyActives.length === 0) {
+    const activeRules = [
+      { regex: /\b(hyaluronic|sodium hyaluronate)\b/i, name: 'Hyaluronic Acid' },
+      { regex: /\b(ceramide)\b/i, name: 'Barrier Ceramides' },
+      { regex: /\b(niacinamide|nicotinamide|vitamin b3)\b/i, name: 'Niacinamide (B3)' },
+      { regex: /\b(vitamin c|ascorbic)\b/i, name: 'Vitamin C Complex' },
+      { regex: /\b(peptide|matrixyl|argireline)\b/i, name: 'Firming Peptides' },
+      { regex: /\b(collagen)\b/i, name: 'Hydrolyzed Collagen' },
+      { regex: /\b(retinol|retinoid|bakuchiol)\b/i, name: 'Retinol / Cellular Renewal' },
+      { regex: /\b(salicylic|bha|tea tree)\b/i, name: 'Clarifying BHA / Tea Tree' },
+      { regex: /\b(glycolic|lactic|aha|pha|exfoli)\b/i, name: 'Smoothing AHA Complex' },
+      { regex: /\b(centella|cica|aloe|chamomile|calendula|green tea)\b/i, name: 'Soothing Botanical Cica' },
+      { regex: /\b(squalane|argan|rosehip|jojoba|shea|vitamin e)\b/i, name: 'Nourishing Lipid Oils' },
+      { regex: /\b(snail|mucin)\b/i, name: 'Snail Mucin Filtrate' },
+      { regex: /\b(rose|rosewater)\b/i, name: 'Botanical Rosewater' },
+      { regex: /\b(clay|kaolin|bentonite|charcoal|mud)\b/i, name: 'Purifying Mineral Clay' },
+      { regex: /\b(spf|sunscreen|uv|zinc|titanium)\b/i, name: 'Broad-Spectrum UV Shield' }
+    ];
+    for (const rule of activeRules) {
+      if (rule.regex.test(corpus)) addActive(rule.name);
+    }
+    if (keyActives.length === 0) {
+      if (ritualStep === 'Makeup & Artistry') {
+        addActive('Luminous Mineral Pigments');
+        addActive('Weightless Breathable Wear');
+      } else if (ritualStep === 'Beauty Tool & Spa') {
+        addActive('Lymphatic Micro-Circulation');
+        addActive('Artisan Spa Craft');
+      } else {
+        addActive('Hydrating Botanical Complex');
+        addActive('pH-Balanced Conditioning');
+      }
+    }
+  }
+
+  return {
+    skinTypes,
+    skinConcerns,
+    ritualStep,
+    sensitivitySafe,
+    sensitivityLabel,
+    keyActives
+  };
+};
+
+// Cross-references any product with the member's Blueprint quizAnswers (live or from localStorage fallback)
 const evaluateBlueprintMatch = (product = {}, quizAnswers = null, hasCompletedQuiz = null) => {
   const meta = deriveProductBlueprintMeta(product);
 
