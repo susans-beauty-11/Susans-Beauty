@@ -10934,7 +10934,295 @@ app.get('/api/auth/providers', (req, res) => {
   }
 });
 
-// GET /api/auth/:provider/start — Initiates OAuth 2.0 flow (or redirects to interactive sandbox handshake if keys are not yet in .env)
+// Renders a self-contained HTML completion bridge inside the OAuth popup window.
+// Immediately posts { type: 'SUSAN_SOCIAL_AUTH_COMPLETE', ... } to window.opener and closes the popup,
+// or falls back to a full-page redirect if opened in the same browser tab.
+const renderOAuthPopupCompletionHtml = ({
+  token = '',
+  user = null,
+  provider = 'google',
+  isNewUser = false,
+  membershipTier = 'luminary',
+  isSubscribing = false,
+  returnOrigin = 'http://localhost:3000',
+  error = ''
+} = {}) => {
+  const cleanOrigin = String(returnOrigin || 'http://localhost:3000').replace(/\/+$/, '');
+  const redirectParams = new URLSearchParams();
+  if (error) {
+    redirectParams.set('oauth_error', String(error));
+    redirectParams.set('oauth_provider', String(provider));
+  } else {
+    redirectParams.set('oauth_token', String(token));
+    redirectParams.set('oauth_provider', String(provider));
+    redirectParams.set('oauth_is_new', isNewUser ? 'true' : 'false');
+    if (isSubscribing && ['luminary', 'radiance'].includes(String(membershipTier).toLowerCase())) {
+      redirectParams.set('oauth_subscribe_tier', String(membershipTier).toLowerCase());
+    }
+  }
+  const fallbackRedirectUrl = `${cleanOrigin}/?${redirectParams.toString()}`;
+
+  const messagePayload = {
+    type: error ? 'SUSAN_SOCIAL_AUTH_ERROR' : 'SUSAN_SOCIAL_AUTH_COMPLETE',
+    error: error || null,
+    token: token || null,
+    user: user
+      ? {
+          id: user._id,
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          membershipTier: user.membershipTier,
+          role: user.role,
+          authProvider: user.authProvider || provider,
+          avatarUrl: user.avatarUrl || '',
+          socialProfiles: user.socialProfiles || {}
+        }
+      : null,
+    provider,
+    isNewUser: Boolean(isNewUser),
+    membershipTier: user?.membershipTier || membershipTier || 'luminary',
+    isSubscribing: Boolean(isSubscribing)
+  };
+
+  const serializedPayload = JSON.stringify(messagePayload).replace(/</g, '\\u003c');
+  const serializedFallbackUrl = JSON.stringify(fallbackRedirectUrl);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Completing Sign-Up • Susan's Beauty Consulting</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #FFF9F9 0%, #FFF0F2 100%);
+      font-family: Georgia, serif;
+      color: #5C5454;
+      text-align: center;
+      padding: 24px;
+    }
+    .card {
+      background: #FFFFFF;
+      border: 1.5px solid #B38B8F;
+      border-radius: 24px;
+      padding: 36px 32px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 15px 40px rgba(179, 139, 143, 0.25);
+    }
+    h2 {
+      color: #B38B8F;
+      font-style: italic;
+      margin: 0 0 10px 0;
+      font-size: 1.8rem;
+    }
+    p {
+      color: #736A6A;
+      font-family: sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>${error ? 'Sign-In Notice' : "Welcome to Susan's Sanctuary ✧"}</h2>
+    <p>${escapeHtml(error || 'Your membership account is ready! Returning to Susan\'s Beauty Consulting...')}</p>
+  </div>
+  <script>
+    (function() {
+      var payload = ${serializedPayload};
+      var fallbackUrl = ${serializedFallbackUrl};
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, '*');
+          setTimeout(function() {
+            window.close();
+          }, 180);
+          return;
+        }
+      } catch (e) {}
+      window.location.replace(fallbackUrl);
+    })();
+  </script>
+</body>
+</html>`;
+};
+
+// Renders a clean, self-contained HTML Provider Authorization Screen inside the popup window
+// when live OAuth .env keys are not yet configured, so clicking any social sign-up button
+// on the Landing Page works immediately in 1 click without dead links.
+const renderOAuthProviderConsentScreenHtml = ({
+  provider = 'google',
+  label = 'Google',
+  membershipTier = 'luminary',
+  isSubscribing = false,
+  returnOrigin = 'http://localhost:3000'
+} = {}) => {
+  const cleanTier = String(membershipTier || 'luminary').toLowerCase();
+  const tierDisplay =
+    cleanTier === 'radiance'
+      ? 'The Radiance Elite ($119/month • 5-Piece Box)'
+      : cleanTier === 'basic'
+      ? 'Free Boutique Membership ($0 • Instant Access)'
+      : 'The Luminary Circle ($49/month • 3-Piece Box)';
+
+  const brandColors = {
+    google: '#4285F4',
+    facebook: '#1877F2',
+    linkedin: '#0A66C2',
+    x: '#111111',
+    tiktok: '#000000',
+    reddit: '#FF4500'
+  };
+  const accent = brandColors[provider] || '#B38B8F';
+  const usesHandle = ['x', 'tiktok', 'reddit'].includes(provider);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign Up with ${escapeHtml(label)} • Susan's Beauty Consulting</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #FFF9F9 0%, #F2D4D7 100%);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #5C5454;
+      padding: 20px;
+    }
+    .card {
+      background: #FFFFFF;
+      border: 1.5px solid #E8C5C8;
+      border-top: 5px solid ${accent};
+      border-radius: 22px;
+      padding: 28px 26px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 18px 45px rgba(92, 84, 84, 0.2);
+    }
+    .badge {
+      display: inline-block;
+      background: #FFF0F2;
+      color: #B38B8F;
+      border: 1px solid #E8C5C8;
+      border-radius: 16px;
+      padding: 4px 12px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-family: Georgia, serif;
+      font-size: 1.65rem;
+      color: #5C5454;
+      margin: 0 0 6px 0;
+    }
+    .sub {
+      font-size: 0.86rem;
+      color: #8A797A;
+      margin: 0 0 18px 0;
+      line-height: 1.45;
+    }
+    label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #5C5454;
+      margin-bottom: 5px;
+    }
+    input {
+      width: 100%;
+      padding: 11px 14px;
+      border-radius: 12px;
+      border: 1px solid #E8C5C8;
+      background: #FFF9F9;
+      font-size: 0.92rem;
+      color: #5C5454;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    input:focus {
+      background: #FFFFFF;
+      border-color: #B38B8F;
+    }
+    .btn-primary {
+      width: 100%;
+      padding: 13px 18px;
+      border-radius: 24px;
+      border: 1px solid #B38B8F;
+      background: #F2D4D7;
+      color: #5C5454;
+      font-family: Georgia, serif;
+      font-size: 1.12rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-primary:hover {
+      background: #B38B8F;
+      color: #FFFFFF;
+    }
+    .quick-demo {
+      margin-top: 12px;
+      text-align: center;
+    }
+    .quick-demo button {
+      background: none;
+      border: none;
+      color: #8A797A;
+      font-size: 0.78rem;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">✧ ${escapeHtml(tierDisplay)}</span>
+    <h2>Continue with ${escapeHtml(label)}</h2>
+    <p class="sub">Authorize your ${escapeHtml(label)} profile to create or access your Susan's Beauty Consulting membership.</p>
+    <form id="oauthForm" method="POST" action="/api/auth/${escapeHtml(provider)}/authorize-complete">
+      <input type="hidden" name="membershipTier" value="${escapeHtml(cleanTier)}" />
+      <input type="hidden" name="isSubscribing" value="${isSubscribing ? 'true' : 'false'}" />
+      <input type="hidden" name="returnOrigin" value="${escapeHtml(returnOrigin)}" />
+      <label>Your Full Name (or ${escapeHtml(label)} Display Name)</label>
+      <input id="nameInput" type="text" name="name" required placeholder="e.g. Sarah Jenkins" />
+      <label>${usesHandle ? `${escapeHtml(label)} @Handle or Email Address` : `${escapeHtml(label)} Email Address`}</label>
+      <input id="emailInput" type="text" name="emailOrHandle" required placeholder="${usesHandle ? 'e.g. @sarahglam or sarah@example.com' : 'e.g. sarah@example.com'}" />
+      <button type="submit" class="btn-primary">Continue with ${escapeHtml(label)} ✧</button>
+    </form>
+    <div class="quick-demo">
+      <button type="button" onclick="fillAndSubmitDemo()">⚡ 1-Click Instant Test Sign-Up as New ${escapeHtml(label)} Member</button>
+    </div>
+  </div>
+  <script>
+    function fillAndSubmitDemo() {
+      var rand = Math.floor(1000 + Math.random() * 9000);
+      document.getElementById('nameInput').value = '${escapeHtml(label)} Member ' + rand;
+      document.getElementById('emailInput').value = '${escapeHtml(provider)}.member.' + rand + '@example.com';
+      document.getElementById('oauthForm').submit();
+    }
+  </script>
+</body>
+</html>`;
+};
+
+// GET /api/auth/:provider/start — Opens OAuth 2.0 flow (redirects to live provider OAuth when .env keys are set,
+// or renders the self-contained Provider Authorization Screen inside the popup window)
 app.get('/api/auth/:provider/start', (req, res) => {
   try {
     const provider = String(req.params.provider || '').toLowerCase().trim();
@@ -10951,12 +11239,16 @@ app.get('/api/auth/:provider/start', (req, res) => {
 
     const creds = getOAuthProviderCredentials(provider);
     if (!creds.configured) {
-      const fallbackParams = new URLSearchParams({
-        oauth_sandbox_provider: provider,
-        oauth_tier: membershipTier,
-        oauth_sub: isSubscribing ? 'true' : 'false'
-      });
-      return res.redirect(`${returnOrigin.replace(/\/+$/, '')}/?${fallbackParams.toString()}`);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(
+        renderOAuthProviderConsentScreenHtml({
+          provider,
+          label: OAUTH_PROVIDER_LABELS[provider] || creds.label,
+          membershipTier,
+          isSubscribing,
+          returnOrigin
+        })
+      );
     }
 
     const { stateToken, codeChallenge } = createOAuthStateAndPkce({
@@ -10978,11 +11270,82 @@ app.get('/api/auth/:provider/start', (req, res) => {
     return res.redirect(authorizationUrl);
   } catch (error) {
     console.error('OAuth Start Error:', error);
-    res.status(500).json({ error: error.message || 'Could not start social sign-in.' });
+    res.status(500).send(
+      renderOAuthPopupCompletionHtml({
+        provider: req.params.provider,
+        error: error.message || 'Could not start social sign-in.'
+      })
+    );
   }
 });
 
-// GET /api/auth/:provider/callback — Handles OAuth 2.0 callback, links/creates User, issues JWT, and redirects to Frontend
+// POST /api/auth/:provider/authorize-complete — Completes the hosted popup authorization form,
+// creates/links the User in MongoDB, and dispatches SUSAN_SOCIAL_AUTH_COMPLETE via window.opener.postMessage
+app.post(
+  '/api/auth/:provider/authorize-complete',
+  express.urlencoded({ extended: true }),
+  async (req, res) => {
+    const provider = String(req.params.provider || 'google').toLowerCase().trim();
+    const returnOrigin = cleanEnv(req.body?.returnOrigin) || 'http://localhost:3000';
+    try {
+      if (!SUPPORTED_OAUTH_PROVIDERS.includes(provider)) {
+        throw new Error(`Unsupported social provider "${provider}".`);
+      }
+
+      const rawName = String(req.body?.name || '').trim();
+      const rawEmailOrHandle = String(req.body?.emailOrHandle || req.body?.email || '').trim();
+      const membershipTier = String(req.body?.membershipTier || 'luminary').toLowerCase().trim();
+      const isSubscribing = req.body?.isSubscribing === 'true' || req.body?.isSubscribing === true;
+
+      const isEmailInput = rawEmailOrHandle.includes('@') && !rawEmailOrHandle.startsWith('@');
+      const cleanEmail = isEmailInput ? normalizeEmail(rawEmailOrHandle) : '';
+      const cleanHandle = !isEmailInput
+        ? rawEmailOrHandle.replace(/^@/, '').trim()
+        : (cleanEmail.split('@')[0] || `${provider}_member`);
+      const cleanName = rawName || cleanHandle || `${OAUTH_PROVIDER_LABELS[provider]} Member`;
+      const providerId = `${provider}_${crypto
+        .createHash('sha1')
+        .update((cleanEmail || cleanHandle || cleanName).toLowerCase())
+        .digest('hex')
+        .slice(0, 14)}`;
+
+      const authResult = await findOrCreateSocialUser({
+        provider,
+        providerId,
+        email: cleanEmail,
+        name: cleanName,
+        handle: cleanHandle,
+        requestedTier: membershipTier || 'luminary'
+      });
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(
+        renderOAuthPopupCompletionHtml({
+          token: authResult.token,
+          user: authResult.user,
+          provider,
+          isNewUser: authResult.isNewUser,
+          membershipTier: authResult.user.membershipTier,
+          isSubscribing,
+          returnOrigin
+        })
+      );
+    } catch (error) {
+      console.error('OAuth Authorize Complete Error:', error);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(400).send(
+        renderOAuthPopupCompletionHtml({
+          provider,
+          returnOrigin,
+          error: error.message || 'Could not complete social membership sign-up.'
+        })
+      );
+    }
+  }
+);
+
+// GET /api/auth/:provider/callback — Handles live OAuth 2.0 callback, links/creates User, issues JWT,
+// and dispatches SUSAN_SOCIAL_AUTH_COMPLETE to the opener window (or redirects if same-tab)
 app.get('/api/auth/:provider/callback', async (req, res) => {
   const provider = String(req.params.provider || '').toLowerCase().trim();
   let returnOrigin = 'http://localhost:3000';
@@ -11001,19 +11364,25 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
     }
 
     if (oauthError) {
-      const errParams = new URLSearchParams({
-        oauth_error: String(oauthErrorDesc || oauthError),
-        oauth_provider: provider
-      });
-      return res.redirect(`${returnOrigin.replace(/\/+$/, '')}/?${errParams.toString()}`);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(
+        renderOAuthPopupCompletionHtml({
+          provider,
+          returnOrigin,
+          error: String(oauthErrorDesc || oauthError)
+        })
+      );
     }
 
     if (!code || !state) {
-      const errParams = new URLSearchParams({
-        oauth_error: 'Missing authorization code or state from social provider.',
-        oauth_provider: provider
-      });
-      return res.redirect(`${returnOrigin.replace(/\/+$/, '')}/?${errParams.toString()}`);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(
+        renderOAuthPopupCompletionHtml({
+          provider,
+          returnOrigin,
+          error: 'Missing authorization code or state from social provider.'
+        })
+      );
     }
 
     const verifiedState = verifyOAuthState(String(state));
@@ -11040,23 +11409,28 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
       requestedTier: verifiedState.membershipTier || 'luminary'
     });
 
-    const successParams = new URLSearchParams({
-      oauth_token: authResult.token,
-      oauth_provider: provider,
-      oauth_is_new: authResult.isNewUser ? 'true' : 'false'
-    });
-    if (verifiedState.isSubscribing && ['luminary', 'radiance'].includes(verifiedState.membershipTier)) {
-      successParams.set('oauth_subscribe_tier', verifiedState.membershipTier);
-    }
-
-    return res.redirect(`${returnOrigin.replace(/\/+$/, '')}/?${successParams.toString()}`);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(
+      renderOAuthPopupCompletionHtml({
+        token: authResult.token,
+        user: authResult.user,
+        provider,
+        isNewUser: authResult.isNewUser,
+        membershipTier: verifiedState.membershipTier || authResult.user.membershipTier,
+        isSubscribing: Boolean(verifiedState.isSubscribing),
+        returnOrigin
+      })
+    );
   } catch (error) {
     console.error(`OAuth Callback Error (${provider}):`, error?.response?.data || error.message);
-    const errParams = new URLSearchParams({
-      oauth_error: error?.response?.data?.error_description || error.message || 'Social authentication failed.',
-      oauth_provider: provider
-    });
-    return res.redirect(`${returnOrigin.replace(/\/+$/, '')}/?${errParams.toString()}`);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(
+      renderOAuthPopupCompletionHtml({
+        provider,
+        returnOrigin,
+        error: error?.response?.data?.error_description || error.message || 'Social authentication failed.'
+      })
+    );
   }
 });
 
