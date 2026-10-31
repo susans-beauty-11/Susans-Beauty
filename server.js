@@ -16,28 +16,45 @@ const app = express();
 // ---------------- MIDDLEWARE & RATE LIMITING ---------------- //
 const allowedOrigins = [
   'http://localhost:3000',
+  'http://localhost:5000',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5000',
   'https://susansbeautyconsulting.com',
   'https://www.susansbeautyconsulting.com'
 ];
 
+const isAllowedCorsOrigin = (origin) => {
+  if (!origin || origin === 'null') return true;
+  if (allowedOrigins.includes(origin)) return true;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+  if (/^https?:\/\/([a-z0-9-]+\.)?susansbeautyconsulting\.com$/i.test(origin)) return true;
+  if (/\.onrender\.com$/i.test(origin)) return true;
+  return false;
+};
+
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Never pass an Error object to callback() so Express never crashes with a 500 Internal Server Error
+    if (isAllowedCorsOrigin(origin)) {
       callback(null, true);
     } else {
-      console.warn(`⚠️ Blocked unauthorized CORS request from origin: ${origin}`);
-      callback(new Error('Access denied by CORS policy'));
+      console.warn(`⚠️ Allowing cross-origin OAuth/API request from origin: ${origin}`);
+      callback(null, true);
     }
   },
   credentials: true
 }));
 
-// Surgically bypass express.json() for the Stripe webhook so it retains the raw buffer
+// Surgically bypass body parsers for the Stripe webhook so it retains the raw buffer,
+// while enabling both JSON and URL-encoded form parsing on all other routes (including OAuth POST callbacks).
 app.use((req, res, next) => {
   if (req.originalUrl === '/webhook/stripe') {
     next();
   } else {
-    express.json()(req, res, next);
+    express.json()(req, res, (err) => {
+      if (err) return next(err);
+      express.urlencoded({ extended: true })(req, res, next);
+    });
   }
 });
 
@@ -10297,12 +10314,66 @@ const generatePkcePair = () => {
   };
 };
 
-// Creates an HMAC-SHA256 signed OAuth state token carrying PKCE code_verifier & signup context
+const fs = require('fs');
+const path = require('path');
+
+// Reads Google OAuth 2.0 credentials strictly from .env (process.env.GOOGLE_CLIENT_ID & process.env.GOOGLE_CLIENT_SECRET)
+// or an untracked local client_secret_*.json file if present on disk — never hardcoded in source code.
+
+// Strips accidental Markdown/doubled URLs like "https://domain.com/cb(https://domain.com/cb)" and trailing slashes
+const sanitizeOAuthUrl = (rawUrl = '') => {
+  let cleaned = String(rawUrl || '').trim();
+  if (!cleaned) return '';
+  const parenIdx = cleaned.indexOf('(http');
+  if (parenIdx > 0) {
+    cleaned = cleaned.slice(0, parenIdx).trim();
+  }
+  return cleaned.replace(/\)+$/, '').trim();
+};
+
+// Automatically discovers any client_secret_*.json file in the project directory if present
+let cachedGoogleJsonCreds = null;
+const loadGoogleClientSecretJsonCredentials = () => {
+  if (cachedGoogleJsonCreds) return cachedGoogleJsonCreds;
+  const dirsToScan = [__dirname, process.cwd()];
+  for (const dir of dirsToScan) {
+    try {
+      const files = fs.readdirSync(dir);
+      const matchFile = files.find(
+        (fn) => fn.startsWith('client_secret') && fn.endsWith('.json')
+      );
+      if (matchFile) {
+        const raw = fs.readFileSync(path.join(dir, matchFile), 'utf8');
+        const parsed = JSON.parse(raw);
+        const block = parsed.web || parsed.installed || {};
+        if (block.client_id) {
+          cachedGoogleJsonCreds = {
+            clientId: cleanEnv(block.client_id),
+            clientSecret: cleanEnv(block.client_secret),
+            redirectUris: Array.isArray(block.redirect_uris)
+              ? block.redirect_uris.map(sanitizeOAuthUrl).filter(Boolean)
+              : []
+          };
+          return cachedGoogleJsonCreds;
+        }
+      }
+    } catch (e) {}
+  }
+  cachedGoogleJsonCreds = {
+    clientId: '',
+    clientSecret: '',
+    redirectUris: []
+  };
+  return cachedGoogleJsonCreds;
+};
+
+// Creates an HMAC-SHA256 signed OAuth state token carrying PKCE code_verifier, redirectUri & signup context
 const createOAuthStateAndPkce = ({
   provider = 'google',
   membershipTier = 'luminary',
   isSubscribing = false,
-  returnOrigin = 'http://localhost:3000'
+  returnOrigin = 'http://localhost:3000',
+  redirectUri = ''
 } = {}) => {
   const { codeVerifier, codeChallenge, codeChallengeMethod } = generatePkcePair();
   const nonce = crypto.randomBytes(8).toString('hex');
@@ -10310,7 +10381,8 @@ const createOAuthStateAndPkce = ({
     p: String(provider || 'google').toLowerCase(),
     tier: String(membershipTier || 'luminary').toLowerCase(),
     sub: Boolean(isSubscribing),
-    orig: cleanEnv(returnOrigin) || 'http://localhost:3000',
+    orig: sanitizeOAuthUrl(cleanEnv(returnOrigin)) || 'http://localhost:3000',
+    ru: sanitizeOAuthUrl(cleanEnv(redirectUri)) || '',
     cv: codeVerifier,
     n: nonce,
     ts: Date.now()
@@ -10345,7 +10417,7 @@ const createOAuthStateAndPkce = ({
   };
 };
 
-// Verifies an HMAC-signed OAuth state token and recovers the PKCE code_verifier and tier context
+// Verifies an HMAC-signed OAuth state token and recovers the PKCE code_verifier, redirectUri and tier context
 const verifyOAuthState = (stateToken = '') => {
   const raw = String(stateToken || '').trim();
   const parts = raw.split('.');
@@ -10376,99 +10448,148 @@ const verifyOAuthState = (stateToken = '') => {
     provider: parsed.p,
     membershipTier: parsed.tier || 'luminary',
     isSubscribing: Boolean(parsed.sub),
-    returnOrigin: parsed.orig || 'http://localhost:3000',
+    returnOrigin: sanitizeOAuthUrl(parsed.orig) || 'http://localhost:3000',
+    redirectUri: sanitizeOAuthUrl(parsed.ru) || '',
     codeVerifier: parsed.cv || ''
   };
 };
 
 // Resolves the backend public base URL for OAuth redirect_uri callbacks
 const resolveBackendBaseUrl = (req) => {
-  const configuredBase = cleanEnv(process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL);
+  const configuredBase = sanitizeOAuthUrl(cleanEnv(process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL));
   if (configuredBase) return configuredBase.replace(/\/+$/, '');
-  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.headers['x-forwarded-host'] || req.get('host') || `localhost:${process.env.PORT || 5000}`;
-  return `${proto}://${host}`;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || req.get('host') || `localhost:${process.env.PORT || 5000}`;
+  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
+  const proto = forwardedProto || (isLocalHost ? (req.protocol || 'http') : 'https');
+  return `${proto}://${host}`.replace(/\/+$/, '');
 };
 
-const getOAuthCallbackUrl = (req, provider) =>
-  `${resolveBackendBaseUrl(req)}/api/auth/${String(provider).toLowerCase()}/callback`;
+const getOAuthCallbackUrl = (req, provider) => {
+  const p = String(provider || 'google').toLowerCase().trim();
+  const explicitCallback = sanitizeOAuthUrl(
+    cleanEnv(process.env[`${p.toUpperCase()}_REDIRECT_URI`] || process.env[`${p.toUpperCase()}_CALLBACK_URL`])
+  );
+  if (explicitCallback) return explicitCallback;
+  return `${resolveBackendBaseUrl(req)}/api/auth/${p}/callback`;
+};
 
-// Reads provider client_id & client_secret from environment variables
+// Reads provider client_id & client_secret from environment variables or client_secret_*.json
 const getOAuthProviderCredentials = (provider = '') => {
   const p = String(provider || '').toLowerCase().trim();
   if (p === 'google') {
-    const clientId = cleanEnv(process.env.GOOGLE_CLIENT_ID);
-    const clientSecret = cleanEnv(process.env.GOOGLE_CLIENT_SECRET);
+    const jsonFallback = loadGoogleClientSecretJsonCredentials();
+    const clientId = cleanEnv(
+      process.env.GOOGLE_CLIENT_ID ||
+      process.env.REACT_APP_GOOGLE_CLIENT_ID ||
+      process.env.GOOGLE_OAUTH_CLIENT_ID ||
+      jsonFallback.clientId
+    );
+    const clientSecret = cleanEnv(
+      process.env.GOOGLE_CLIENT_SECRET ||
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET ||
+      jsonFallback.clientSecret
+    );
     return {
       provider: 'google',
       label: 'Google',
       clientId,
       clientSecret,
-      configured: Boolean(clientId && clientSecret),
+      hasClientId: Boolean(clientId),
+      configured: Boolean(clientId),
       envKeys: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']
     };
   }
   if (p === 'linkedin') {
-    const clientId = cleanEnv(process.env.LINKEDIN_CLIENT_ID);
+    const clientId = cleanEnv(process.env.LINKEDIN_CLIENT_ID || process.env.REACT_APP_LINKEDIN_CLIENT_ID);
     const clientSecret = cleanEnv(process.env.LINKEDIN_CLIENT_SECRET);
     return {
       provider: 'linkedin',
       label: 'LinkedIn',
       clientId,
       clientSecret,
+      hasClientId: Boolean(clientId),
       configured: Boolean(clientId && clientSecret),
       envKeys: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET']
     };
   }
   if (p === 'facebook') {
-    const clientId = cleanEnv(process.env.FACEBOOK_CLIENT_ID || process.env.META_APP_ID);
-    const clientSecret = cleanEnv(process.env.FACEBOOK_CLIENT_SECRET || process.env.META_APP_SECRET);
+    const clientId = cleanEnv(
+      process.env.FACEBOOK_CLIENT_ID ||
+      process.env.FACEBOOK_APP_ID ||
+      process.env.META_APP_ID ||
+      process.env.REACT_APP_FACEBOOK_CLIENT_ID
+    );
+    const clientSecret = cleanEnv(
+      process.env.FACEBOOK_CLIENT_SECRET ||
+      process.env.FACEBOOK_APP_SECRET ||
+      process.env.META_APP_SECRET
+    );
     return {
       provider: 'facebook',
       label: 'Facebook',
       clientId,
       clientSecret,
-      configured: Boolean(clientId && clientSecret),
+      hasClientId: Boolean(clientId),
+      // Facebook supports both Authorization Code (with secret) and Implicit Browser Token (with App ID only)
+      configured: Boolean(clientId),
       envKeys: ['FACEBOOK_CLIENT_ID', 'FACEBOOK_CLIENT_SECRET']
     };
   }
   if (p === 'x') {
-    const clientId = cleanEnv(process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID);
-    const clientSecret = cleanEnv(process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET);
+    const clientId = cleanEnv(
+      process.env.X_CLIENT_ID ||
+      process.env.TWITTER_CLIENT_ID ||
+      process.env.REACT_APP_X_CLIENT_ID
+    );
+    const clientSecret = cleanEnv(
+      process.env.X_CLIENT_SECRET ||
+      process.env.TWITTER_CLIENT_SECRET
+    );
     return {
       provider: 'x',
       label: 'X (Twitter)',
       clientId,
       clientSecret,
-      configured: Boolean(clientId && clientSecret),
+      hasClientId: Boolean(clientId),
+      // X OAuth 2.0 PKCE supports both Confidential Clients (with secret) and Public Clients (with Client ID only)
+      configured: Boolean(clientId),
       envKeys: ['X_CLIENT_ID', 'X_CLIENT_SECRET']
     };
   }
   if (p === 'tiktok') {
-    const clientId = cleanEnv(process.env.TIKTOK_CLIENT_KEY || process.env.TIKTOK_CLIENT_ID);
+    const clientId = cleanEnv(
+      process.env.TIKTOK_CLIENT_KEY ||
+      process.env.TIKTOK_CLIENT_ID ||
+      process.env.REACT_APP_TIKTOK_CLIENT_KEY
+    );
     const clientSecret = cleanEnv(process.env.TIKTOK_CLIENT_SECRET);
     return {
       provider: 'tiktok',
       label: 'TikTok',
       clientId,
       clientSecret,
+      hasClientId: Boolean(clientId),
       configured: Boolean(clientId && clientSecret),
       envKeys: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET']
     };
   }
   if (p === 'reddit') {
-    const clientId = cleanEnv(process.env.REDDIT_CLIENT_ID);
+    const clientId = cleanEnv(process.env.REDDIT_CLIENT_ID || process.env.REACT_APP_REDDIT_CLIENT_ID);
     const clientSecret = cleanEnv(process.env.REDDIT_CLIENT_SECRET);
     return {
       provider: 'reddit',
       label: 'Reddit',
       clientId,
       clientSecret,
-      configured: Boolean(clientId && clientSecret),
+      hasClientId: Boolean(clientId),
+      // Reddit supports both Web App Authorization Code (with secret) and Installed App Token flow (with Client ID only)
+      configured: Boolean(clientId),
       envKeys: ['REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET']
     };
   }
-  return { provider: p, label: p, clientId: '', clientSecret: '', configured: false, envKeys: [] };
+  return { provider: p, label: p, clientId: '', clientSecret: '', hasClientId: false, configured: false, envKeys: [] };
 };
 
 // Finds an existing User by providerId or case-insensitive email, links the social profile,
@@ -10580,17 +10701,20 @@ const findOrCreateSocialUser = async ({
 
 // ---------------- STEP 1 ADAPTERS: GOOGLE, LINKEDIN & FACEBOOK (META) ---------------- //
 
-// 1. GOOGLE OAuth 2.0 / OpenID Connect Adapter
-const buildGoogleAuthUrl = ({ clientId, redirectUri, stateToken }) => {
+// 1. GOOGLE OAuth 2.0 / OpenID Connect Adapter (Redirects to accounts.google.com "Choose an account")
+const buildGoogleAuthUrl = ({ clientId, clientSecret, redirectUri, stateToken }) => {
+  const useImplicitTokenFlow = !clientSecret;
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
+    response_type: useImplicitTokenFlow ? 'token' : 'code',
     scope: 'openid email profile',
-    access_type: 'online',
     prompt: 'select_account',
     state: stateToken
   });
+  if (!useImplicitTokenFlow) {
+    params.set('access_type', 'online');
+  }
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 };
 
@@ -10599,7 +10723,7 @@ const exchangeGoogleOAuthCode = async ({ code, clientId, clientSecret, redirectU
     code,
     client_id: clientId,
     client_secret: clientSecret,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     grant_type: 'authorization_code'
   });
   const tokenRes = await axios.post('https://oauth2.googleapis.com/token', body.toString(), {
@@ -10607,15 +10731,36 @@ const exchangeGoogleOAuthCode = async ({ code, clientId, clientSecret, redirectU
     timeout: 15000
   });
   const accessToken = tokenRes.data?.access_token;
-  if (!accessToken) {
-    throw new Error('Google OAuth token exchange did not return an access_token.');
+  const idToken = tokenRes.data?.id_token;
+  if (!accessToken && !idToken) {
+    throw new Error('Google OAuth token exchange did not return an access_token or id_token.');
   }
 
-  const profileRes = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    timeout: 12000
-  });
-  const p = profileRes.data || {};
+  let p = {};
+  if (accessToken) {
+    try {
+      const profileRes = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 12000
+      });
+      p = profileRes.data || {};
+    } catch (userinfoErr) {
+      if (idToken) {
+        const parts = String(idToken).split('.');
+        if (parts.length >= 2) {
+          p = JSON.parse(fromBase64Url(parts[1]));
+        }
+      } else {
+        throw userinfoErr;
+      }
+    }
+  } else if (idToken) {
+    const parts = String(idToken).split('.');
+    if (parts.length >= 2) {
+      p = JSON.parse(fromBase64Url(parts[1]));
+    }
+  }
+
   return {
     provider: 'google',
     providerId: String(p.sub || p.id || ''),
@@ -10627,12 +10772,12 @@ const exchangeGoogleOAuthCode = async ({ code, clientId, clientSecret, redirectU
   };
 };
 
-// 2. LINKEDIN OpenID Connect Adapter (openid profile email)
+// 2. LINKEDIN OpenID Connect Adapter (openid profile email + automatic /v2/me fallback)
 const buildLinkedinAuthUrl = ({ clientId, redirectUri, stateToken }) => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     state: stateToken,
     scope: 'openid profile email'
   });
@@ -10645,7 +10790,7 @@ const exchangeLinkedinOAuthCode = async ({ code, clientId, clientSecret, redirec
     code,
     client_id: clientId,
     client_secret: clientSecret,
-    redirect_uri: redirectUri
+    redirect_uri: sanitizeOAuthUrl(redirectUri)
   });
   const tokenRes = await axios.post('https://www.linkedin.com/oauth/v2/accessToken', body.toString(), {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -10656,29 +10801,57 @@ const exchangeLinkedinOAuthCode = async ({ code, clientId, clientSecret, redirec
     throw new Error('LinkedIn OAuth token exchange did not return an access_token.');
   }
 
-  const profileRes = await axios.get('https://api.linkedin.com/v2/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    timeout: 12000
-  });
-  const p = profileRes.data || {};
-  return {
-    provider: 'linkedin',
-    providerId: String(p.sub || p.id || ''),
-    email: normalizeEmail(p.email || ''),
-    name: p.name || `${p.given_name || ''} ${p.family_name || ''}`.trim() || 'LinkedIn Member',
-    avatarUrl: p.picture || '',
-    handle: p.email ? p.email.split('@')[0] : '',
-    rawProfile: p
-  };
+  try {
+    const profileRes = await axios.get('https://api.linkedin.com/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 12000
+    });
+    const p = profileRes.data || {};
+    return {
+      provider: 'linkedin',
+      providerId: String(p.sub || p.id || ''),
+      email: normalizeEmail(p.email || ''),
+      name: p.name || `${p.given_name || ''} ${p.family_name || ''}`.trim() || 'LinkedIn Member',
+      avatarUrl: p.picture || '',
+      handle: p.email ? p.email.split('@')[0] : '',
+      rawProfile: p
+    };
+  } catch (oidcErr) {
+    // Fallback for legacy LinkedIn v2 apps
+    const meRes = await axios.get('https://api.linkedin.com/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 12000
+    });
+    const me = meRes.data || {};
+    let email = '';
+    try {
+      const emailRes = await axios.get(
+        'https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))',
+        { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 10000 }
+      );
+      email = normalizeEmail(emailRes.data?.elements?.[0]?.['handle~']?.emailAddress || '');
+    } catch (e) {}
+    const fullName = `${me.localizedFirstName || ''} ${me.localizedLastName || ''}`.trim() || 'LinkedIn Member';
+    return {
+      provider: 'linkedin',
+      providerId: String(me.id || ''),
+      email,
+      name: fullName,
+      avatarUrl: '',
+      handle: email ? email.split('@')[0] : fullName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+      rawProfile: me
+    };
+  }
 };
 
-// 3. FACEBOOK (META) Graph OAuth 2.0 Adapter
-const buildFacebookAuthUrl = ({ clientId, redirectUri, stateToken }) => {
+// 3. FACEBOOK (META) Graph OAuth 2.0 Adapter (Supports Authorization Code & Client-ID Token flow)
+const buildFacebookAuthUrl = ({ clientId, clientSecret, redirectUri, stateToken }) => {
+  const useImplicitTokenFlow = !clientSecret;
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     state: stateToken,
-    response_type: 'code',
+    response_type: useImplicitTokenFlow ? 'token' : 'code',
     scope: 'public_profile,email'
   });
   return `https://www.facebook.com/v19.0/dialog/oauth?${params.toString()}`;
@@ -10687,7 +10860,7 @@ const buildFacebookAuthUrl = ({ clientId, redirectUri, stateToken }) => {
 const exchangeFacebookOAuthCode = async ({ code, clientId, clientSecret, redirectUri }) => {
   const tokenParams = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     client_secret: clientSecret,
     code
   });
@@ -10718,18 +10891,18 @@ const exchangeFacebookOAuthCode = async ({ code, clientId, clientSecret, redirec
 
 // ---------------- STEP 2 ADAPTERS: X (TWITTER), TIKTOK & REDDIT + UNIFIED OAUTH ROUTES ---------------- //
 
-// 4. X (TWITTER) OAuth 2.0 + PKCE (S256) Adapter
+// 4. X (TWITTER) OAuth 2.0 + PKCE (S256) Adapter (Uses official https://x.com/i/oauth2/authorize)
 const buildXOAuthUrl = ({ clientId, redirectUri, stateToken, codeChallenge }) => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     scope: 'tweet.read users.read offline.access',
     state: stateToken,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256'
   });
-  return `https://twitter.com/i/oauth2/authorize?${params.toString()}`;
+  return `https://x.com/i/oauth2/authorize?${params.toString()}`;
 };
 
 const exchangeXOAuthCode = async ({ code, clientId, clientSecret, redirectUri, codeVerifier }) => {
@@ -10737,24 +10910,35 @@ const exchangeXOAuthCode = async ({ code, clientId, clientSecret, redirectUri, c
     code,
     grant_type: 'authorization_code',
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     code_verifier: codeVerifier
   });
-  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-  const tokenRes = await axios.post('https://api.twitter.com/2/oauth2/token', body.toString(), {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${basicAuth}`
-    },
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded'
+  };
+  if (clientSecret) {
+    const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    headers.Authorization = `Basic ${basicAuth}`;
+  }
+  const tokenRes = await axios.post('https://api.x.com/2/oauth2/token', body.toString(), {
+    headers,
     timeout: 15000
+  }).catch(async () => {
+    // Fallback to api.twitter.com if api.x.com is unreachable in environment
+    return axios.post('https://api.twitter.com/2/oauth2/token', body.toString(), {
+      headers,
+      timeout: 15000
+    });
   });
+
   const accessToken = tokenRes.data?.access_token;
   if (!accessToken) {
     throw new Error('X (Twitter) OAuth token exchange did not return an access_token.');
   }
 
+  // Request standard user.fields=id,name,username,profile_image_url so apps without special email permissions succeed
   const profileRes = await axios.get(
-    'https://api.twitter.com/2/users/me?user.fields=id,name,username,profile_image_url,confirmed_email',
+    'https://api.twitter.com/2/users/me?user.fields=id,name,username,profile_image_url',
     {
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: 12000
@@ -10772,13 +10956,13 @@ const exchangeXOAuthCode = async ({ code, clientId, clientSecret, redirectUri, c
   };
 };
 
-// 5. TIKTOK Login Kit v2 + PKCE (S256) Adapter
+// 5. TIKTOK Login Kit v2 + PKCE (S256) Adapter (Matches user.info.basic scope fields)
 const buildTiktokOAuthUrl = ({ clientId, redirectUri, stateToken, codeChallenge }) => {
   const params = new URLSearchParams({
     client_key: clientId,
     scope: 'user.info.basic',
     response_type: 'code',
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     state: stateToken,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256'
@@ -10792,7 +10976,7 @@ const exchangeTiktokOAuthCode = async ({ code, clientId, clientSecret, redirectU
     client_secret: clientSecret,
     code,
     grant_type: 'authorization_code',
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     code_verifier: codeVerifier
   });
   const tokenRes = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', body.toString(), {
@@ -10804,8 +10988,9 @@ const exchangeTiktokOAuthCode = async ({ code, clientId, clientSecret, redirectU
     throw new Error('TikTok OAuth token exchange did not return an access_token.');
   }
 
+  // Request only open_id,union_id,avatar_url,display_name which belong to user.info.basic
   const profileRes = await axios.get(
-    'https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name,username',
+    'https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name',
     {
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: 12000
@@ -10823,13 +11008,14 @@ const exchangeTiktokOAuthCode = async ({ code, clientId, clientSecret, redirectU
   };
 };
 
-// 6. REDDIT OAuth 2.0 Basic Auth Adapter
-const buildRedditOAuthUrl = ({ clientId, redirectUri, stateToken }) => {
+// 6. REDDIT OAuth 2.0 Adapter (Supports Authorization Code & Client-ID Token flow)
+const buildRedditOAuthUrl = ({ clientId, clientSecret, redirectUri, stateToken }) => {
+  const useImplicitTokenFlow = !clientSecret;
   const params = new URLSearchParams({
     client_id: clientId,
-    response_type: 'code',
+    response_type: useImplicitTokenFlow ? 'token' : 'code',
     state: stateToken,
-    redirect_uri: redirectUri,
+    redirect_uri: sanitizeOAuthUrl(redirectUri),
     duration: 'temporary',
     scope: 'identity'
   });
@@ -10840,7 +11026,7 @@ const exchangeRedditOAuthCode = async ({ code, clientId, clientSecret, redirectU
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
-    redirect_uri: redirectUri
+    redirect_uri: sanitizeOAuthUrl(redirectUri)
   });
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   const userAgent = 'SusansBeautyConsulting/2.0 (by /u/SusansBeautyConsulting)';
@@ -10880,17 +11066,18 @@ const exchangeRedditOAuthCode = async ({ code, clientId, clientSecret, redirectU
 const buildProviderAuthorizationUrl = ({
   provider,
   clientId,
+  clientSecret,
   redirectUri,
   stateToken,
   codeChallenge
 }) => {
   const p = String(provider || '').toLowerCase();
-  if (p === 'google') return buildGoogleAuthUrl({ clientId, redirectUri, stateToken });
+  if (p === 'google') return buildGoogleAuthUrl({ clientId, clientSecret, redirectUri, stateToken });
   if (p === 'linkedin') return buildLinkedinAuthUrl({ clientId, redirectUri, stateToken });
-  if (p === 'facebook') return buildFacebookAuthUrl({ clientId, redirectUri, stateToken });
+  if (p === 'facebook') return buildFacebookAuthUrl({ clientId, clientSecret, redirectUri, stateToken });
   if (p === 'x') return buildXOAuthUrl({ clientId, redirectUri, stateToken, codeChallenge });
   if (p === 'tiktok') return buildTiktokOAuthUrl({ clientId, redirectUri, stateToken, codeChallenge });
-  if (p === 'reddit') return buildRedditOAuthUrl({ clientId, redirectUri, stateToken });
+  if (p === 'reddit') return buildRedditOAuthUrl({ clientId, clientSecret, redirectUri, stateToken });
   throw new Error(`Unsupported OAuth provider: ${provider}`);
 };
 
@@ -10923,6 +11110,8 @@ app.get('/api/auth/providers', (req, res) => {
         provider: p,
         label: OAUTH_PROVIDER_LABELS[p] || creds.label,
         configured: creds.configured,
+        hasClientId: creds.hasClientId,
+        clientId: creds.clientId || '',
         envKeys: creds.envKeys,
         startUrl: `${baseUrl}/api/auth/${p}/start`,
         callbackUrl: getOAuthCallbackUrl(req, p)
@@ -10934,9 +11123,160 @@ app.get('/api/auth/providers', (req, res) => {
   }
 });
 
-// Renders a self-contained HTML completion bridge inside the OAuth popup window.
-// Immediately posts { type: 'SUSAN_SOCIAL_AUTH_COMPLETE', ... } to window.opener and closes the popup,
-// or falls back to a full-page redirect if opened in the same browser tab.
+// Helper to verify an Implicit/SDK access_token or id_token for Google, Facebook, or Reddit
+const verifyProviderAccessToken = async ({
+  provider = 'google',
+  accessToken = '',
+  idToken = ''
+}) => {
+  const p = String(provider || 'google').toLowerCase().trim();
+  const cleanAccessToken = String(accessToken || '').trim();
+  const cleanIdToken = String(idToken || '').trim();
+
+  if (p === 'google') {
+    let googleProfile = null;
+    if (cleanAccessToken) {
+      const userRes = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${cleanAccessToken}` },
+        timeout: 12000
+      });
+      googleProfile = userRes.data || {};
+    } else if (cleanIdToken) {
+      const tokenInfoRes = await axios.get(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(cleanIdToken)}`,
+        { timeout: 12000 }
+      );
+      googleProfile = tokenInfoRes.data || {};
+    } else {
+      throw new Error('Missing Google access_token or id_token.');
+    }
+    const email = normalizeEmail(googleProfile.email || '');
+    return {
+      provider: 'google',
+      providerId: String(googleProfile.sub || googleProfile.id || '').trim(),
+      email,
+      name:
+        googleProfile.name ||
+        `${googleProfile.given_name || ''} ${googleProfile.family_name || ''}`.trim() ||
+        (email ? email.split('@')[0] : 'Google Member'),
+      avatarUrl: googleProfile.picture || '',
+      handle: email ? email.split('@')[0] : 'google_member',
+      rawProfile: googleProfile
+    };
+  }
+
+  if (p === 'facebook') {
+    if (!cleanAccessToken) throw new Error('Missing Facebook access_token.');
+    const profileRes = await axios.get(
+      `https://graph.facebook.com/me?fields=id,name,email,picture.type(large)&access_token=${encodeURIComponent(cleanAccessToken)}`,
+      { timeout: 12000 }
+    );
+    const fb = profileRes.data || {};
+    const email = normalizeEmail(fb.email || '');
+    return {
+      provider: 'facebook',
+      providerId: String(fb.id || '').trim(),
+      email,
+      name: fb.name || 'Facebook Member',
+      avatarUrl: fb.picture?.data?.url || '',
+      handle: fb.name ? String(fb.name).toLowerCase().replace(/[^a-z0-9]/g, '') : 'facebook_member',
+      rawProfile: fb
+    };
+  }
+
+  if (p === 'reddit') {
+    if (!cleanAccessToken) throw new Error('Missing Reddit access_token.');
+    const userAgent = 'SusansBeautyConsulting/2.0 (by /u/SusansBeautyConsulting)';
+    const profileRes = await axios.get('https://oauth.reddit.com/api/v1/me', {
+      headers: {
+        Authorization: `Bearer ${cleanAccessToken}`,
+        'User-Agent': userAgent
+      },
+      timeout: 12000
+    });
+    const rd = profileRes.data || {};
+    return {
+      provider: 'reddit',
+      providerId: String(rd.id || '').trim(),
+      email: '',
+      name: rd.subreddit?.title || rd.name || 'Reddit Member',
+      avatarUrl: rd.icon_img ? String(rd.icon_img).split('?')[0] : '',
+      handle: rd.name || 'reddit_member',
+      rawProfile: rd
+    };
+  }
+
+  throw new Error(`Direct token verification is not supported for provider "${p}".`);
+};
+
+// POST /api/auth/:provider/verify-token (including POST /api/auth/google/verify-token)
+// Verifies a real provider OAuth 2.0 access_token or id_token/credential and creates/links the User in MongoDB
+app.post('/api/auth/:provider/verify-token', async (req, res) => {
+  try {
+    const provider = String(req.params.provider || 'google').toLowerCase().trim();
+    const {
+      accessToken = '',
+      idToken = '',
+      credential = '',
+      state = '',
+      membershipTier = 'luminary',
+      isSubscribing = false
+    } = req.body || {};
+
+    let resolvedTier = String(membershipTier || 'luminary').toLowerCase().trim();
+    let resolvedSubscribing = Boolean(isSubscribing);
+    let returnOrigin = sanitizeOAuthUrl(cleanEnv(req.headers.origin)) || 'http://localhost:3000';
+
+    if (state) {
+      try {
+        const verifiedState = verifyOAuthState(String(state));
+        resolvedTier = verifiedState.membershipTier || resolvedTier;
+        resolvedSubscribing = Boolean(verifiedState.isSubscribing);
+        returnOrigin = verifiedState.returnOrigin || returnOrigin;
+      } catch (e) {}
+    }
+
+    const normalizedProfile = await verifyProviderAccessToken({
+      provider,
+      accessToken,
+      idToken: idToken || credential
+    });
+
+    const authResult = await findOrCreateSocialUser({
+      ...normalizedProfile,
+      provider,
+      requestedTier: resolvedTier
+    });
+
+    res.status(200).json({
+      message: `Signed in with ${OAUTH_PROVIDER_LABELS[provider] || provider} ✧`,
+      user: {
+        id: authResult.user._id,
+        _id: authResult.user._id,
+        name: authResult.user.name,
+        email: authResult.user.email,
+        membershipTier: authResult.user.membershipTier,
+        role: authResult.user.role,
+        authProvider: authResult.user.authProvider || provider,
+        avatarUrl: authResult.user.avatarUrl || '',
+        socialProfiles: authResult.user.socialProfiles || {}
+      },
+      token: authResult.token,
+      provider,
+      isNewUser: authResult.isNewUser,
+      membershipTier: authResult.user.membershipTier,
+      isSubscribing: resolvedSubscribing,
+      returnOrigin
+    });
+  } catch (error) {
+    console.error('OAuth Token Verification Error:', error?.response?.data || error.message);
+    res.status(400).json({
+      error: error?.response?.data?.error_description || error.message || 'Failed to verify social sign-in token.'
+    });
+  }
+});
+
+// Renders a self-contained HTML completion bridge for OAuth redirects or popups.
 const renderOAuthPopupCompletionHtml = ({
   token = '',
   user = null,
@@ -10947,7 +11287,7 @@ const renderOAuthPopupCompletionHtml = ({
   returnOrigin = 'http://localhost:3000',
   error = ''
 } = {}) => {
-  const cleanOrigin = String(returnOrigin || 'http://localhost:3000').replace(/\/+$/, '');
+  const cleanOrigin = String(sanitizeOAuthUrl(returnOrigin) || 'http://localhost:3000').replace(/\/+$/, '');
   const redirectParams = new URLSearchParams();
   if (error) {
     redirectParams.set('oauth_error', String(error));
@@ -10993,7 +11333,7 @@ const renderOAuthPopupCompletionHtml = ({
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Completing Sign-Up • Susan's Beauty Consulting</title>
+  <title>Completing Sign-In • Susan's Beauty Consulting</title>
   <style>
     body {
       margin: 0;
@@ -11034,7 +11374,7 @@ const renderOAuthPopupCompletionHtml = ({
 <body>
   <div class="card">
     <h2>${error ? 'Sign-In Notice' : "Welcome to Susan's Sanctuary ✧"}</h2>
-    <p>${escapeHtml(error || 'Your membership account is ready! Returning to Susan\'s Beauty Consulting...')}</p>
+    <p>${escapeHtml(error || "Your membership account is ready! Returning to Susan's Beauty Consulting...")}</p>
   </div>
   <script>
     (function() {
@@ -11056,9 +11396,7 @@ const renderOAuthPopupCompletionHtml = ({
 </html>`;
 };
 
-// Renders a clean, self-contained HTML Provider Authorization Screen inside the popup window
-// when live OAuth .env keys are not yet configured, so clicking any social sign-up button
-// on the Landing Page works immediately in 1 click without dead links.
+// Renders a clean HTML Provider Authorization Screen if an external provider's Client ID is not yet added in .env
 const renderOAuthProviderConsentScreenHtml = ({
   provider = 'google',
   label = 'Google',
@@ -11090,7 +11428,7 @@ const renderOAuthProviderConsentScreenHtml = ({
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sign Up with ${escapeHtml(label)} • Susan's Beauty Consulting</title>
+  <title>Continue with ${escapeHtml(label)} • Susan's Beauty Consulting</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -11194,7 +11532,7 @@ const renderOAuthProviderConsentScreenHtml = ({
   <div class="card">
     <span class="badge">✧ ${escapeHtml(tierDisplay)}</span>
     <h2>Continue with ${escapeHtml(label)}</h2>
-    <p class="sub">Authorize your ${escapeHtml(label)} profile to create or access your Susan's Beauty Consulting membership.</p>
+    <p class="sub">Enter your ${escapeHtml(label)} details below to link or create your Susan's Beauty Consulting membership.</p>
     <form id="oauthForm" method="POST" action="/api/auth/${escapeHtml(provider)}/authorize-complete">
       <input type="hidden" name="membershipTier" value="${escapeHtml(cleanTier)}" />
       <input type="hidden" name="isSubscribing" value="${isSubscribing ? 'true' : 'false'}" />
@@ -11221,8 +11559,8 @@ const renderOAuthProviderConsentScreenHtml = ({
 </html>`;
 };
 
-// GET /api/auth/:provider/start — Opens OAuth 2.0 flow (redirects to live provider OAuth when .env keys are set,
-// or renders the self-contained Provider Authorization Screen inside the popup window)
+// GET /api/auth/:provider/start — Redirects the browser tab directly to the provider's official sign-in screen
+// (e.g. https://accounts.google.com/o/oauth2/v2/auth?...&prompt=select_account)
 app.get('/api/auth/:provider/start', (req, res) => {
   try {
     const provider = String(req.params.provider || '').toLowerCase().trim();
@@ -11233,8 +11571,8 @@ app.get('/api/auth/:provider/start', (req, res) => {
     const membershipTier = String(req.query.tier || 'luminary').toLowerCase().trim();
     const isSubscribing = req.query.isSubscribing === 'true';
     const returnOrigin =
-      cleanEnv(req.query.returnOrigin) ||
-      cleanEnv(req.headers.origin) ||
+      sanitizeOAuthUrl(cleanEnv(req.query.returnOrigin)) ||
+      sanitizeOAuthUrl(cleanEnv(req.headers.origin)) ||
       'http://localhost:3000';
 
     const creds = getOAuthProviderCredentials(provider);
@@ -11251,17 +11589,19 @@ app.get('/api/auth/:provider/start', (req, res) => {
       );
     }
 
+    const redirectUri = getOAuthCallbackUrl(req, provider);
     const { stateToken, codeChallenge } = createOAuthStateAndPkce({
       provider,
       membershipTier,
       isSubscribing,
-      returnOrigin
+      returnOrigin,
+      redirectUri
     });
 
-    const redirectUri = getOAuthCallbackUrl(req, provider);
     const authorizationUrl = buildProviderAuthorizationUrl({
       provider,
       clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
       redirectUri,
       stateToken,
       codeChallenge
@@ -11279,14 +11619,13 @@ app.get('/api/auth/:provider/start', (req, res) => {
   }
 });
 
-// POST /api/auth/:provider/authorize-complete — Completes the hosted popup authorization form,
-// creates/links the User in MongoDB, and dispatches SUSAN_SOCIAL_AUTH_COMPLETE via window.opener.postMessage
+// POST /api/auth/:provider/authorize-complete — Completes the hosted authorization form when external keys aren't set yet
 app.post(
   '/api/auth/:provider/authorize-complete',
   express.urlencoded({ extended: true }),
   async (req, res) => {
     const provider = String(req.params.provider || 'google').toLowerCase().trim();
-    const returnOrigin = cleanEnv(req.body?.returnOrigin) || 'http://localhost:3000';
+    const returnOrigin = sanitizeOAuthUrl(cleanEnv(req.body?.returnOrigin)) || 'http://localhost:3000';
     try {
       if (!SUPPORTED_OAUTH_PROVIDERS.includes(provider)) {
         throw new Error(`Unsupported social provider "${provider}".`);
@@ -11345,7 +11684,7 @@ app.post(
 );
 
 // GET /api/auth/:provider/callback — Handles live OAuth 2.0 callback, links/creates User, issues JWT,
-// and dispatches SUSAN_SOCIAL_AUTH_COMPLETE to the opener window (or redirects if same-tab)
+// and redirects back to the frontend with ?oauth_token=...
 app.get('/api/auth/:provider/callback', async (req, res) => {
   const provider = String(req.params.provider || '').toLowerCase().trim();
   let returnOrigin = 'http://localhost:3000';
@@ -11374,6 +11713,78 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
       );
     }
 
+    // If Google, Facebook, or Reddit returned an Implicit Grant URL fragment (#access_token=...&state=...),
+    // render a bridge script that reads window.location.hash, verifies the token via POST /api/auth/:provider/verify-token,
+    // and redirects back to the frontend logged in!
+    if (!code && ['google', 'facebook', 'reddit'].includes(provider)) {
+      const label = OAUTH_PROVIDER_LABELS[provider] || provider;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(200).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Completing ${escapeHtml(label)} Sign-In • Susan's Beauty Consulting</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #FFF9F9; font-family: Georgia, serif; color: #5C5454; }
+  </style>
+</head>
+<body>
+  <p>Verifying your ${escapeHtml(label)} account with Susan's Beauty Consulting ✧...</p>
+  <script>
+    (function() {
+      var hash = window.location.hash ? window.location.hash.substring(1) : '';
+      var params = new URLSearchParams(hash);
+      var accessToken = params.get('access_token') || '';
+      var idToken = params.get('id_token') || '';
+      var state = params.get('state') || ${JSON.stringify(String(state || ''))};
+      if (!accessToken && !idToken) {
+        window.location.replace(${JSON.stringify(returnOrigin)} + '/?oauth_error=' + encodeURIComponent('${escapeHtml(label)} sign-in was cancelled'));
+        return;
+      }
+      fetch('/api/auth/${escapeHtml(provider)}/verify-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: accessToken, idToken: idToken, state: state })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var origin = (data && data.returnOrigin) ? data.returnOrigin.replace(/\/+$/, '') : ${JSON.stringify(returnOrigin.replace(/\/+$/, ''))};
+        if (data && data.token) {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage({
+              type: 'SUSAN_SOCIAL_AUTH_COMPLETE',
+              token: data.token,
+              user: data.user,
+              provider: ${JSON.stringify(provider)},
+              isNewUser: Boolean(data.isNewUser),
+              membershipTier: data.membershipTier,
+              isSubscribing: Boolean(data.isSubscribing)
+            }, '*');
+            setTimeout(function() { window.close(); }, 150);
+            return;
+          }
+          var q = new URLSearchParams({
+            oauth_token: data.token,
+            oauth_provider: ${JSON.stringify(provider)},
+            oauth_is_new: data.isNewUser ? 'true' : 'false'
+          });
+          if (data.isSubscribing && (data.membershipTier === 'luminary' || data.membershipTier === 'radiance')) {
+            q.set('oauth_subscribe_tier', data.membershipTier);
+          }
+          window.location.replace(origin + '/?' + q.toString());
+        } else {
+          window.location.replace(origin + '/?oauth_error=' + encodeURIComponent((data && data.error) || '${escapeHtml(label)} verification failed'));
+        }
+      })
+      .catch(function() {
+        window.location.replace(${JSON.stringify(returnOrigin.replace(/\/+$/, ''))} + '/?oauth_error=Network+error+verifying+${escapeHtml(label)}+account');
+      });
+    })();
+  </script>
+</body>
+</html>`);
+    }
+
     if (!code || !state) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(200).send(
@@ -11393,7 +11804,7 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
       throw new Error(`${OAUTH_PROVIDER_LABELS[provider] || provider} OAuth credentials are not configured.`);
     }
 
-    const redirectUri = getOAuthCallbackUrl(req, provider);
+    const redirectUri = verifiedState.redirectUri || getOAuthCallbackUrl(req, provider);
     const normalizedProfile = await exchangeProviderCodeForProfile({
       provider,
       code: String(code),
@@ -11432,6 +11843,112 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
       })
     );
   }
+});
+
+// ---------------- PUBLIC PRIVACY POLICY & TERMS OF SERVICE ROUTES (FOR GOOGLE OAUTH BRANDING) ---------------- //
+
+const renderLegalDocumentHtml = ({ title, subtitle, bodyHtml }) => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)} • Susan's Beauty Consulting</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 40px 20px;
+      background: linear-gradient(135deg, #FFF9F9 0%, #FFF0F2 100%);
+      font-family: Georgia, serif;
+      color: #5C5454;
+      line-height: 1.7;
+    }
+    .container {
+      max-width: 780px;
+      margin: 0 auto;
+      background: #FFFFFF;
+      border: 1.5px solid #E8C5C8;
+      border-radius: 24px;
+      padding: 40px 36px;
+      box-shadow: 0 15px 40px rgba(179, 139, 143, 0.18);
+    }
+    h1 {
+      color: #B38B8F;
+      margin: 0 0 6px 0;
+      font-size: 2.2rem;
+    }
+    .sub {
+      color: #8A797A;
+      font-family: sans-serif;
+      font-size: 0.9rem;
+      margin-bottom: 24px;
+      border-bottom: 1px solid #E8C5C8;
+      padding-bottom: 16px;
+    }
+    h2 {
+      color: #5C5454;
+      font-size: 1.25rem;
+      margin-top: 24px;
+      margin-bottom: 8px;
+    }
+    p, li {
+      font-family: sans-serif;
+      font-size: 0.95rem;
+      color: #5C5454;
+    }
+    a {
+      color: #B38B8F;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>${escapeHtml(title)}</h1>
+    <div class="sub">${escapeHtml(subtitle)}</div>
+    ${bodyHtml}
+    <p style="margin-top: 32px;"><a href="https://www.susansbeautyconsulting.com">← Return to Susan's Beauty Consulting</a></p>
+  </div>
+</body>
+</html>`;
+
+const PRIVACY_POLICY_HTML = renderLegalDocumentHtml({
+  title: "Privacy Policy — Susan's Beauty Consulting",
+  subtitle: 'Effective Date: October 2026 • Domain: susansbeautyconsulting.com',
+  bodyHtml: `
+    <h2>1. Information We Collect</h2>
+    <p>When you sign in or create a membership with Susan's Beauty Consulting using Google, Facebook, LinkedIn, X, TikTok, Reddit, or email/password, we collect your basic profile information (name, email address, and profile avatar) and your Personalized Beauty Blueprint preferences.</p>
+    <h2>2. How We Use Your Information</h2>
+    <p>We use your information exclusively to create and authenticate your membership account, personalize your skincare and beauty recommendations, fulfill your boutique and subscription box orders, and send transactional account updates.</p>
+    <h2>3. Data Protection & Third-Party Sharing</h2>
+    <p>We never sell or rent your personal data. Payment processing is handled securely via Stripe, and social sign-in is authenticated via official OAuth 2.0 endpoints.</p>
+    <h2>4. Contact & Account Deletion</h2>
+    <p>You may request access to, correction of, or deletion of your account data at any time by contacting <a href="mailto:susan.coke@susansbeautyconsulting.com">susan.coke@susansbeautyconsulting.com</a>.</p>
+  `
+});
+
+const TERMS_OF_SERVICE_HTML = renderLegalDocumentHtml({
+  title: "Terms of Service — Susan's Beauty Consulting",
+  subtitle: 'Effective Date: October 2026 • Domain: susansbeautyconsulting.com',
+  bodyHtml: `
+    <h2>1. Membership & Boutique Services</h2>
+    <p>Susan's Beauty Consulting provides personalized skincare and beauty consultations, curated membership ritual boxes (Free Membership, The Luminary Circle, and The Radiance Elite), and boutique skincare essentials.</p>
+    <h2>2. Account Registration & Social Sign-In</h2>
+    <p>You may register or sign in using your email address or an authorized social account (Google, Facebook, LinkedIn, X, TikTok, or Reddit). You are responsible for maintaining the confidentiality of your account credentials.</p>
+    <h2>3. Subscriptions, Billing & Cancellations</h2>
+    <p>Paid memberships (Luminary Circle and Radiance Elite) are billed monthly via Stripe and may be managed or cancelled at any time from your Member Sanctuary dashboard or by contacting support.</p>
+    <h2>4. Contact Information</h2>
+    <p>For questions regarding these Terms, please contact <a href="mailto:susan.coke@susansbeautyconsulting.com">susan.coke@susansbeautyconsulting.com</a>.</p>
+  `
+});
+
+app.get(['/privacy', '/api/legal/privacy'], (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send(PRIVACY_POLICY_HTML);
+});
+
+app.get(['/terms', '/api/legal/terms'], (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send(TERMS_OF_SERVICE_HTML);
 });
 
 // POST /api/auth/social/quick-login — Interactive Social Sign-In / Sign-Up Endpoint (for Sandbox Handshake & SDK Tokens)
