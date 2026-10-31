@@ -2,7 +2,29 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import logo from "./susans-logo.png";
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+// Reads Google OAuth 2.0 Client ID from .env (REACT_APP_GOOGLE_CLIENT_ID) or dynamically from GET /api/auth/providers
+const DEFAULT_GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
+
+// Smart API Base URL resolver: ensures mobile phones & live domains never accidentally hit http://localhost:5000
+const resolveApiBaseUrl = () => {
+  const rawEnv = String(process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
+  if (typeof window !== 'undefined') {
+    const host = String(window.location.hostname || '').toLowerCase();
+    const isBrowserLocal = host === 'localhost' || host === '127.0.0.1';
+    if (rawEnv) {
+      const isEnvLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(rawEnv);
+      if (!isEnvLocal || isBrowserLocal) {
+        return rawEnv;
+      }
+    }
+    if (!isBrowserLocal) {
+      return String(window.location.origin || 'https://susansbeautyconsulting.com').replace(/\/+$/, '');
+    }
+  }
+  return rawEnv || 'http://localhost:5000';
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 // ---------------- ANALYTICS PHASE 2: SILENT CLIENT-SIDE TELEMETRY ENGINE ---------------- //
 
@@ -1977,6 +1999,9 @@ const SocialProviderBrandIcon = ({ provider, size = 18 }) => {
   return null;
 };
 
+const GOOGLE_GSI_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
+const LAST_USED_PROVIDER_STORAGE_KEY = 'sbc_last_auth_provider';
+
 const SocialAuthButtonGrid = ({
   mode = 'signup',
   selectedTier = 'luminary',
@@ -1984,8 +2009,10 @@ const SocialAuthButtonGrid = ({
   showTierSelector = false,
   showBottomDivider = false,
   titleText = '',
+  subtitleText = '',
   onTierChange,
   onSocialAuthSuccess,
+  onSwitchAuthMode,
   initialSandboxProvider = ''
 }) => {
   const [localTier, setLocalTier] = useState(selectedTier || 'basic');
@@ -1993,6 +2020,16 @@ const SocialAuthButtonGrid = ({
   const [socialForm, setSocialForm] = useState({ name: '', email: '', handle: '' });
   const [isSubmittingSocial, setIsSubmittingSocial] = useState(false);
   const [socialError, setSocialError] = useState('');
+  const [connectingProviderKey, setConnectingProviderKey] = useState('');
+  const [providerMap, setProviderMap] = useState({});
+  const [backendAuthReachable, setBackendAuthReachable] = useState(true);
+  const [lastUsedProvider, setLastUsedProvider] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_USED_PROVIDER_STORAGE_KEY) || 'google';
+    } catch (e) {
+      return 'google';
+    }
+  });
 
   useEffect(() => {
     if (selectedTier) {
@@ -2006,10 +2043,46 @@ const SocialAuthButtonGrid = ({
     }
   }, [initialSandboxProvider]);
 
+  // Fetch live OAuth provider configuration from /api/auth/providers on mount
+  useEffect(() => {
+    let isMounted = true;
+
+    fetch(`${API_BASE_URL}/api/auth/providers`)
+      .then(res => {
+        if (!res.ok) throw new Error('providers endpoint not ok');
+        return res.json();
+      })
+      .then(data => {
+        if (!isMounted || !data || !Array.isArray(data.providers)) return;
+        const nextMap = {};
+        data.providers.forEach(item => {
+          if (item && item.provider) {
+            nextMap[item.provider] = item;
+          }
+        });
+        setProviderMap(nextMap);
+        setBackendAuthReachable(true);
+      })
+      .catch(() => {
+        if (isMounted) {
+          setBackendAuthReachable(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const effectiveTier = showTierSelector ? localTier : (selectedTier || 'luminary');
   const effectiveIsSubscribing = showTierSelector
     ? ['luminary', 'radiance'].includes(String(localTier).toLowerCase())
     : Boolean(isSubscribing);
+
+  const resolvedGoogleClientId = (
+    providerMap.google?.clientId ||
+    DEFAULT_GOOGLE_CLIENT_ID
+  ).trim();
 
   const handleSelectTierPill = (nextTier) => {
     setLocalTier(nextTier);
@@ -2018,33 +2091,50 @@ const SocialAuthButtonGrid = ({
     }
   };
 
-  // Opens centered OAuth 2.0 popup window to /api/auth/:provider/start (which either redirects to live provider
-  // or renders the 1-click Provider Authorization Screen inside the popup and posts SUSAN_SOCIAL_AUTH_COMPLETE back)
+  // Performs a top-level full-tab browser redirect (matching screenshots 348.jpg -> 350.jpg)
+  // so clicking "Continue with Google" opens accounts.google.com ("Choose an account to continue to susansbeautyconsulting.com")
   const handleProviderButtonClick = (providerMeta) => {
     setSocialError('');
+    const provKey = providerMeta.key;
+    setConnectingProviderKey(provKey);
+
+    try {
+      localStorage.setItem(LAST_USED_PROVIDER_STORAGE_KEY, provKey);
+      setLastUsedProvider(provKey);
+      sessionStorage.setItem('sbc_pending_oauth_tier', effectiveTier || 'luminary');
+      sessionStorage.setItem('sbc_pending_oauth_subscribing', effectiveIsSubscribing ? 'true' : 'false');
+    } catch (e) {}
+
+    // If clicking Google and the backend /api/auth/providers route wasn't reachable on this host,
+    // navigate directly to Google's official OAuth 2.0 Account Chooser (https://accounts.google.com/o/oauth2/v2/auth)
+    if (provKey === 'google' && !backendAuthReachable && resolvedGoogleClientId) {
+      const callbackUrl = `${API_BASE_URL}/api/auth/google/callback`;
+      const googleParams = new URLSearchParams({
+        client_id: resolvedGoogleClientId,
+        redirect_uri: callbackUrl,
+        response_type: 'code',
+        scope: 'openid email profile',
+        prompt: 'select_account',
+        access_type: 'online',
+        state: JSON.stringify({
+          p: 'google',
+          tier: effectiveTier || 'luminary',
+          sub: Boolean(effectiveIsSubscribing),
+          orig: window.location.origin
+        })
+      });
+      window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${googleParams.toString()}`);
+      return;
+    }
+
+    // Standard full-window 302 redirect via /api/auth/:provider/start -> Official Provider Sign-In Screen
     const startParams = new URLSearchParams({
       tier: effectiveTier || 'luminary',
       isSubscribing: effectiveIsSubscribing ? 'true' : 'false',
-      mode: 'popup',
+      mode: 'redirect',
       returnOrigin: window.location.origin
     });
-    const popupUrl = `${API_BASE_URL}/api/auth/${providerMeta.key}/start?${startParams.toString()}`;
-
-    const width = 480;
-    const height = 640;
-    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
-    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
-
-    const popupWin = window.open(
-      popupUrl,
-      `SusansOAuth_${providerMeta.key}`,
-      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
-    );
-
-    if (!popupWin || popupWin.closed || typeof popupWin.closed === 'undefined') {
-      // If browser blocked the popup, open the inline quick sign-up modal right on the page
-      setActiveModalProvider(providerMeta.key);
-    }
+    window.location.assign(`${API_BASE_URL}/api/auth/${provKey}/start?${startParams.toString()}`);
   };
 
   const handleCompleteInlineSocialLogin = async (e, autoDemo = false) => {
@@ -2102,21 +2192,25 @@ const SocialAuthButtonGrid = ({
   };
 
   const activeMeta = SOCIAL_OAUTH_PROVIDERS_META.find(p => p.key === activeModalProvider) || null;
-  const actionVerb = mode === 'login' ? 'Sign in with' : 'Sign up with';
 
   return (
-    <div style={{ width: '100%', maxWidth: '480px', margin: '18px auto' }}>
+    <div style={{ width: '100%', maxWidth: '420px', margin: '10px auto' }}>
       {titleText && (
-        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454', fontWeight: 'bold', margin: '0 0 10px 0', textAlign: 'center' }}>
+        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', color: '#2D2929', fontWeight: '700', margin: '0 0 4px 0', textAlign: 'center' }}>
           {titleText}
+        </h3>
+      )}
+      {subtitleText && (
+        <p style={{ fontFamily: 'sans-serif', fontSize: '0.86rem', color: '#736A6A', margin: '0 0 14px 0', textAlign: 'center' }}>
+          {subtitleText}
         </p>
       )}
 
       {/* Optional 3-Tier Selector Pill Bar (for Landing Page & Tier Page) */}
       {showTierSelector && (
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '14px' }}>
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
           {[
-            { id: 'basic', label: '✨ Free Membership ($0)' },
+            { id: 'basic', label: '✨ Free ($0)' },
             { id: 'luminary', label: '🌸 Luminary ($49/mo)' },
             { id: 'radiance', label: '💎 Radiance ($119/mo)' }
           ].map(t => {
@@ -2127,14 +2221,14 @@ const SocialAuthButtonGrid = ({
                 type="button"
                 onClick={() => handleSelectTierPill(t.id)}
                 style={{
-                  padding: '7px 14px',
+                  padding: '7px 13px',
                   borderRadius: '20px',
-                  border: active ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+                  border: active ? '2px solid #B38B8F' : '1px solid #E2E5E9',
                   backgroundColor: active ? '#F2D4D7' : '#FFFFFF',
-                  color: '#5C5454',
+                  color: '#3D3737',
                   fontFamily: 'sans-serif',
-                  fontSize: '0.8rem',
-                  fontWeight: active ? 'bold' : 'normal',
+                  fontSize: '0.78rem',
+                  fontWeight: active ? '700' : '500',
                   cursor: 'pointer',
                   transition: 'all 0.2s ease'
                 }}
@@ -2146,58 +2240,121 @@ const SocialAuthButtonGrid = ({
         </div>
       )}
 
-      {/* 2x3 Grid of Social Sign-Up / Sign-In Buttons */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: '10px' }}>
-        {SOCIAL_OAUTH_PROVIDERS_META.map(prov => (
-          <button
-            key={prov.key}
-            type="button"
-            onClick={() => handleProviderButtonClick(prov)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '9px',
-              padding: '12px 14px',
-              borderRadius: '26px',
-              border: '1px solid #E8C5C8',
-              backgroundColor: 'rgba(255, 255, 255, 0.95)',
-              color: '#5C5454',
-              fontFamily: 'sans-serif',
-              fontSize: '0.88rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(232, 197, 200, 0.25)',
-              transition: 'all 0.25s ease'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#FFF0F2';
-              e.currentTarget.style.borderColor = '#B38B8F';
-              e.currentTarget.style.transform = 'translateY(-1px)';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
-              e.currentTarget.style.borderColor = '#E8C5C8';
-              e.currentTarget.style.transform = 'translateY(0)';
-            }}
-          >
-            <SocialProviderBrandIcon provider={prov.key} size={18} />
-            <span>{actionVerb} {prov.label}</span>
-          </button>
-        ))}
+      {/* Stacked Full-Width "Continue with [Provider]" Buttons + "Last used" Badge (Matching Screenshot 348.jpg) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '11px' }}>
+        {SOCIAL_OAUTH_PROVIDERS_META.map(prov => {
+          const isConnectingThis = connectingProviderKey === prov.key;
+          const isLastUsed = lastUsedProvider === prov.key;
+          return (
+            <div key={prov.key} style={{ position: 'relative', width: '100%' }}>
+              {isLastUsed && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: '-9px',
+                    right: '12px',
+                    zIndex: 2,
+                    backgroundColor: '#F4F5F7',
+                    color: '#5C5454',
+                    border: '1px solid #DCDFE4',
+                    borderRadius: '10px',
+                    padding: '1px 9px',
+                    fontSize: '0.68rem',
+                    fontFamily: 'sans-serif',
+                    fontWeight: '600',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                    pointerEvents: 'none'
+                  }}
+                >
+                  Last used
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={Boolean(connectingProviderKey)}
+                onClick={() => handleProviderButtonClick(prov)}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '10px',
+                  padding: '12px 16px',
+                  borderRadius: '10px',
+                  border: isConnectingThis ? '1.5px solid #B38B8F' : '1px solid #E2E5E9',
+                  backgroundColor: isConnectingThis ? '#FFF0F2' : '#FFFFFF',
+                  color: '#3D3737',
+                  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                  fontSize: '0.92rem',
+                  fontWeight: '500',
+                  cursor: connectingProviderKey ? 'wait' : 'pointer',
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
+                  transition: 'all 0.18s ease'
+                }}
+                onMouseOver={(e) => {
+                  if (connectingProviderKey) return;
+                  e.currentTarget.style.backgroundColor = '#FAFAFB';
+                  e.currentTarget.style.borderColor = '#B38B8F';
+                }}
+                onMouseOut={(e) => {
+                  if (connectingProviderKey) return;
+                  e.currentTarget.style.backgroundColor = '#FFFFFF';
+                  e.currentTarget.style.borderColor = '#E2E5E9';
+                }}
+              >
+                <SocialProviderBrandIcon provider={prov.key} size={18} />
+                <span>{isConnectingThis ? `Opening ${prov.label}...` : `Continue with ${prov.label}`}</span>
+              </button>
+            </div>
+          );
+        })}
       </div>
 
-      {showBottomDivider && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '22px', marginBottom: '8px' }}>
-          <div style={{ flex: 1, height: '1px', backgroundColor: '#E8C5C8' }} />
-          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#8A797A', fontStyle: 'italic', whiteSpace: 'nowrap' }}>
-            {mode === 'login' ? 'or sign in with email & password' : 'or sign up with email & password'}
-          </span>
-          <div style={{ flex: 1, height: '1px', backgroundColor: '#E8C5C8' }} />
+      {socialError && !activeMeta && (
+        <div style={{ marginTop: '10px', padding: '9px 12px', borderRadius: '10px', backgroundColor: '#FFF5F5', border: '1px solid #FFCDD2', color: '#C62828', fontSize: '0.82rem', fontFamily: 'sans-serif', textAlign: 'center' }}>
+          {socialError}
         </div>
       )}
 
-      {/* Inline Fallback Modal (if popup was blocked by browser) */}
+      {showBottomDivider && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '20px', marginBottom: '12px' }}>
+          <div style={{ flex: 1, height: '1px', backgroundColor: '#E6E8EC' }} />
+          <span style={{ fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#8A797A' }}>
+            or
+          </span>
+          <div style={{ flex: 1, height: '1px', backgroundColor: '#E6E8EC' }} />
+        </div>
+      )}
+
+      {onSwitchAuthMode && (
+        <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #F0EAEB', textAlign: 'center', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#736A6A' }}>
+          {mode === 'login' ? (
+            <>
+              Don't have an account?{' '}
+              <button
+                type="button"
+                onClick={() => onSwitchAuthMode('signup')}
+                style={{ background: 'none', border: 'none', color: '#2D2929', fontWeight: '700', cursor: 'pointer', padding: 0, fontSize: '0.84rem', textDecoration: 'underline' }}
+              >
+                Sign up
+              </button>
+            </>
+          ) : (
+            <>
+              Already have an account?{' '}
+              <button
+                type="button"
+                onClick={() => onSwitchAuthMode('login')}
+                style={{ background: 'none', border: 'none', color: '#2D2929', fontWeight: '700', cursor: 'pointer', padding: 0, fontSize: '0.84rem', textDecoration: 'underline' }}
+              >
+                Sign in
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Inline Fallback Modal (if triggered via oauth_sandbox_provider) */}
       {activeMeta && (
         <div
           onClick={() => !isSubmittingSocial && setActiveModalProvider('')}
@@ -2247,7 +2404,7 @@ const SocialAuthButtonGrid = ({
               </div>
               <div>
                 <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: 0 }}>
-                  {actionVerb} {activeMeta.label} ✧
+                  Continue with {activeMeta.label} ✧
                 </h3>
                 <span style={{ fontSize: '0.76rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
                   Instant Membership Creation
@@ -2319,7 +2476,7 @@ const SocialAuthButtonGrid = ({
                   cursor: isSubmittingSocial ? 'not-allowed' : 'pointer'
                 }}
               >
-                {isSubmittingSocial ? `Connecting ${activeMeta.label}...` : `${actionVerb} ${activeMeta.label} ✧`}
+                {isSubmittingSocial ? `Connecting ${activeMeta.label}...` : `Continue with ${activeMeta.label} ✧`}
               </button>
 
               <button
@@ -10492,6 +10649,44 @@ function App() {
       return;
     }
 
+    // Catch URL hash #access_token=... if an Implicit Grant provider returns directly to the frontend
+    if (window.location.hash && window.location.hash.includes('access_token=')) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      const hashAccessToken = hashParams.get('access_token') || '';
+      const hashIdToken = hashParams.get('id_token') || '';
+      const pendingTier = sessionStorage.getItem('sbc_pending_oauth_tier') || selectedTier || 'basic';
+      const pendingSub = sessionStorage.getItem('sbc_pending_oauth_subscribing') === 'true';
+      window.history.replaceState(null, '', window.location.pathname);
+      if (hashAccessToken || hashIdToken) {
+        (async () => {
+          try {
+            const verifyRes = await fetch(`${API_BASE_URL}/api/auth/google/verify-token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                accessToken: hashAccessToken,
+                idToken: hashIdToken,
+                membershipTier: pendingTier,
+                isSubscribing: pendingSub
+              })
+            });
+            const verifyData = await verifyRes.json().catch(() => ({}));
+            if (verifyRes.ok && verifyData.token && verifyData.user) {
+              await handleSocialAuthSuccess(
+                { token: verifyData.token, user: verifyData.user, provider: 'google' },
+                {
+                  tierOverride: pendingTier,
+                  subscribingOverride: pendingSub && ['luminary', 'radiance'].includes(String(pendingTier).toLowerCase()),
+                  goToStep1: !pendingSub && String(pendingTier).toLowerCase() === 'basic'
+                }
+              );
+            }
+          } catch (e) {}
+        })();
+        return;
+      }
+    }
+
     if (query.get('oauth_token')) {
       const oauthToken = query.get('oauth_token');
       const oauthProvider = query.get('oauth_provider') || 'google';
@@ -10507,11 +10702,14 @@ function App() {
           if (meRes.ok) {
             const meData = await meRes.json();
             if (meData.user) {
+              const isNewOAuthUser = query.get('oauth_is_new') === 'true';
+              const resolvedOAuthTier = String(subscribeTier || meData.user.membershipTier || 'basic').toLowerCase();
               await handleSocialAuthSuccess(
                 { token: oauthToken, user: meData.user, provider: oauthProvider },
                 {
-                  tierOverride: subscribeTier || meData.user.membershipTier,
-                  subscribingOverride: Boolean(subscribeTier)
+                  tierOverride: resolvedOAuthTier,
+                  subscribingOverride: Boolean(subscribeTier) && ['luminary', 'radiance'].includes(resolvedOAuthTier),
+                  goToStep1: isNewOAuthUser && !subscribeTier && resolvedOAuthTier === 'basic'
                 }
               );
               return;
@@ -10978,6 +11176,55 @@ function App() {
     }
     setIsLoading(false);
   };
+
+  const currentPathname = typeof window !== 'undefined' ? String(window.location.pathname || '').toLowerCase() : '';
+  if (currentPathname === '/privacy' || currentPathname === '/terms') {
+    const isPrivacy = currentPathname === '/privacy';
+    return (
+      <div style={{ width: '100%', minHeight: '100vh', backgroundColor: '#FFF9F9', padding: '40px 20px', boxSizing: 'border-box', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454' }}>
+        <div style={{ maxWidth: '760px', margin: '0 auto', backgroundColor: '#FFFFFF', border: '1.5px solid #E8C5C8', borderRadius: '24px', padding: '40px 36px', boxShadow: '0 15px 40px rgba(179, 139, 143, 0.18)', textAlign: 'left' }}>
+          <h1 style={{ color: '#B38B8F', fontSize: '2.4rem', margin: '0 0 6px 0' }}>
+            {isPrivacy ? "Privacy Policy — Susan's Beauty Consulting" : "Terms of Service — Susan's Beauty Consulting"}
+          </h1>
+          <p style={{ fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#8A797A', borderBottom: '1px solid #E8C5C8', paddingBottom: '14px', marginBottom: '22px' }}>
+            Effective Date: October 2026 • Domain: susansbeautyconsulting.com
+          </p>
+          {isPrivacy ? (
+            <div style={{ fontFamily: 'sans-serif', fontSize: '0.95rem', lineHeight: '1.7' }}>
+              <h3 style={{ color: '#5C5454' }}>1. Information We Collect</h3>
+              <p>When you sign in or create a membership with Susan's Beauty Consulting using Google, Facebook, LinkedIn, X, TikTok, Reddit, or email/password, we collect your basic profile information (name, email address, and profile avatar) and your Personalized Beauty Blueprint preferences.</p>
+              <h3 style={{ color: '#5C5454' }}>2. How We Use Your Information</h3>
+              <p>We use your information exclusively to create and authenticate your membership account, personalize your skincare and beauty recommendations, fulfill your boutique and subscription box orders, and send transactional account updates.</p>
+              <h3 style={{ color: '#5C5454' }}>3. Data Protection & Security</h3>
+              <p>We never sell or rent your personal data. Payment processing is handled securely via Stripe, and social sign-in is authenticated via official OAuth 2.0 endpoints.</p>
+              <h3 style={{ color: '#5C5454' }}>4. Contact & Account Deletion</h3>
+              <p>You may request access to, correction of, or deletion of your account data at any time by contacting <strong>susan.coke@susansbeautyconsulting.com</strong>.</p>
+            </div>
+          ) : (
+            <div style={{ fontFamily: 'sans-serif', fontSize: '0.95rem', lineHeight: '1.7' }}>
+              <h3 style={{ color: '#5C5454' }}>1. Membership & Boutique Services</h3>
+              <p>Susan's Beauty Consulting provides personalized skincare and beauty consultations, curated membership ritual boxes (Free Membership, The Luminary Circle, and The Radiance Elite), and boutique skincare essentials.</p>
+              <h3 style={{ color: '#5C5454' }}>2. Account Registration & Social Sign-In</h3>
+              <p>You may register or sign in using your email address or an authorized social account (Google, Facebook, LinkedIn, X, TikTok, or Reddit). You are responsible for maintaining the confidentiality of your account credentials.</p>
+              <h3 style={{ color: '#5C5454' }}>3. Subscriptions, Billing & Cancellations</h3>
+              <p>Paid memberships (Luminary Circle and Radiance Elite) are billed monthly via Stripe and may be managed or cancelled at any time from your Member Sanctuary dashboard or by contacting support.</p>
+              <h3 style={{ color: '#5C5454' }}>4. Contact Information</h3>
+              <p>For questions regarding these Terms, please contact <strong>susan.coke@susansbeautyconsulting.com</strong>.</p>
+            </div>
+          )}
+          <div style={{ marginTop: '28px' }}>
+            <button
+              type="button"
+              onClick={() => { window.location.href = '/'; }}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '22px', padding: '10px 22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', color: '#5C5454', cursor: 'pointer' }}
+            >
+              ← Return to Susan's Beauty Consulting
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', position: 'relative' }}>
