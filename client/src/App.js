@@ -1443,6 +1443,287 @@ const BoutiqueSmartFilterSection = ({
   );
 };
 
+const MembershipUpgradeModal = ({
+  isOpen,
+  onClose,
+  featureContext = '',
+  currentTier = 'basic',
+  isUpgrading = false,
+  onSelectUpgradeTier
+}) => {
+  if (!isOpen) return null;
+
+  const cleanCurrentTier = String(currentTier || 'basic').toLowerCase().trim();
+
+  return (
+    <div
+      onClick={() => !isUpgrading && onClose && onClose()}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        backgroundColor: 'rgba(92, 84, 84, 0.62)',
+        backdropFilter: 'blur(6px)',
+        zIndex: 2500,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        boxSizing: 'border-box',
+        animation: 'fadeIn 0.28s ease'
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: '#FFF9F9',
+          border: '2px solid #B38B8F',
+          borderRadius: '26px',
+          padding: '34px 30px',
+          maxWidth: '860px',
+          width: '100%',
+          maxHeight: '92vh',
+          overflowY: 'auto',
+          boxShadow: '0 22px 55px rgba(92, 84, 84, 0.38)',
+          position: 'relative',
+          textAlign: 'center',
+          boxSizing: 'border-box'
+        }}
+      >
+        <button
+          type="button"
+          disabled={isUpgrading}
+          onClick={onClose}
+          style={{
+            position: 'absolute',
+            top: '16px',
+            right: '20px',
+            background: '#FFFFFF',
+            border: '1px solid #E8C5C8',
+            width: '36px',
+            height: '36px',
+            borderRadius: '50%',
+            fontSize: '1.1rem',
+            cursor: 'pointer',
+            color: '#8A797A'
+          }}
+        >
+          ✕
+        </button>
+
+        <span
+          style={{
+            display: 'inline-block',
+            backgroundColor: '#FFF0F2',
+            color: '#B38B8F',
+            border: '1px solid #B38B8F',
+            borderRadius: '20px',
+            padding: '5px 16px',
+            fontSize: '0.8rem',
+            fontWeight: 'bold',
+            fontFamily: 'sans-serif',
+            letterSpacing: '0.6px',
+            textTransform: 'uppercase',
+            marginBottom: '10px'
+          }}
+        >
+          🔒 Exclusive Member Sanctuary Benefit
+        </span>
+
+        <h2
+          style={{
+            fontFamily: "'Alex Brush', cursive",
+            fontSize: '3.4rem',
+            color: '#B38B8F',
+            fontWeight: '400',
+            margin: '0 0 8px 0',
+            lineHeight: '1.1'
+          }}
+        >
+          Elevate Your Sanctuary Ritual
+        </h2>
+
+        <p
+          style={{
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '1.3rem',
+            color: '#5C5454',
+            maxWidth: '640px',
+            margin: '0 auto 24px auto',
+            lineHeight: '1.55'
+          }}
+        >
+          {featureContext ||
+            "Free Sanctuary members can browse our curated Boutique and manage their account. Upgrade to a paid membership tier below to unlock Susan's Personalized Beauty Blueprint Quiz, AI Skin Photo Analysis, and 1-on-1 Video Consultations."}
+        </p>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))',
+            gap: '22px',
+            textAlign: 'left',
+            marginBottom: '18px'
+          }}
+        >
+          {/* Tier 1: The Luminary Circle ($49/mo) */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              border: cleanCurrentTier === 'luminary' ? '2px solid #2E7D32' : '1.5px solid #E8C5C8',
+              borderRadius: '20px',
+              padding: '26px 24px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxShadow: '0 8px 24px rgba(232, 197, 200, 0.18)',
+              position: 'relative'
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <span style={{ fontSize: '0.76rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', textTransform: 'uppercase' }}>
+                  ✨ Essential Ritual Tier
+                </span>
+                {cleanCurrentTier === 'luminary' && (
+                  <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '2px 9px', borderRadius: '12px', fontSize: '0.72rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                    Current Plan
+                  </span>
+                )}
+              </div>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                The Luminary Circle
+              </h3>
+              <p style={{ fontFamily: "'Alex Brush', cursive", fontSize: '2.2rem', color: '#B38B8F', margin: '0 0 16px 0' }}>
+                $49 <span style={{ fontSize: '0.95rem', fontFamily: 'sans-serif', fontStyle: 'normal', color: '#8A797A' }}>/ month</span>
+              </p>
+
+              <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 22px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', lineHeight: '1.85' }}>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✓</span> Full access to the 10-Step Beauty Blueprint Quiz</li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✓</span> 3-Piece Monthly Curated Skincare Ritual Box</li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✓</span> <strong>1 Consultation Every 3 Months (Quarterly)</strong></li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✓</span> Automatic 10% Member Discount in the Boutique</li>
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              disabled={isUpgrading || cleanCurrentTier === 'luminary'}
+              onClick={() => onSelectUpgradeTier && onSelectUpgradeTier('luminary')}
+              style={{
+                width: '100%',
+                backgroundColor: cleanCurrentTier === 'luminary' ? '#F4F5F7' : '#F2D4D7',
+                color: cleanCurrentTier === 'luminary' ? '#8A797A' : '#5C5454',
+                border: '1px solid #B38B8F',
+                padding: '13px 20px',
+                borderRadius: '25px',
+                fontFamily: "'Cormorant Garamond', serif",
+                fontSize: '1.2rem',
+                fontWeight: 'bold',
+                cursor: isUpgrading || cleanCurrentTier === 'luminary' ? 'not-allowed' : 'pointer',
+                transition: 'all 0.25s ease'
+              }}
+            >
+              {cleanCurrentTier === 'luminary'
+                ? '✓ Your Current Tier'
+                : isUpgrading
+                ? 'Connecting to Stripe...'
+                : 'Select Luminary ($49/mo) ✧'}
+            </button>
+          </div>
+
+          {/* Tier 2: The Radiance Elite ($119/mo) */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              border: '2px solid #B38B8F',
+              borderRadius: '20px',
+              padding: '26px 24px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxShadow: '0 12px 32px rgba(179, 139, 143, 0.28)',
+              position: 'relative'
+            }}
+          >
+            <span
+              style={{
+                position: 'absolute',
+                top: '-12px',
+                right: '20px',
+                background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                color: '#FFFFFF',
+                padding: '4px 12px',
+                borderRadius: '14px',
+                fontSize: '0.73rem',
+                fontFamily: 'sans-serif',
+                fontWeight: 'bold',
+                boxShadow: '0 4px 10px rgba(179, 139, 143, 0.35)'
+              }}
+            >
+              💎 VIP ELITE • AI PHOTO ANALYSIS
+            </span>
+
+            <div>
+              <span style={{ fontSize: '0.76rem', fontWeight: 'bold', color: '#B38B8F', fontFamily: 'sans-serif', textTransform: 'uppercase', display: 'block', marginBottom: '6px' }}>
+                🌟 Complete Luxury Sanctuary
+              </span>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 6px 0', fontWeight: 'bold' }}>
+                The Radiance Elite
+              </h3>
+              <p style={{ fontFamily: "'Alex Brush', cursive", fontSize: '2.2rem', color: '#5C5454', margin: '0 0 16px 0' }}>
+                $119 <span style={{ fontSize: '0.95rem', fontFamily: 'sans-serif', fontStyle: 'normal', color: '#8A797A' }}>/ month</span>
+              </p>
+
+              <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 22px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', lineHeight: '1.85' }}>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✦</span> Full 10-Step Beauty Blueprint Quiz Access</li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✦</span> <strong>Exclusive AI Skin Photo Upload & Visual Analysis</strong></li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✦</span> 5-Piece Premium Monthly Skincare Ritual Box</li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✦</span> <strong>1 Consultation Every Month (Monthly 1-on-1)</strong></li>
+                <li><span style={{ color: '#B38B8F', fontWeight: 'bold', marginRight: '8px' }}>✦</span> Automatic 25% VIP Discount Across the Boutique</li>
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              disabled={isUpgrading || cleanCurrentTier === 'radiance'}
+              onClick={() => onSelectUpgradeTier && onSelectUpgradeTier('radiance')}
+              style={{
+                width: '100%',
+                background: cleanCurrentTier === 'radiance'
+                  ? '#F4F5F7'
+                  : 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                color: cleanCurrentTier === 'radiance' ? '#8A797A' : '#FFFFFF',
+                border: 'none',
+                padding: '13px 20px',
+                borderRadius: '25px',
+                fontFamily: "'Cormorant Garamond', serif",
+                fontSize: '1.2rem',
+                fontWeight: 'bold',
+                cursor: isUpgrading || cleanCurrentTier === 'radiance' ? 'not-allowed' : 'pointer',
+                boxShadow: '0 6px 18px rgba(179, 139, 143, 0.35)',
+                transition: 'all 0.25s ease'
+              }}
+            >
+              {cleanCurrentTier === 'radiance'
+                ? '✓ Your Current Tier'
+                : isUpgrading
+                ? 'Connecting to Stripe...'
+                : 'Upgrade to Radiance ($119/mo) ✧'}
+            </button>
+          </div>
+        </div>
+
+        <p style={{ margin: 0, fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+          🔒 Secure monthly subscription via Stripe • Cancel or switch tiers anytime from your Account Info tab.
+        </p>
+      </div>
+    </div>
+  );
+};
+
 const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
@@ -2570,6 +2851,43 @@ const formatDateTimeCT = (dateVal) => {
   })} CT`;
 };
 
+// Compresses an uploaded image File into a clean JPEG data URL so uploads stay fast and lightweight
+const compressImageFileToDataUrl = (file, maxDimension = 900, quality = 0.82) =>
+  new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('No image file selected.'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read image file.'));
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Invalid image format.'));
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+          if (width > maxDimension || height > maxDimension) {
+            if (width >= height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(compressedDataUrl);
+        } catch (err) {
+          resolve(ev.target.result);
+        }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
 const normalizeRoomUrl = (rawLink) => {
   if (!rawLink || !String(rawLink).trim()) return '';
   const trimmed = String(rawLink).trim();
@@ -2990,8 +3308,9 @@ const AdminCalendar = ({ users = [] }) => {
   );
 };
 
-const MemberCalendar = ({ onJoinVideoRoom }) => {
+const MemberCalendar = ({ onJoinVideoRoom, userTier = 'basic', onOpenPaywallModal }) => {
   const [appointments, setAppointments] = useState([]);
+  const [quotaInfo, setQuotaInfo] = useState(null);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isScheduling, setIsScheduling] = useState(false);
   const [editingApptId, setEditingApptId] = useState(null);
@@ -3012,7 +3331,12 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
       });
       if (res.ok) {
         const data = await res.json();
-        setAppointments(Array.isArray(data) ? data : []);
+        if (Array.isArray(data)) {
+          setAppointments(data);
+        } else if (data && typeof data === 'object') {
+          setAppointments(Array.isArray(data.appointments) ? data.appointments : []);
+          if (data.quotaInfo) setQuotaInfo(data.quotaInfo);
+        }
       }
     } catch (err) {
       console.error('Error fetching member calendar:', err);
@@ -3074,7 +3398,13 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
         });
         setTimeout(() => setStatusBanner({ type: '', text: '' }), 4500);
       } else {
-        setStatusBanner({ type: 'error', text: data.error || 'Could not schedule consultation.' });
+        if (res.status === 402 || data.requiresUpgrade) {
+          if (onOpenPaywallModal) {
+            onOpenPaywallModal(data.message || 'Upgrade to Luminary Circle or Radiance Elite to book 1-on-1 consultations with Susan.');
+          }
+        }
+        if (data.quotaInfo) setQuotaInfo(data.quotaInfo);
+        setStatusBanner({ type: 'error', text: data.message || data.error || 'Could not schedule consultation.' });
       }
     } catch (err) {
       console.error('Error booking consultation:', err);
@@ -3107,18 +3437,129 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
     setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
   };
 
+  const myUpcomingAppointments = appointments.filter(a => a.isMine);
+
+  // Derive live tier consultation quota (Luminary = 1 every 90 days / Quarterly; Radiance = 1 every 30 days / Monthly)
+  const cleanTier = String(quotaInfo?.tier || userTier || 'luminary').toLowerCase().trim();
+  const windowDays = quotaInfo?.windowDays || (cleanTier === 'radiance' ? 30 : 90);
+  const maxAllowed = quotaInfo?.maxAllowed ?? 1;
+  const usedCount = quotaInfo?.usedCount !== undefined ? quotaInfo.usedCount : myUpcomingAppointments.length;
+  const canBookNew = quotaInfo?.canBook !== undefined ? Boolean(quotaInfo.canBook) : usedCount < maxAllowed;
+
+  const computedNextEligibleDate = (() => {
+    if (quotaInfo?.nextEligibleDate) return quotaInfo.nextEligibleDate;
+    if (!canBookNew && myUpcomingAppointments[0]?.startTime) {
+      const latestMs = new Date(myUpcomingAppointments[0].startTime).getTime();
+      if (!isNaN(latestMs)) {
+        return new Date(latestMs + windowDays * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+    return null;
+  })();
+
+  const formattedNextEligibleDate = computedNextEligibleDate
+    ? new Date(computedNextEligibleDate).toLocaleDateString('en-US', {
+        timeZone: CENTRAL_TIMEZONE,
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      })
+    : '';
+
   const handleDayClick = (dayNumber) => {
     if (isScheduling && editingApptId) return;
+    if (!canBookNew) {
+      setStatusBanner({
+        type: 'error',
+        text:
+          cleanTier === 'luminary'
+            ? `Luminary Circle includes 1 consultation every 3 months (90 days). Your next eligible booking date is ${formattedNextEligibleDate || 'after your current 90-day cycle'} — or upgrade to Radiance Elite for monthly consultations!`
+            : `Radiance Elite includes 1 consultation per month (30 days). Your next eligible booking date is ${formattedNextEligibleDate || 'after your current 30-day cycle'}. You can still reschedule your existing session below.`
+      });
+      return;
+    }
     const pad = (n) => String(n).padStart(2, '0');
     const slot = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(dayNumber)}T09:00`;
     setFormState(prev => ({ ...prev, startTime: slot }));
     setIsScheduling(true);
   };
 
-  const myUpcomingAppointments = appointments.filter(a => a.isMine);
-
   return (
     <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.75)', borderRadius: '15px', border: '1px solid #E8C5C8', padding: '30px' }}>
+      {/* Tier Consultation Quota Banner */}
+      <div
+        style={{
+          backgroundColor: canBookNew ? '#F6FBF7' : '#FFF8E7',
+          border: `1.5px solid ${canBookNew ? '#A5D6A7' : '#FFE082'}`,
+          borderRadius: '14px',
+          padding: '14px 18px',
+          marginBottom: '22px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '12px',
+          textAlign: 'left'
+        }}
+      >
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
+              {cleanTier === 'radiance'
+                ? '💎 Radiance Elite Privilege: 1 Consultation Every Month (30-Day Cycle)'
+                : '✨ Luminary Circle Privilege: 1 Consultation Every 3 Months (Quarterly / 90-Day Cycle)'}
+            </strong>
+            <span
+              style={{
+                backgroundColor: '#FFFFFF',
+                color: canBookNew ? '#2E7D32' : '#B26A00',
+                border: `1px solid ${canBookNew ? '#A5D6A7' : '#FFE082'}`,
+                padding: '2px 10px',
+                borderRadius: '12px',
+                fontSize: '0.78rem',
+                fontWeight: 'bold',
+                fontFamily: 'sans-serif'
+              }}
+            >
+              {canBookNew
+                ? `✓ ${Math.max(1, maxAllowed - usedCount)} Session Available (${usedCount}/${maxAllowed} Used)`
+                : `🔒 Quota Used (${usedCount}/${maxAllowed})${formattedNextEligibleDate ? ` • Next Eligible: ${formattedNextEligibleDate}` : ''}`}
+            </span>
+          </div>
+          <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+            {canBookNew
+              ? `You are eligible to reserve your ${cleanTier === 'radiance' ? 'monthly' : 'quarterly'} 1-on-1 video consultation with Susan below.`
+              : `You have an active or recently completed consultation in your current ${windowDays}-day window. You may reschedule your upcoming session below${formattedNextEligibleDate ? `, or book your next session starting ${formattedNextEligibleDate}` : ''}.`}
+          </p>
+        </div>
+
+        {cleanTier === 'luminary' && onOpenPaywallModal && (
+          <button
+            type="button"
+            onClick={() =>
+              onOpenPaywallModal(
+                'Upgrade from The Luminary Circle ($49/mo — Quarterly) to The Radiance Elite ($119/mo) to unlock Monthly 1-on-1 Consultations, AI Skin Photo Analysis, and 25% off the Boutique!'
+              )
+            }
+            style={{
+              background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+              color: '#FFFFFF',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '18px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1rem',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 4px 12px rgba(179, 139, 143, 0.3)'
+            }}
+          >
+            💎 Want Monthly Sessions? Upgrade to Radiance →
+          </button>
+        )}
+      </div>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#B38B8F', cursor: 'pointer' }}>◀</button>
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.2rem', color: '#5C5454', margin: 0 }}>
@@ -3130,12 +3571,36 @@ const MemberCalendar = ({ onJoinVideoRoom }) => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
         <button
           onClick={() => {
-            if (isScheduling) resetForm();
-            else setIsScheduling(true);
+            if (isScheduling) {
+              resetForm();
+            } else if (!canBookNew) {
+              setStatusBanner({
+                type: 'error',
+                text:
+                  cleanTier === 'luminary'
+                    ? `Luminary Circle members are limited to 1 consultation every 3 months (90 days). Next eligible date: ${formattedNextEligibleDate || 'after current cycle'}.`
+                    : `Radiance Elite members are limited to 1 consultation per month (30 days). Next eligible date: ${formattedNextEligibleDate || 'after current cycle'}.`
+              });
+            } else {
+              setIsScheduling(true);
+            }
           }}
-          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', padding: '10px 22px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', cursor: 'pointer', fontSize: '1.1rem' }}
+          style={{
+            backgroundColor: (!canBookNew && !isScheduling) ? '#F4F5F7' : '#F2D4D7',
+            border: '1px solid #B38B8F',
+            padding: '10px 22px',
+            borderRadius: '25px',
+            fontFamily: "'Cormorant Garamond', serif",
+            color: (!canBookNew && !isScheduling) ? '#8A797A' : '#5C5454',
+            cursor: (!canBookNew && !isScheduling) ? 'not-allowed' : 'pointer',
+            fontSize: '1.1rem'
+          }}
         >
-          {isScheduling ? 'Close Scheduler' : '+ Book Consultation with Susan ✧'}
+          {isScheduling
+            ? 'Close Scheduler'
+            : !canBookNew
+            ? `🔒 ${cleanTier === 'radiance' ? 'Monthly' : 'Quarterly'} Quota Used${formattedNextEligibleDate ? ` (Next: ${formattedNextEligibleDate})` : ''}`
+            : '+ Book Consultation with Susan ✧'}
         </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -10306,11 +10771,61 @@ function App() {
   const [userDetails, setUserDetails] = useState(() => {
     try {
       const savedUser = localStorage.getItem('authUser');
-      return savedUser ? JSON.parse(savedUser) : { name: '', email: '', password: '', membershipTier: '', role: 'client' };
+      return savedUser
+        ? JSON.parse(savedUser)
+        : {
+            name: '',
+            username: '',
+            email: '',
+            phone: '',
+            password: '',
+            membershipTier: 'basic',
+            role: 'client',
+            avatarUrl: '',
+            shippingAddress: { address_1: '', address_2: '', city: '', state: '', postcode: '', country: 'US' },
+            billingInfo: { billingName: '', cardBrand: '', cardLast4: '', expMonth: '', expYear: '', billingAddress: '', subscriptionStatus: 'inactive' }
+          };
     } catch {
-      return { name: '', email: '', password: '', membershipTier: '', role: 'client' };
+      return {
+        name: '',
+        username: '',
+        email: '',
+        phone: '',
+        password: '',
+        membershipTier: 'basic',
+        role: 'client',
+        avatarUrl: '',
+        shippingAddress: { address_1: '', address_2: '', city: '', state: '', postcode: '', country: 'US' },
+        billingInfo: { billingName: '', cardBrand: '', cardLast4: '', expMonth: '', expYear: '', billingAddress: '', subscriptionStatus: 'inactive' }
+      };
     }
   });
+
+  const [paywallModal, setPaywallModal] = useState({
+    isOpen: false,
+    featureContext: ''
+  });
+  const [isUpgradingTier, setIsUpgradingTier] = useState(false);
+
+  const effectiveMemberTier = String(userDetails?.membershipTier || 'basic').toLowerCase().trim();
+  const isPaidMemberOrAdmin =
+    userDetails?.role === 'admin' ||
+    ['luminary', 'radiance', 'admin'].includes(effectiveMemberTier);
+  const isFreeBasicMember = !isPaidMemberOrAdmin;
+
+  const openPaywallModal = (featureContext = '') => {
+    setPaywallModal({
+      isOpen: true,
+      featureContext:
+        featureContext ||
+        "Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to unlock the Personalized Beauty Blueprint Quiz and 1-on-1 Consultations with Susan."
+    });
+  };
+
+  const closePaywallModal = () => {
+    if (isUpgradingTier) return;
+    setPaywallModal({ isOpen: false, featureContext: '' });
+  };
 
   const [activeMemberTab, setActiveMemberTab] = useState(() => {
     return localStorage.getItem('activeMemberTab') || 'Blueprint';
@@ -10337,6 +10852,24 @@ function App() {
       return null;
     }
   });
+
+  const [quizPhotoDataUrl, setQuizPhotoDataUrl] = useState(() => {
+    try {
+      return localStorage.getItem('sbc_quiz_photo') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const [aiPhotoAnalysis, setAiPhotoAnalysis] = useState(() => {
+    try {
+      const savedPhotoAi = localStorage.getItem('aiPhotoAnalysis');
+      return savedPhotoAi ? JSON.parse(savedPhotoAi) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isProcessingQuizPhoto, setIsProcessingQuizPhoto] = useState(false);
 
   const defaultBoutiqueFilterState = {
     onlyBlueprintMatch: false,
@@ -10482,6 +11015,20 @@ function App() {
     if (blueprintAnalysis) localStorage.setItem('blueprintAnalysis', JSON.stringify(blueprintAnalysis));
     else localStorage.removeItem('blueprintAnalysis');
   }, [blueprintAnalysis]);
+
+  useEffect(() => {
+    try {
+      if (quizPhotoDataUrl) localStorage.setItem('sbc_quiz_photo', quizPhotoDataUrl);
+      else localStorage.removeItem('sbc_quiz_photo');
+    } catch (e) {}
+  }, [quizPhotoDataUrl]);
+
+  useEffect(() => {
+    try {
+      if (aiPhotoAnalysis) localStorage.setItem('aiPhotoAnalysis', JSON.stringify(aiPhotoAnalysis));
+      else localStorage.removeItem('aiPhotoAnalysis');
+    } catch (e) {}
+  }, [aiPhotoAnalysis]);
   
   useEffect(() => {
     const safeUser = { ...userDetails, password: '' };
@@ -10530,10 +11077,20 @@ function App() {
           if (bpData.blueprintAnalysis || bpData.blueprint.blueprintAnalysis) {
             setBlueprintAnalysis(bpData.blueprintAnalysis || bpData.blueprint.blueprintAnalysis);
           }
+          const remotePhoto = bpData.skinPhotoUrl || bpData.blueprint.skinPhotoUrl || '';
+          if (remotePhoto) setQuizPhotoDataUrl(remotePhoto);
+          const remotePhotoAi =
+            bpData.aiPhotoAnalysis ||
+            bpData.blueprint.aiPhotoAnalysis ||
+            bpData.blueprintAnalysis?.aiPhotoAnalysis ||
+            bpData.blueprint.blueprintAnalysis?.aiPhotoAnalysis ||
+            null;
+          if (remotePhotoAi) setAiPhotoAnalysis(remotePhotoAi);
           return true;
         } else {
           setHasCompletedQuiz(false);
-    setBlueprintAnalysis(null);
+          setBlueprintAnalysis(null);
+          setAiPhotoAnalysis(null);
           return false;
         }
       }
@@ -10543,13 +11100,22 @@ function App() {
     return false;
   };
 
-  // Prevent members who have already completed their one-time Blueprint Quiz from accessing quiz steps 11-20
+  // Prevent Free ('basic') members or members who already completed their one-time Blueprint Quiz from accessing quiz steps 11-20
   useEffect(() => {
-    if (hasCompletedQuiz && step >= 11 && step <= 20) {
-      setStep(5);
-      setActiveMemberTab('Blueprint');
+    if (step >= 11 && step <= 20) {
+      if (isFreeBasicMember) {
+        setStep(5);
+        setActiveMemberTab('Blueprint');
+        openPaywallModal("Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to unlock Susan's 10-Step Beauty Blueprint Quiz.");
+        return;
+      }
+      if (hasCompletedQuiz) {
+        setStep(5);
+        setActiveMemberTab('Blueprint');
+      }
     }
-  }, [hasCompletedQuiz, step]);
+    // eslint-disable-next-line
+  }, [hasCompletedQuiz, step, isFreeBasicMember]);
 
   // Restore Dashboard state if a user refreshes mid-session
   useEffect(() => {
@@ -10558,6 +11124,22 @@ function App() {
 
     const fetchDashboardData = async () => {
       try {
+        const resMe = await fetch(`${API_BASE_URL}/api/users/me`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resMe.status === 401 || resMe.status === 403) { handleLogOut(); return; }
+        if (resMe.ok) {
+          const meData = await resMe.json();
+          if (meData.user) {
+            setUserDetails(prev => ({
+              ...prev,
+              ...meData.user,
+              password: ''
+            }));
+            setSelectedTier(meData.user.membershipTier || 'basic');
+          }
+        }
+
         await syncMemberBlueprintStatus(token);
 
         const resRecs = await fetch(`${API_BASE_URL}/api/users/me/recommendations`, {
@@ -10723,17 +11305,55 @@ function App() {
     }
     
     if (query.get('success')) {
-      const tierStr = query.get('tier') || 'luminary';
+      const tierStr = String(query.get('tier') || 'luminary').toLowerCase().trim();
+      const sessionId = query.get('session_id') || '';
       window.history.replaceState(null, '', window.location.pathname);
-      setSelectedTier(tierStr);
-      setUserDetails(prev => ({ ...prev, name: 'Valued Member' }));
-      setIsSubscribing(true);
-      setStep(5);
+
+      const token = localStorage.getItem('token');
+      if (token) {
+        (async () => {
+          try {
+            const confirmRes = await fetch(`${API_BASE_URL}/api/users/me/confirm-upgrade`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ tier: tierStr, sessionId })
+            });
+            const confirmData = await confirmRes.json().catch(() => ({}));
+            if (confirmRes.ok && confirmData.user) {
+              setUserDetails(prev => ({ ...prev, ...confirmData.user, password: '' }));
+              setSelectedTier(confirmData.user.membershipTier || tierStr);
+            } else {
+              setUserDetails(prev => ({ ...prev, membershipTier: tierStr }));
+              setSelectedTier(tierStr);
+            }
+          } catch (e) {
+            setUserDetails(prev => ({ ...prev, membershipTier: tierStr }));
+            setSelectedTier(tierStr);
+          }
+          setIsSubscribing(true);
+          setPaywallModal({ isOpen: false, featureContext: '' });
+          setStep(5);
+        })();
+      } else {
+        setSelectedTier(tierStr);
+        setUserDetails(prev => ({ ...prev, name: prev.name || 'Valued Member', membershipTier: tierStr }));
+        setIsSubscribing(true);
+        setStep(5);
+      }
     }
 
     if (query.get('canceled')) {
       window.history.replaceState(null, '', window.location.pathname);
-      setStep(0);
+      const token = localStorage.getItem('token');
+      if (token) {
+        setStep(5);
+        setActiveMemberTab('Boutique');
+      } else {
+        setStep(0);
+      }
     }
     
     if (query.get('cart_success')) {
@@ -10893,16 +11513,34 @@ function App() {
     setIsLoading(true);
     try {
       const token = localStorage.getItem('token');
+      const payloadToSend = {
+        ...finalData,
+        ...((effectiveMemberTier === 'radiance' || effectiveMemberTier === 'admin') && quizPhotoDataUrl
+          ? { skinPhotoDataUrl: quizPhotoDataUrl }
+          : {})
+      };
       const res = await fetch(`${API_BASE_URL}/api/consultations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(finalData), 
+        body: JSON.stringify(payloadToSend), 
       });
       if (res.ok) {
         const savedConsultation = await res.json().catch(() => ({}));
         if (savedConsultation?.blueprintAnalysis) {
           setBlueprintAnalysis(savedConsultation.blueprintAnalysis);
         }
+        if (savedConsultation?.aiPhotoAnalysis || savedConsultation?.blueprintAnalysis?.aiPhotoAnalysis) {
+          setAiPhotoAnalysis(savedConsultation.aiPhotoAnalysis || savedConsultation.blueprintAnalysis.aiPhotoAnalysis);
+        }
+        if (savedConsultation?.skinPhotoUrl) {
+          setQuizPhotoDataUrl(savedConsultation.skinPhotoUrl);
+        }
+      } else if (res.status === 402) {
+        setIsLoading(false);
+        setStep(5);
+        setActiveMemberTab('Blueprint');
+        openPaywallModal("Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to unlock and save your Personalized Beauty Blueprint.");
+        return;
       } else if (res.status === 403) {
         const lockedData = await res.json().catch(() => ({}));
         if (lockedData.blueprint) {
@@ -10936,6 +11574,59 @@ function App() {
   const handleInputChange = (e) => setUserDetails({ ...userDetails, [e.target.name]: e.target.value });
   const handleLoginInputChange = (e) => setLoginCredentials({ ...loginCredentials, [e.target.name]: e.target.value });
 
+  // Triggers a Stripe subscription checkout for an existing signed-in Free ('basic') or Luminary member upgrading tiers
+  const handleTriggerStripeUpgrade = async (targetTier = 'luminary') => {
+    const cleanTargetTier = String(targetTier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setSelectedTier(cleanTargetTier);
+      setIsSubscribing(true);
+      closePaywallModal();
+      setStep(3);
+      return;
+    }
+
+    setIsUpgradingTier(true);
+    try {
+      const stripeRes = await fetch(`${API_BASE_URL}/api/create-checkout-session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ tier: cleanTargetTier })
+      });
+      const stripeData = await stripeRes.json().catch(() => ({}));
+      if (stripeRes.ok && stripeData.url) {
+        window.location.href = stripeData.url;
+        return;
+      }
+
+      // Graceful local/sandbox fallback if Stripe key is not configured with a live redirect URL
+      const confirmRes = await fetch(`${API_BASE_URL}/api/users/me/confirm-upgrade`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ tier: cleanTargetTier })
+      });
+      const confirmData = await confirmRes.json().catch(() => ({}));
+      if (confirmRes.ok && confirmData.user) {
+        setUserDetails(prev => ({ ...prev, ...confirmData.user, password: '' }));
+        setSelectedTier(confirmData.user.membershipTier || cleanTargetTier);
+        setIsSubscribing(true);
+        setPaywallModal({ isOpen: false, featureContext: '' });
+      } else {
+        alert(stripeData.error || confirmData.error || 'Could not initiate membership upgrade checkout.');
+      }
+    } catch (err) {
+      console.error('Membership upgrade error:', err);
+      alert('Network error while connecting to membership checkout.');
+    }
+    setIsUpgradingTier(false);
+  };
+
   const handleCreateAccount = async () => {
     setIsLoading(true);
     try {
@@ -10955,11 +11646,14 @@ function App() {
       localStorage.setItem('token', regData.token);
       setHasCompletedQuiz(false);
       
+      // Account starts at 'basic' until Stripe Checkout confirms payment
       setUserDetails(prev => ({ 
-        ...prev, 
+        ...prev,
+        ...regData.user,
         name: regData.user.name, 
         email: regData.user.email,
-        membershipTier: regData.user.membershipTier
+        membershipTier: regData.user.membershipTier || 'basic',
+        password: ''
       }));
 
       if (isSubscribing) {
@@ -10969,9 +11663,14 @@ function App() {
           body: JSON.stringify({ tier: selectedTier }),
         });
         
-        const stripeData = await stripeRes.json();
-        if (stripeData.url) window.location.href = stripeData.url;
+        const stripeData = await stripeRes.json().catch(() => ({}));
+        if (stripeData.url) {
+          window.location.href = stripeData.url;
+          return;
+        }
       }
+      setIsLoading(false);
+      setStep(5);
     } catch (err) {
       console.error('Failed to save user account:', err);
       setIsLoading(false);
@@ -10995,8 +11694,21 @@ function App() {
       }
 
       localStorage.setItem('token', regData.token);
+      setHasCompletedQuiz(false);
+      setSelectedTier('basic');
+      setIsSubscribing(false);
+      setUserDetails(prev => ({
+        ...prev,
+        ...regData.user,
+        name: regData.user?.name || prev.name,
+        email: regData.user?.email || prev.email,
+        membershipTier: 'basic',
+        role: regData.user?.role || 'client',
+        password: ''
+      }));
       setIsLoading(false);
-      setStep(1); 
+      setActiveMemberTab('Blueprint');
+      setStep(5); 
     } catch (err) {
       console.error('Failed to save user account:', err);
       setIsLoading(false);
@@ -11016,18 +11728,21 @@ function App() {
       
       if (res.ok) {
         localStorage.setItem('token', data.token);
+        const actualTier = data.user.membershipTier || 'basic';
         setUserDetails(prev => ({ 
-          ...prev, 
+          ...prev,
+          ...data.user,
           name: data.user.name, 
           email: data.user.email,
-          membershipTier: data.user.membershipTier,
-          role: data.user.role || 'client'
+          membershipTier: actualTier,
+          role: data.user.role || 'client',
+          password: ''
         }));
-        setSelectedTier(data.user.membershipTier);
-        setIsSubscribing(data.user.membershipTier !== 'basic' && data.user.membershipTier !== 'admin');
+        setSelectedTier(actualTier);
+        setIsSubscribing(actualTier !== 'basic' && actualTier !== 'admin');
         
         const userRole = data.user.role;
-        const isLegacyAdmin = data.user.membershipTier === 'admin';
+        const isLegacyAdmin = actualTier === 'admin';
         
         if (userRole === 'admin' || isLegacyAdmin) {
           setStep(6);
@@ -11051,22 +11766,25 @@ function App() {
     try {
       localStorage.setItem('token', data.token);
       const userObj = data.user;
-      const resolvedTier = options.tierOverride || userObj.membershipTier || selectedTier || 'luminary';
       const userRole = userObj.role || 'client';
       const isSusanAdmin = userRole === 'admin' || userObj.membershipTier === 'admin';
+      const actualDbTier = isSusanAdmin ? 'admin' : (userObj.membershipTier || 'basic');
+      const requestedPaidTier = options.tierOverride || selectedTier || 'luminary';
 
       setUserDetails(prev => ({
         ...prev,
+        ...userObj,
         name: userObj.name || prev.name,
         email: userObj.email || prev.email,
-        membershipTier: isSusanAdmin ? 'admin' : resolvedTier,
+        membershipTier: actualDbTier,
         role: isSusanAdmin ? 'admin' : userRole,
         authProvider: userObj.authProvider || data.provider || 'local',
         avatarUrl: userObj.avatarUrl || '',
-        socialProfiles: userObj.socialProfiles || {}
+        socialProfiles: userObj.socialProfiles || {},
+        password: ''
       }));
 
-      setSelectedTier(isSusanAdmin ? 'admin' : resolvedTier);
+      setSelectedTier(actualDbTier);
 
       if (isSusanAdmin) {
         setIsSubscribing(false);
@@ -11076,7 +11794,7 @@ function App() {
         return;
       }
 
-      if (options.subscribingOverride && ['luminary', 'radiance'].includes(String(resolvedTier).toLowerCase())) {
+      if (options.subscribingOverride && ['luminary', 'radiance'].includes(String(requestedPaidTier).toLowerCase())) {
         setIsSubscribing(true);
         const stripeRes = await fetch(`${API_BASE_URL}/api/create-checkout-session`, {
           method: 'POST',
@@ -11084,7 +11802,7 @@ function App() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${data.token}`
           },
-          body: JSON.stringify({ tier: resolvedTier })
+          body: JSON.stringify({ tier: String(requestedPaidTier).toLowerCase() })
         });
         const stripeData = await stripeRes.json().catch(() => ({}));
         if (stripeData.url) {
@@ -11093,14 +11811,9 @@ function App() {
         }
       }
 
-      if (options.goToStep1) {
-        setIsSubscribing(false);
-        setIsLoading(false);
-        setStep(1);
-        return;
-      }
-
+      setIsSubscribing(actualDbTier === 'luminary' || actualDbTier === 'radiance');
       await syncMemberBlueprintStatus(data.token);
+      setIsLoading(false);
       setStep(5);
     } catch (err) {
       console.error('Social auth completion error:', err);
@@ -11118,7 +11831,11 @@ function App() {
     localStorage.removeItem('hasCompletedQuiz');
     localStorage.removeItem('quizAnswers');
     localStorage.removeItem('blueprintAnalysis');
+    localStorage.removeItem('sbc_quiz_photo');
+    localStorage.removeItem('aiPhotoAnalysis');
     localStorage.removeItem('adminActiveTab');
+    setQuizPhotoDataUrl('');
+    setAiPhotoAnalysis(null);
 
     // Reset all states back to default
     setUserDetails({ name: '', email: '', password: '', membershipTier: '', role: 'client' });
@@ -11231,6 +11948,15 @@ function App() {
       
       <GlobalPublicLaunchStyles />
       {isLoading && <FallingSparkles/>}
+
+      <MembershipUpgradeModal
+        isOpen={paywallModal.isOpen}
+        onClose={closePaywallModal}
+        featureContext={paywallModal.featureContext}
+        currentTier={effectiveMemberTier}
+        isUpgrading={isUpgradingTier}
+        onSelectUpgradeTier={handleTriggerStripeUpgrade}
+      />
 
       <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} />
 
@@ -11647,26 +12373,42 @@ function App() {
               </div>
 
               <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
-                {['Blueprint', 'Boutique', 'Inbox', 'Consultations'].map(tab => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveMemberTab(tab)}
-                    style={{
-                      padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
-                      backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
-                      color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
-                      fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
-                      transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
-                      boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none'
-                    }}
-                  >
-                    {tab === 'Blueprint' && '📝 '}
-                    {tab === 'Boutique' && '🛍️ '}
-                    {tab === 'Inbox' && '💌 '}
-                    {tab === 'Consultations' && '🎥 '}
-                    {tab}
-                  </button>
-                ))}
+                {['Blueprint', 'Boutique', 'Inbox', 'Consultations'].map(tab => {
+                  const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => {
+                        setActiveMemberTab(tab);
+                        if (isLockedForFree) {
+                          openPaywallModal("Upgrade to The Luminary Circle ($49/mo — Quarterly Consultations) or The Radiance Elite ($119/mo — Monthly Consultations) to book 1-on-1 sessions with Susan.");
+                        }
+                      }}
+                      style={{
+                        padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                        backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
+                        color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
+                        fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
+                        transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
+                        boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none',
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+                      }}
+                    >
+                      <span>
+                        {tab === 'Blueprint' && '📝 '}
+                        {tab === 'Boutique' && '🛍️ '}
+                        {tab === 'Inbox' && '💌 '}
+                        {tab === 'Consultations' && '🎥 '}
+                        {tab}
+                      </span>
+                      {isLockedForFree && (
+                        <span style={{ fontSize: '0.85rem', color: '#B38B8F' }} title="Paid Membership Required">
+                          🔒
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               <div style={{ padding: '20px 20px 0 20px' }}>
@@ -11694,6 +12436,53 @@ function App() {
                     <span style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', color: '#A89999', fontSize: '1.2rem' }}>
                       Welcome, {userDetails.name || 'Valued Member'}
                     </span>
+                    <span
+                      onClick={() => {
+                        if (effectiveMemberTier !== 'radiance') {
+                          openPaywallModal(
+                            effectiveMemberTier === 'luminary'
+                              ? 'Upgrade to The Radiance Elite ($119/mo) for Monthly 1-on-1 Consultations, AI Skin Photo Analysis, and 25% off the Boutique!'
+                              : 'Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to unlock the Beauty Blueprint Quiz and 1-on-1 Consultations!'
+                          );
+                        }
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        padding: '4px 12px',
+                        borderRadius: '16px',
+                        fontSize: '0.78rem',
+                        fontFamily: 'sans-serif',
+                        fontWeight: 'bold',
+                        cursor: effectiveMemberTier !== 'radiance' ? 'pointer' : 'default',
+                        backgroundColor:
+                          effectiveMemberTier === 'radiance'
+                            ? '#F4F0FF'
+                            : effectiveMemberTier === 'luminary'
+                            ? '#FFF0F2'
+                            : '#F7F2F2',
+                        color:
+                          effectiveMemberTier === 'radiance'
+                            ? '#5E35B1'
+                            : effectiveMemberTier === 'luminary'
+                            ? '#B38B8F'
+                            : '#736A6A',
+                        border:
+                          effectiveMemberTier === 'radiance'
+                            ? '1.5px solid #D1C4E9'
+                            : effectiveMemberTier === 'luminary'
+                            ? '1.5px solid #B38B8F'
+                            : '1px solid #E8C5C8'
+                      }}
+                      title={effectiveMemberTier !== 'radiance' ? 'Click to view tier upgrade options' : 'Radiance Elite Active'}
+                    >
+                      {effectiveMemberTier === 'radiance'
+                        ? '💎 Radiance Elite (Monthly Consults • AI Vision • 25% Off)'
+                        : effectiveMemberTier === 'luminary'
+                        ? '✨ Luminary Circle (Quarterly Consults • 10% Off • Upgrade ↗)'
+                        : '🌿 Free Member (Basic Access • Upgrade ↗)'}
+                    </span>
                     {userDetails.authProvider && userDetails.authProvider !== 'local' && (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', borderRadius: '16px', padding: '3px 10px', fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold' }}>
                         <SocialProviderBrandIcon provider={userDetails.authProvider} size={13} />
@@ -11717,18 +12506,64 @@ function App() {
               {/* 1. BLUEPRINT TAB */}
               {activeMemberTab === 'Blueprint' && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
-                  <p style={{ fontSize: '1.3rem', lineHeight: '1.6', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '0 0 30px 0', maxWidth: '600px' }}>
-                    {selectedTier === 'radiance' ? "🌟 Radiance Elite Member — Premium Access Verified." : selectedTier === 'luminary' ? "✨ Luminary Circle Member — Subscription Verified." : "✨ Access verified."}
-                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '25px' }}>
+                    <p style={{ fontSize: '1.3rem', lineHeight: '1.6', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: 0 }}>
+                      {effectiveMemberTier === 'radiance'
+                        ? "💎 Radiance Elite Member — Full Quiz, AI Photo Analysis & Monthly Consultations Unlocked."
+                        : effectiveMemberTier === 'luminary'
+                        ? "✨ Luminary Circle Member — Full Quiz & Quarterly Consultations Unlocked."
+                        : "🌿 Free Sanctuary Member — Boutique & Account Access Active (Upgrade to Unlock Quiz & Consultations)."}
+                    </p>
+                    {isFreeBasicMember && (
+                      <button
+                        type="button"
+                        onClick={() => openPaywallModal("Elevate your membership to Luminary Circle ($49/mo) or Radiance Elite ($119/mo) to unlock the Beauty Blueprint Quiz and 1-on-1 Consultations.")}
+                        style={{
+                          background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          padding: '9px 18px',
+                          borderRadius: '20px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.05rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          boxShadow: '0 4px 12px rgba(179, 139, 143, 0.3)'
+                        }}
+                      >
+                        ✨ Upgrade Membership ✧
+                      </button>
+                    )}
+                  </div>
 
                   {!hasCompletedQuiz ? (
-                    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '40px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
-                      <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 15px 0' }}>Unlock Your Bespoke Routine</h3>
-                      <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '12px' }}>As a member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products.</p>
+                    <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.88)', border: isFreeBasicMember ? '1.5px dashed #B38B8F' : '1px solid #E8C5C8', borderRadius: '18px', padding: '40px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)', marginBottom: '40px' }}>
+                      {isFreeBasicMember && (
+                        <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '16px', padding: '4px 14px', fontSize: '0.78rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '12px' }}>
+                          🔒 Paid Membership Feature • Luminary ($49/mo) & Radiance ($119/mo)
+                        </span>
+                      )}
+                      <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 15px 0' }}>
+                        {isFreeBasicMember ? "Unlock Susan's Personalized Beauty Blueprint Quiz" : "Unlock Your Bespoke Routine"}
+                      </h3>
+                      <p style={{ fontSize: '1.2rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '12px' }}>
+                        {isFreeBasicMember
+                          ? "Paid members receive exclusive access to Susan's 10-step Beauty Blueprint Quiz, custom AM/PM ritual architecture, and monthly curated skincare boxes."
+                          : "As a paid member, you have exclusive access to Susan's Beauty Blueprint curation process. Take the quiz to generate your custom products."}
+                      </p>
                       <p style={{ fontSize: '1rem', color: '#B38B8F', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', marginBottom: '30px' }}>
                         🔒 Note: Your Beauty Blueprint is a one-time personal curation and will be permanently locked to your membership profile upon completion.
                       </p>
-                      <EmpowermentButton text="Start the Consultation" onClick={() => { if (!hasCompletedQuiz) setStep(11); }} />
+                      <EmpowermentButton
+                        text={isFreeBasicMember ? "Unlock the Consultation Quiz 🔒" : "Start the Consultation"}
+                        onClick={() => {
+                          if (isFreeBasicMember) {
+                            openPaywallModal("Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to take Susan's 10-Step Personalized Beauty Blueprint Quiz.");
+                            return;
+                          }
+                          if (!hasCompletedQuiz) setStep(11);
+                        }}
+                      />
                     </div>
                   ) : (() => {
                     const dossier = generateClientBlueprintDossier(quizAnswers, blueprintAnalysis);
@@ -11739,6 +12574,7 @@ function App() {
                     const heroList = Array.isArray(dossier.heroIngredients) ? dossier.heroIngredients : [];
                     const avoidList = Array.isArray(dossier.avoidIngredients) ? dossier.avoidIngredients : [];
                     const artistry = dossier.artistryProfile || {};
+                    const activePhotoAi = aiPhotoAnalysis || dossier.aiPhotoAnalysis || blueprintAnalysis?.aiPhotoAnalysis || null;
 
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '28px', marginBottom: '45px', textAlign: 'left' }}>
@@ -11854,6 +12690,129 @@ function App() {
                             </div>
                           </div>
                         </div>
+
+                        {/* Section 1.5: 💎 Radiance Elite AI Visual Skin Photo Analysis (or Luminary Upgrade Callout) */}
+                        {(activePhotoAi || quizPhotoDataUrl) ? (
+                          <div
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              border: '2px solid #B38B8F',
+                              borderRadius: '20px',
+                              padding: '28px',
+                              boxShadow: '0 10px 28px rgba(179, 139, 143, 0.22)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px', marginBottom: '18px', borderBottom: '1px solid #E8C5C8', paddingBottom: '14px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                                {quizPhotoDataUrl && (
+                                  <img
+                                    src={quizPhotoDataUrl}
+                                    alt="Uploaded Skin Canvas"
+                                    style={{
+                                      width: '78px',
+                                      height: '78px',
+                                      borderRadius: '50%',
+                                      objectFit: 'cover',
+                                      border: '2.5px solid #B38B8F',
+                                      boxShadow: '0 4px 12px rgba(179, 139, 143, 0.3)'
+                                    }}
+                                  />
+                                )}
+                                <div>
+                                  <span style={{ fontSize: '0.78rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.8px', color: '#5E35B1', backgroundColor: '#F4F0FF', border: '1px solid #D1C4E9', padding: '3px 10px', borderRadius: '12px', fontFamily: 'sans-serif' }}>
+                                    💎 Radiance Elite Exclusive • Multimodal Vision AI
+                                  </span>
+                                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: '6px 0 0 0' }}>
+                                    Odie AI Visual Skin & Complexion Analysis
+                                  </h3>
+                                </div>
+                              </div>
+
+                              <div style={{ backgroundColor: '#FFF0F2', border: '1.5px solid #B38B8F', borderRadius: '16px', padding: '10px 16px', textAlign: 'center' }}>
+                                <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 'bold', color: '#8A797A', fontFamily: 'sans-serif', textTransform: 'uppercase' }}>
+                                  Visual Radiance Index
+                                </span>
+                                <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.9rem', color: '#B38B8F' }}>
+                                  {activePhotoAi?.radianceScore || 92} / 100 ✧
+                                </strong>
+                              </div>
+                            </div>
+
+                            <p style={{ fontFamily: 'sans-serif', fontSize: '0.96rem', color: '#5C5454', lineHeight: '1.65', backgroundColor: '#FFF9F9', padding: '15px 18px', borderRadius: '12px', borderLeft: '4px solid #B38B8F', margin: '0 0 18px 0' }}>
+                              {activePhotoAi?.visualComplexionSummary ||
+                                `Odie's visual complexion scan evaluated your uploaded photo alongside your ${quizAnswers.skinType} skin profile and ${quizAnswers.primaryGoal} goal to tailor your daily ritual.`}
+                            </p>
+
+                            {Array.isArray(activePhotoAi?.detectedObservations) && activePhotoAi.detectedObservations.length > 0 && (
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '14px', marginBottom: '18px' }}>
+                                {activePhotoAi.detectedObservations.map((obs, idx) => (
+                                  <div key={idx} style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '14px 16px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                      <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454' }}>
+                                        {obs.zoneOrTrait}
+                                      </strong>
+                                      <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '2px 8px', fontSize: '0.7rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                                        {obs.focusPriority}
+                                      </span>
+                                    </div>
+                                    <p style={{ margin: 0, fontSize: '0.84rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+                                      {obs.observation}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {Array.isArray(activePhotoAi?.targetedPhotoRecommendations) && activePhotoAi.targetedPhotoRecommendations.length > 0 && (
+                              <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '14px', padding: '14px 18px' }}>
+                                <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#2E7D32', display: 'block', marginBottom: '8px' }}>
+                                  ✨ Targeted Visual Scan Recommendations:
+                                </strong>
+                                <ul style={{ margin: 0, paddingLeft: '20px', fontFamily: 'sans-serif', fontSize: '0.86rem', color: '#5C5454', lineHeight: '1.65' }}>
+                                  {activePhotoAi.targetedPhotoRecommendations.map((rec, i) => (
+                                    <li key={i} style={{ marginBottom: '4px' }}>{rec}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        ) : effectiveMemberTier === 'luminary' ? (
+                          <div style={{ backgroundColor: '#FFF9F9', border: '1.5px dashed #B38B8F', borderRadius: '18px', padding: '20px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px' }}>
+                            <div>
+                              <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#5E35B1', backgroundColor: '#F4F0FF', border: '1px solid #D1C4E9', padding: '2px 10px', borderRadius: '10px', fontFamily: 'sans-serif' }}>
+                                💎 Radiance Elite Benefit
+                              </span>
+                              <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', color: '#5C5454', margin: '6px 0 4px 0' }}>
+                                Unlock Odie AI Skin Photo Analysis & Monthly 1-on-1 Consultations
+                              </h4>
+                              <p style={{ margin: 0, fontSize: '0.86rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                                As a Luminary Circle member, you receive quarterly consultations (1 every 3 months) and 10% off. Upgrade to Radiance Elite ($119/mo) for monthly consultations, AI photo analysis, and 25% off.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openPaywallModal(
+                                  'Upgrade to The Radiance Elite ($119/mo) to unlock AI Skin Photo Analysis, Monthly 1-on-1 Consultations, a 5-Piece Monthly Ritual Box, and 25% off the Boutique!'
+                                )
+                              }
+                              style={{
+                                background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                                color: '#FFFFFF',
+                                border: 'none',
+                                padding: '10px 18px',
+                                borderRadius: '20px',
+                                fontFamily: "'Cormorant Garamond', serif",
+                                fontSize: '1.05rem',
+                                fontWeight: 'bold',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              💎 Upgrade to Radiance →
+                            </button>
+                          </div>
+                        ) : null}
 
                         {/* Section 2: Bespoke AM & PM Ritual Architecture */}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '22px' }}>
@@ -12197,22 +13156,44 @@ function App() {
               {/* 4. CONSULTATIONS TAB */}
               {activeMemberTab === 'Consultations' && (
                 <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '30px' }}>
-                  <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-                    <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>
-                      Book & Manage Your Consultation with Susan
-                    </h2>
-                    <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '25px' }}>
-                      Select any date on Susan's live calendar below to book a 1-on-1 consultation, or view updates if Susan reschedules your session.
-                    </p>
+                  {isFreeBasicMember ? (
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '45px 35px', borderRadius: '22px', border: '2px dashed #B38B8F', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.2)', textAlign: 'center' }}>
+                      <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '18px', padding: '5px 16px', fontSize: '0.82rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '14px' }}>
+                        🔒 Paid Membership Sanctuary Benefit
+                      </span>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', marginTop: 0, fontSize: '2.4rem', marginBottom: '12px' }}>
+                        1-on-1 Live Video Consultations with Susan
+                      </h2>
+                      <p style={{ color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', maxWidth: '640px', margin: '0 auto 28px auto', lineHeight: '1.6' }}>
+                        Private 1-on-1 skincare and beauty consultations are reserved for <strong>The Luminary Circle</strong> (1 consultation every 3 months / quarterly) and <strong>The Radiance Elite</strong> (1 consultation every month).
+                      </p>
+                      <EmpowermentButton
+                        text="View Membership Tiers & Upgrade ✧"
+                        onClick={() =>
+                          openPaywallModal("Choose The Luminary Circle ($49/mo — Quarterly Consultations) or The Radiance Elite ($119/mo — Monthly Consultations) to book live 1-on-1 sessions with Susan.")
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>
+                        Book & Manage Your Consultation with Susan
+                      </h2>
+                      <p style={{ color: '#736A6A', fontFamily: 'sans-serif', fontSize: '1rem', marginBottom: '25px' }}>
+                        Select any date on Susan's live calendar below to book a 1-on-1 consultation, or view updates if Susan reschedules your session.
+                      </p>
 
-                    <MemberCalendar
-                      onJoinVideoRoom={(link) => {
-                        const normalized = normalizeRoomUrl(link);
-                        setMemberVideoLink(normalized);
-                        setActiveMemberVideoUrl(normalized);
-                      }}
-                    />
-                  </div>
+                      <MemberCalendar
+                        userTier={effectiveMemberTier}
+                        onOpenPaywallModal={openPaywallModal}
+                        onJoinVideoRoom={(link) => {
+                          const normalized = normalizeRoomUrl(link);
+                          setMemberVideoLink(normalized);
+                          setActiveMemberVideoUrl(normalized);
+                        }}
+                      />
+                    </div>
+                  )}
 
                   <div style={{ backgroundColor: '#FFFFFF', padding: '40px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
                     <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', marginTop: 0, fontSize: '2.2rem' }}>Join Active Video Sanctuary</h2>
@@ -12393,8 +13374,161 @@ function App() {
         {step === 20 && (
           <div style={{ animation: 'fadeIn 1s ease' }}>
             <ProgressDots currentStep={10} totalSteps={10} />
-            <h2 style={{ fontSize: '3rem', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", margin: '0 0 20px 0' }}>Regimen Focus</h2>
-            <p style={{ fontSize: '1.4rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '30px' }}>Do you prefer a minimalist routine or a luxurious multi-step ritual?</p>
+            <h2 style={{ fontSize: '3rem', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", margin: '0 0 12px 0' }}>Regimen Focus & Visual Scan</h2>
+            <p style={{ fontSize: '1.35rem', color: '#736A6A', fontFamily: "'Cormorant Garamond', serif", marginBottom: '22px' }}>
+              Final Step: Upload your optional skin photo for AI analysis (Radiance Elite) and choose your preferred daily ritual depth.
+            </p>
+
+            {/* Radiance Elite Exclusive: AI Skin Photo Upload Box */}
+            {(effectiveMemberTier === 'radiance' || effectiveMemberTier === 'admin') ? (
+              <div
+                style={{
+                  maxWidth: '520px',
+                  margin: '0 auto 28px auto',
+                  backgroundColor: '#FFFFFF',
+                  border: '2px solid #B38B8F',
+                  borderRadius: '20px',
+                  padding: '22px',
+                  boxShadow: '0 8px 24px rgba(179, 139, 143, 0.2)',
+                  textAlign: 'center'
+                }}
+              >
+                <span
+                  style={{
+                    display: 'inline-block',
+                    backgroundColor: '#F4F0FF',
+                    color: '#5E35B1',
+                    border: '1px solid #D1C4E9',
+                    borderRadius: '14px',
+                    padding: '3px 12px',
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold',
+                    fontFamily: 'sans-serif',
+                    marginBottom: '8px'
+                  }}
+                >
+                  💎 Radiance Elite Exclusive Feature
+                </span>
+                <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.55rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                  Upload a Skin Photo for Odie AI Visual Analysis
+                </h3>
+                <p style={{ fontFamily: 'sans-serif', fontSize: '0.85rem', color: '#736A6A', margin: '0 0 14px 0', lineHeight: '1.45' }}>
+                  Upload a clear, natural-light selfie or close-up so Odie's Multimodal Vision AI can analyze your visible skin tone, texture, and hydration balance alongside your quiz answers.
+                </p>
+
+                {quizPhotoDataUrl ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <img
+                      src={quizPhotoDataUrl}
+                      alt="Skin Quiz Upload Preview"
+                      style={{
+                        width: '110px',
+                        height: '110px',
+                        borderRadius: '50%',
+                        objectFit: 'cover',
+                        border: '3px solid #B38B8F',
+                        boxShadow: '0 6px 16px rgba(179, 139, 143, 0.3)'
+                      }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#2E7D32', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                      ✓ Photo Ready for Odie AI Vision Analysis
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setQuizPhotoDataUrl('')}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#8A797A',
+                        fontSize: '0.8rem',
+                        textDecoration: 'underline',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Remove / Replace Photo
+                    </button>
+                  </div>
+                ) : (
+                  <label
+                    style={{
+                      display: 'inline-block',
+                      backgroundColor: '#FFF0F2',
+                      border: '1.5px dashed #B38B8F',
+                      color: '#5C5454',
+                      padding: '12px 22px',
+                      borderRadius: '18px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.12rem',
+                      fontWeight: 'bold',
+                      cursor: isProcessingQuizPhoto ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {isProcessingQuizPhoto ? '⏳ Optimizing Photo...' : '📷 Choose or Take Skin Photo (Optional)'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setIsProcessingQuizPhoto(true);
+                        try {
+                          const dataUrl = await compressImageFileToDataUrl(file, 900, 0.82);
+                          setQuizPhotoDataUrl(dataUrl);
+                        } catch (err) {
+                          alert(err.message || 'Could not process selected photo.');
+                        }
+                        setIsProcessingQuizPhoto(false);
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            ) : (
+              <div
+                style={{
+                  maxWidth: '520px',
+                  margin: '0 auto 26px auto',
+                  backgroundColor: 'rgba(255, 255, 255, 0.85)',
+                  border: '1.5px dashed #B38B8F',
+                  borderRadius: '18px',
+                  padding: '16px 20px',
+                  textAlign: 'center'
+                }}
+              >
+                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#5E35B1', backgroundColor: '#F4F0FF', border: '1px solid #D1C4E9', padding: '2px 10px', borderRadius: '10px', fontFamily: 'sans-serif' }}>
+                  🔒 Radiance Elite Exclusive
+                </span>
+                <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#5C5454', margin: '8px 0 10px 0' }}>
+                  Want to upload a photo with your quiz for <strong>Odie AI Visual Skin Analysis</strong>?
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    openPaywallModal(
+                      'Upgrade to The Radiance Elite ($119/mo) to upload a skin photo with your quiz for Odie Multimodal Vision AI Analysis and unlock Monthly 1-on-1 Consultations!'
+                    )
+                  }
+                  style={{
+                    backgroundColor: '#FFF0F2',
+                    border: '1px solid #B38B8F',
+                    color: '#5C5454',
+                    padding: '7px 16px',
+                    borderRadius: '16px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.8rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  💎 Upgrade to Radiance Elite to Unlock Photo AI →
+                </button>
+              </div>
+            )}
+
+            <p style={{ fontSize: '1.3rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', marginBottom: '16px' }}>
+              Select your preferred regimen focus to generate your Blueprint:
+            </p>
             <QuizOptionButton text="Minimalist (3 steps max, fast & effective)" onClick={() => handleAnswer('routineFocus', 'Minimalist')} />
             <QuizOptionButton text="Balanced (Moderate steps, focused results)" onClick={() => handleAnswer('routineFocus', 'Balanced')} />
             <QuizOptionButton text="Luxurious (Multi-step indulgence)" onClick={() => handleAnswer('routineFocus', 'Luxurious')} />

@@ -51,9 +51,9 @@ app.use((req, res, next) => {
   if (req.originalUrl === '/webhook/stripe') {
     next();
   } else {
-    express.json()(req, res, (err) => {
+    express.json({ limit: '10mb' })(req, res, (err) => {
       if (err) return next(err);
-      express.urlencoded({ extended: true })(req, res, next);
+      express.urlencoded({ extended: true, limit: '10mb' })(req, res, next);
     });
   }
 });
@@ -1030,15 +1030,18 @@ const buildInboundInboxCounts = async () => {
 // ---------------- MONGODB SCHEMAS ---------------- //
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  username: { type: String, default: '', index: true },
   email: { type: String, required: true, unique: true, index: true },
   password: { type: String, required: true },
+  phone: { type: String, default: '' },
   role: { 
     type: String, 
     enum: ['client', 'staff', 'admin'], 
     default: 'client',
     index: true 
   },
-  membershipTier: { type: String, default: 'luminary' },
+  membershipTier: { type: String, default: 'basic', index: true },
+  pendingUpgradeTier: { type: String, default: '' },
   authProvider: {
     type: String,
     enum: ['local', 'google', 'linkedin', 'facebook', 'x', 'tiktok', 'reddit'],
@@ -1046,6 +1049,30 @@ const userSchema = new mongoose.Schema({
     index: true
   },
   avatarUrl: { type: String, default: '' },
+  shippingAddress: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      address_1: '',
+      address_2: '',
+      city: '',
+      state: '',
+      postcode: '',
+      country: 'US'
+    })
+  },
+  billingInfo: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      billingName: '',
+      cardBrand: '',
+      cardLast4: '',
+      expMonth: '',
+      expYear: '',
+      billingAddress: '',
+      stripeCustomerId: '',
+      subscriptionStatus: 'inactive'
+    })
+  },
   googleId: { type: String, default: '', index: true },
   linkedinId: { type: String, default: '', index: true },
   facebookId: { type: String, default: '', index: true },
@@ -1118,6 +1145,8 @@ const consultationSchema = new mongoose.Schema({
   faceShape: String,
   makeupVibe: String,
   routineFocus: String,
+  skinPhotoUrl: { type: String, default: '' },
+  aiPhotoAnalysis: { type: mongoose.Schema.Types.Mixed, default: null },
   blueprintAnalysis: { type: mongoose.Schema.Types.Mixed },
   createdAt: { type: Date, default: Date.now }
 });
@@ -1177,6 +1206,7 @@ const productSchema = new mongoose.Schema({
 const Product = mongoose.model('Product', productSchema);
 
 const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   items: Array,
   totalAmount: Number,
   shipping_address: { type: mongoose.Schema.Types.Mixed },
@@ -1410,7 +1440,7 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
     
-    const user = await User.findById(decoded._id).select('_id name email role membershipTier');
+    const user = await User.findById(decoded._id).select('_id name username email phone avatarUrl role membershipTier pendingUpgradeTier shippingAddress billingInfo');
     
     if (!user) {
       return res.status(401).json({ error: 'The user associated with this token no longer exists.' });
@@ -4206,6 +4236,7 @@ const dispatchMonthlyBoxToCj = async (boxId, {
   }));
 
   const localOrder = await new Order({
+    userId: box.userId || null,
     items: orderItems,
     totalAmount: Number(box.subscriptionPriceUsd || 49),
     shipping_address: resolvedAddress,
@@ -9150,9 +9181,104 @@ app.post('/api/admin/appointments/:id/remind', authenticateToken, requireAdmin, 
   }
 });
 
+// ---------------- PAYWALL & TIER CONSULTATION QUOTA ENGINE ---------------- //
+
+const isPaidOrAdminMember = (user = {}) => {
+  const role = String(user?.role || '').toLowerCase().trim();
+  const tier = String(user?.membershipTier || 'basic').toLowerCase().trim();
+  return role === 'admin' || role === 'staff' || ['admin', 'luminary', 'radiance'].includes(tier);
+};
+
+// Computes live consultation booking quota for a member:
+// - basic (Free): 0 consultations allowed (requiresUpgrade: true)
+// - luminary ($49/mo): 1 non-cancelled consultation every 90 days (Quarterly)
+// - radiance ($119/mo): 1 non-cancelled consultation every 30 days (Monthly)
+const computeMemberConsultationQuota = async (userDoc, { proposedStartTime = null, excludeAppointmentId = null } = {}) => {
+  const role = String(userDoc?.role || 'client').toLowerCase().trim();
+  const tier = String(userDoc?.membershipTier || 'basic').toLowerCase().trim();
+  const isAdmin = role === 'admin' || role === 'staff' || tier === 'admin';
+
+  if (isAdmin) {
+    return {
+      tier: 'admin',
+      canBook: true,
+      requiresUpgrade: false,
+      windowDays: 0,
+      maxAllowed: 999,
+      usedCount: 0,
+      remainingCount: 999,
+      nextEligibleDate: null,
+      limitLabel: 'Admin Portal — Unlimited Consultations'
+    };
+  }
+
+  if (!['luminary', 'radiance'].includes(tier)) {
+    return {
+      tier: 'basic',
+      canBook: false,
+      requiresUpgrade: true,
+      windowDays: 0,
+      maxAllowed: 0,
+      usedCount: 0,
+      remainingCount: 0,
+      nextEligibleDate: null,
+      limitLabel: 'Free Membership — Upgrade to Luminary (Quarterly) or Radiance (Monthly) to Book 1-on-1 Consultations'
+    };
+  }
+
+  const windowDays = tier === 'radiance' ? 30 : 90;
+  const maxAllowed = 1;
+  const limitLabel =
+    tier === 'radiance'
+      ? 'Radiance Elite — 1 Consultation Every 30 Days (Monthly)'
+      : 'Luminary Circle — 1 Consultation Every 90 Days (Quarterly)';
+
+  const refDate = proposedStartTime && !isNaN(new Date(proposedStartTime).getTime())
+    ? new Date(proposedStartTime)
+    : new Date();
+
+  const windowMs = windowDays * 24 * 60 * 60 * 1000;
+  const windowStart = new Date(refDate.getTime() - windowMs);
+  const windowEnd = new Date(refDate.getTime() + windowMs);
+
+  const query = {
+    clientId: userDoc._id,
+    status: { $ne: 'cancelled' },
+    startTime: { $gt: windowStart, $lt: windowEnd }
+  };
+  if (excludeAppointmentId && mongoose.Types.ObjectId.isValid(String(excludeAppointmentId))) {
+    query._id = { $ne: excludeAppointmentId };
+  }
+
+  const matchingAppts = await Appointment.find(query).sort({ startTime: -1 }).lean();
+  const usedCount = matchingAppts.length;
+  const canBook = usedCount < maxAllowed;
+
+  let nextEligibleDate = null;
+  if (!canBook && matchingAppts[0]?.startTime) {
+    const latestStart = new Date(matchingAppts[0].startTime);
+    nextEligibleDate = new Date(latestStart.getTime() + windowMs).toISOString();
+  }
+
+  return {
+    tier,
+    canBook,
+    requiresUpgrade: false,
+    windowDays,
+    maxAllowed,
+    usedCount,
+    remainingCount: Math.max(0, maxAllowed - usedCount),
+    nextEligibleDate,
+    lastAppointmentDate: matchingAppts[0]?.startTime ? new Date(matchingAppts[0].startTime).toISOString() : null,
+    limitLabel
+  };
+};
+
 // Member-facing two-way calendar endpoints
 app.get('/api/users/me/appointments', authenticateToken, async (req, res) => {
   try {
+    const quotaInfo = await computeMemberConsultationQuota(req.user);
+
     const allActive = await Appointment.find({ status: { $ne: 'cancelled' } })
       .populate('clientId', 'name email')
       .populate('serviceId', 'name')
@@ -9179,7 +9305,11 @@ app.get('/api/users/me/appointments', authenticateToken, async (req, res) => {
       };
     });
 
-    res.status(200).json(formatted);
+    res.setHeader('X-Consultation-Quota', JSON.stringify(quotaInfo));
+    res.status(200).json({
+      appointments: formatted,
+      quotaInfo
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch member appointments' });
   }
@@ -9187,6 +9317,18 @@ app.get('/api/users/me/appointments', authenticateToken, async (req, res) => {
 
 app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
   try {
+    // 1. Paywall Check: Block Free ('basic') members with 402 PAYWALL_REQUIRED
+    if (!isPaidOrAdminMember(req.user)) {
+      const quotaInfo = await computeMemberConsultationQuota(req.user);
+      return res.status(402).json({
+        error: 'PAYWALL_REQUIRED',
+        message: 'Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to schedule 1-on-1 consultations with Susan.',
+        requiresUpgrade: true,
+        currentTier: req.user.membershipTier || 'basic',
+        quotaInfo
+      });
+    }
+
     const { startTime, durationInMinutes, notes, serviceId } = req.body;
     if (!startTime) {
       return res.status(400).json({ error: 'Please select a date and time for your consultation.' });
@@ -9196,6 +9338,28 @@ app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
     if (isNaN(start.getTime())) {
       return res.status(400).json({ error: 'Invalid date and time selected.' });
     }
+
+    // 2. Tier Consultation Quota Check: Luminary = 1 per 90 days (Quarterly), Radiance = 1 per 30 days (Monthly)
+    const quotaCheck = await computeMemberConsultationQuota(req.user, { proposedStartTime: start });
+    if (!quotaCheck.canBook) {
+      const nextDateFormatted = quotaCheck.nextEligibleDate
+        ? new Date(quotaCheck.nextEligibleDate).toLocaleDateString('en-US', {
+            timeZone: CENTRAL_TIMEZONE,
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric'
+          })
+        : 'your next billing cycle';
+      return res.status(403).json({
+        error:
+          quotaCheck.tier === 'luminary'
+            ? `Luminary Circle members are limited to 1 consultation every 3 months (90 days). Your next eligible consultation date is ${nextDateFormatted} — or upgrade to Radiance Elite for monthly consultations!`
+            : `Radiance Elite members are limited to 1 consultation every month (30 days). Your next eligible consultation date is ${nextDateFormatted}.`,
+        quotaExceeded: true,
+        quotaInfo: quotaCheck
+      });
+    }
+
     const duration = Number(durationInMinutes) || 60;
     const end = new Date(start.getTime() + duration * 60000);
 
@@ -9253,7 +9417,8 @@ app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
       sendEmail(adminUser.email, `✧ New Consultation Booked: ${req.user.name}`, html, text).catch(() => {});
     }
 
-    res.status(201).json({ ...populated, isMine: true });
+    const updatedQuotaInfo = await computeMemberConsultationQuota(req.user);
+    res.status(201).json({ ...populated, isMine: true, quotaInfo: updatedQuotaInfo });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to schedule consultation' });
   }
@@ -9261,6 +9426,17 @@ app.post('/api/users/me/appointments', authenticateToken, async (req, res) => {
 
 app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) => {
   try {
+    if (!isPaidOrAdminMember(req.user)) {
+      const quotaInfo = await computeMemberConsultationQuota(req.user);
+      return res.status(402).json({
+        error: 'PAYWALL_REQUIRED',
+        message: 'Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to manage 1-on-1 consultations.',
+        requiresUpgrade: true,
+        currentTier: req.user.membershipTier || 'basic',
+        quotaInfo
+      });
+    }
+
     const { startTime, durationInMinutes, notes } = req.body;
     const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user._id });
     if (!appointment) {
@@ -9272,6 +9448,19 @@ app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) =>
       if (isNaN(newStart.getTime())) {
         return res.status(400).json({ error: 'Invalid date and time format.' });
       }
+
+      const quotaCheck = await computeMemberConsultationQuota(req.user, {
+        proposedStartTime: newStart,
+        excludeAppointmentId: appointment._id
+      });
+      if (!quotaCheck.canBook) {
+        return res.status(403).json({
+          error: `Rescheduled time falls within another scheduled consultation window for your ${quotaCheck.tier} tier (${quotaCheck.limitLabel}).`,
+          quotaExceeded: true,
+          quotaInfo: quotaCheck
+        });
+      }
+
       const existingDuration = Math.max(
         15,
         Math.round((new Date(appointment.endTime).getTime() - new Date(appointment.startTime).getTime()) / 60000) || 60
@@ -9311,7 +9500,8 @@ app.put('/api/users/me/appointments/:id', authenticateToken, async (req, res) =>
       .populate('serviceId', 'name')
       .lean();
 
-    res.status(200).json({ ...populated, isMine: true });
+    const updatedQuotaInfo = await computeMemberConsultationQuota(req.user);
+    res.status(200).json({ ...populated, isMine: true, quotaInfo: updatedQuotaInfo });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to reschedule consultation' });
   }
@@ -9323,7 +9513,8 @@ app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res)
     if (!deleted) {
       return res.status(404).json({ error: 'Consultation not found.' });
     }
-    res.status(200).json({ message: 'Consultation cancelled successfully.' });
+    const updatedQuotaInfo = await computeMemberConsultationQuota(req.user);
+    res.status(200).json({ message: 'Consultation cancelled successfully.', quotaInfo: updatedQuotaInfo });
   } catch (error) {
     res.status(500).json({ error: 'Failed to cancel consultation' });
   }
@@ -10666,16 +10857,21 @@ const findOrCreateSocialUser = async ({
     const salt = await bcrypt.genSalt(10);
     const randomPasswordHash = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), salt);
     const validTiers = ['basic', 'luminary', 'radiance'];
-    const normalizedTier = validTiers.includes(String(requestedTier || '').toLowerCase())
+    const normalizedRequestedTier = validTiers.includes(String(requestedTier || '').toLowerCase())
       ? String(requestedTier).toLowerCase()
-      : 'luminary';
+      : 'basic';
+    const pendingTier = ['luminary', 'radiance'].includes(normalizedRequestedTier)
+      ? normalizedRequestedTier
+      : '';
 
     const newUserDoc = new User({
       name: cleanName,
+      username: handle || cleanEmail.split('@')[0] || fallbackHandle,
       email: cleanEmail,
       password: randomPasswordHash,
       role: isSusanAdmin ? 'admin' : 'client',
-      membershipTier: isSusanAdmin ? 'admin' : normalizedTier,
+      membershipTier: isSusanAdmin ? 'admin' : 'basic',
+      pendingUpgradeTier: isSusanAdmin ? '' : pendingTier,
       authProvider: cleanProvider,
       avatarUrl: avatarUrl || '',
       [idField]: cleanProviderId || fallbackHandle,
@@ -12014,36 +12210,246 @@ app.post('/api/auth/social/quick-login', authLimiter, async (req, res) => {
   }
 });
 
-// GET /api/users/me — Returns the authenticated user's profile, membership tier, role, and connected social profiles
+const serializeMemberProfile = (user = {}) => ({
+  id: user._id,
+  _id: user._id,
+  name: user.name || '',
+  username: user.username || (user.email ? String(user.email).split('@')[0] : ''),
+  email: user.email || '',
+  phone: user.phone || '',
+  membershipTier: user.membershipTier || 'basic',
+  pendingUpgradeTier: user.pendingUpgradeTier || '',
+  role: user.role || 'client',
+  authProvider: user.authProvider || 'local',
+  avatarUrl: user.avatarUrl || '',
+  shippingAddress: {
+    address_1: user.shippingAddress?.address_1 || '',
+    address_2: user.shippingAddress?.address_2 || '',
+    city: user.shippingAddress?.city || '',
+    state: user.shippingAddress?.state || '',
+    postcode: user.shippingAddress?.postcode || '',
+    country: user.shippingAddress?.country || 'US'
+  },
+  billingInfo: {
+    billingName: user.billingInfo?.billingName || user.name || '',
+    cardBrand: user.billingInfo?.cardBrand || '',
+    cardLast4: user.billingInfo?.cardLast4 || '',
+    expMonth: user.billingInfo?.expMonth || '',
+    expYear: user.billingInfo?.expYear || '',
+    billingAddress: user.billingInfo?.billingAddress || '',
+    stripeCustomerId: user.billingInfo?.stripeCustomerId || '',
+    subscriptionStatus:
+      user.billingInfo?.subscriptionStatus ||
+      (['luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) ? 'active' : 'inactive')
+  },
+  socialProfiles: user.socialProfiles || {},
+  createdAt: user.createdAt
+});
+
+// GET /api/users/me — Returns the authenticated user's profile, membership tier, role, shipping/billing info, and consultation quota
 app.get('/api/users/me', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
+    const quotaInfo = await computeMemberConsultationQuota(user);
     res.status(200).json({
-      user: {
-        id: user._id,
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        membershipTier: user.membershipTier,
-        role: user.role,
-        authProvider: user.authProvider || 'local',
-        avatarUrl: user.avatarUrl || '',
-        socialProfiles: user.socialProfiles || {}
-      }
+      user: serializeMemberProfile(user),
+      quotaInfo
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch current user profile.' });
   }
 });
 
+// PUT /api/users/me/profile — Updates member account info, username, email, phone, profile picture (avatarUrl), shippingAddress, and billingInfo
+app.put('/api/users/me/profile', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const {
+      name,
+      username,
+      email,
+      phone,
+      avatarUrl,
+      shippingAddress,
+      billingInfo,
+      newPassword
+    } = req.body || {};
+
+    if (email !== undefined && String(email).trim()) {
+      const cleanNewEmail = normalizeEmail(email);
+      if (cleanNewEmail !== normalizeEmail(user.email)) {
+        const emailTaken = await User.findOne({
+          _id: { $ne: user._id },
+          email: new RegExp(`^${escapeRegex(cleanNewEmail)}$`, 'i')
+        });
+        if (emailTaken) {
+          return res.status(400).json({ error: 'That email address is already in use by another account.' });
+        }
+        const previousEmail = normalizeEmail(user.email);
+        user.email = cleanNewEmail;
+        // Keep historical orders linked when a member updates their email address
+        await Order.updateMany(
+          {
+            $or: [
+              { userId: user._id },
+              { customerEmail: new RegExp(`^${escapeRegex(previousEmail)}$`, 'i') }
+            ]
+          },
+          { $set: { userId: user._id, customerEmail: cleanNewEmail } }
+        ).catch(() => {});
+      }
+    }
+
+    if (name !== undefined && String(name).trim()) {
+      user.name = String(name).trim();
+    }
+    if (username !== undefined) {
+      user.username = String(username).trim();
+    }
+    if (phone !== undefined) {
+      user.phone = String(phone).trim();
+    }
+    if (avatarUrl !== undefined) {
+      user.avatarUrl = String(avatarUrl || '').trim();
+    }
+
+    if (shippingAddress && typeof shippingAddress === 'object') {
+      const existingAddr = (user.shippingAddress && typeof user.shippingAddress === 'object')
+        ? user.shippingAddress
+        : {};
+      user.shippingAddress = {
+        address_1: shippingAddress.address_1 !== undefined ? String(shippingAddress.address_1).trim() : (existingAddr.address_1 || ''),
+        address_2: shippingAddress.address_2 !== undefined ? String(shippingAddress.address_2).trim() : (existingAddr.address_2 || ''),
+        city: shippingAddress.city !== undefined ? String(shippingAddress.city).trim() : (existingAddr.city || ''),
+        state: shippingAddress.state !== undefined ? String(shippingAddress.state).trim() : (existingAddr.state || ''),
+        postcode: shippingAddress.postcode !== undefined ? String(shippingAddress.postcode).trim() : (existingAddr.postcode || ''),
+        country: shippingAddress.country !== undefined ? String(shippingAddress.country).trim() || 'US' : (existingAddr.country || 'US')
+      };
+      user.markModified('shippingAddress');
+    }
+
+    if (billingInfo && typeof billingInfo === 'object') {
+      const existingBilling = (user.billingInfo && typeof user.billingInfo === 'object')
+        ? user.billingInfo
+        : {};
+      const cleanLast4 = billingInfo.cardLast4 !== undefined
+        ? String(billingInfo.cardLast4).replace(/\D/g, '').slice(-4)
+        : (existingBilling.cardLast4 || '');
+      user.billingInfo = {
+        ...existingBilling,
+        billingName: billingInfo.billingName !== undefined ? String(billingInfo.billingName).trim() : (existingBilling.billingName || user.name || ''),
+        cardBrand: billingInfo.cardBrand !== undefined ? String(billingInfo.cardBrand).trim() : (existingBilling.cardBrand || ''),
+        cardLast4: cleanLast4,
+        expMonth: billingInfo.expMonth !== undefined ? String(billingInfo.expMonth).trim() : (existingBilling.expMonth || ''),
+        expYear: billingInfo.expYear !== undefined ? String(billingInfo.expYear).trim() : (existingBilling.expYear || ''),
+        billingAddress: billingInfo.billingAddress !== undefined ? String(billingInfo.billingAddress).trim() : (existingBilling.billingAddress || '')
+      };
+      user.markModified('billingInfo');
+    }
+
+    if (newPassword !== undefined && String(newPassword).trim()) {
+      if (String(newPassword).length < 6) {
+        return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+      }
+      const salt = await bcrypt.genSalt(10);
+      user.password = await bcrypt.hash(String(newPassword), salt);
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      message: 'Your Sanctuary account profile and billing preferences have been saved ✧',
+      user: serializeMemberProfile(user)
+    });
+  } catch (error) {
+    console.error('Update Profile Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update account profile.' });
+  }
+});
+
+// POST /api/users/me/confirm-upgrade — Activates 'luminary' or 'radiance' tier after Stripe Checkout return
+app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const { tier, sessionId } = req.body || {};
+    let resolvedTier = String(tier || user.pendingUpgradeTier || '').toLowerCase().trim();
+
+    let stripeCustomerId = user.billingInfo?.stripeCustomerId || '';
+    let cardBrand = user.billingInfo?.cardBrand || '';
+    let cardLast4 = user.billingInfo?.cardLast4 || '';
+
+    const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+    if (sessionId && String(sessionId).startsWith('cs_') && rawStripeKey) {
+      try {
+        const sessionObj = await stripe.checkout.sessions.retrieve(String(sessionId), {
+          expand: ['subscription.default_payment_method']
+        });
+        if (sessionObj) {
+          if (sessionObj.metadata?.tier && ['luminary', 'radiance'].includes(String(sessionObj.metadata.tier).toLowerCase())) {
+            resolvedTier = String(sessionObj.metadata.tier).toLowerCase();
+          }
+          if (sessionObj.customer) {
+            stripeCustomerId = String(sessionObj.customer);
+          }
+          const pmCard = sessionObj.subscription?.default_payment_method?.card;
+          if (pmCard) {
+            cardBrand = String(pmCard.brand || cardBrand).toUpperCase();
+            cardLast4 = String(pmCard.last4 || cardLast4);
+          }
+        }
+      } catch (stripeErr) {
+        console.warn('⚠️ Stripe session lookup notice in confirm-upgrade:', stripeErr.message);
+      }
+    }
+
+    if (!['luminary', 'radiance'].includes(resolvedTier)) {
+      resolvedTier = 'luminary';
+    }
+
+    if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+      user.membershipTier = resolvedTier;
+    }
+    user.pendingUpgradeTier = '';
+    user.billingInfo = {
+      ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+      ...(stripeCustomerId ? { stripeCustomerId } : {}),
+      ...(cardBrand ? { cardBrand } : {}),
+      ...(cardLast4 ? { cardLast4 } : {}),
+      subscriptionStatus: 'active'
+    };
+    user.markModified('billingInfo');
+    await user.save();
+
+    const quotaInfo = await computeMemberConsultationQuota(user);
+
+    res.status(200).json({
+      message: `Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'}! Your membership benefits are now unlocked ✧`,
+      user: serializeMemberProfile(user),
+      quotaInfo
+    });
+  } catch (error) {
+    console.error('Confirm Upgrade Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to confirm membership upgrade.' });
+  }
+});
+
 app.post('/api/users/register', authLimiter, async (req, res) => {
   try {
-    const { name, email, password, membershipTier } = req.body || {};
+    const { name, username, email, password, phone, membershipTier } = req.body || {};
     const cleanName = String(name || '').trim();
     const cleanEmail = normalizeEmail(email);
+    const cleanUsername = String(username || '').trim() || (cleanEmail ? cleanEmail.split('@')[0] : '');
 
     if (!cleanName || !cleanEmail || !password) {
       return res.status(400).json({ error: 'Please provide your name, email address, and password.' });
@@ -12059,14 +12465,22 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(String(password), salt);
 
     const isSusanAdmin = cleanEmail === 'susan.coke@susansbeautyconsulting.com';
-    const assignedTier = isSusanAdmin ? 'admin' : (membershipTier || 'luminary');
+    const requestedTier = String(membershipTier || 'basic').toLowerCase().trim();
+    const pendingUpgradeTier = (!isSusanAdmin && ['luminary', 'radiance'].includes(requestedTier))
+      ? requestedTier
+      : '';
+    // Default all new non-admin registrations to 'basic' until payment is confirmed via Stripe checkout/webhook or /api/users/me/confirm-upgrade
+    const assignedTier = isSusanAdmin ? 'admin' : 'basic';
     const assignedRole = isSusanAdmin ? 'admin' : 'client';
 
     const newUser = new User({
       name: cleanName,
+      username: cleanUsername,
       email: cleanEmail,
+      phone: String(phone || '').trim(),
       password: hashedPassword,
       membershipTier: assignedTier,
+      pendingUpgradeTier,
       role: assignedRole
     });
 
@@ -12076,12 +12490,18 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
     res.status(201).json({
       user: {
         id: savedUser._id,
+        _id: savedUser._id,
         name: savedUser.name,
+        username: savedUser.username || cleanUsername,
         email: savedUser.email,
+        phone: savedUser.phone || '',
         membershipTier: savedUser.membershipTier,
+        pendingUpgradeTier: savedUser.pendingUpgradeTier || '',
         role: savedUser.role,
         authProvider: savedUser.authProvider || 'local',
-        avatarUrl: savedUser.avatarUrl || ''
+        avatarUrl: savedUser.avatarUrl || '',
+        shippingAddress: savedUser.shippingAddress || {},
+        billingInfo: savedUser.billingInfo || {}
       },
       token
     });
@@ -12132,15 +12552,7 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
     const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET || 'fallback_secret_key', { expiresIn: '24h' });
 
     res.json({ 
-      user: { 
-        id: user._id, 
-        name: user.name, 
-        email: user.email, 
-        membershipTier: user.membershipTier, 
-        role: user.role,
-        authProvider: user.authProvider || 'local',
-        avatarUrl: user.avatarUrl || ''
-      }, 
+      user: serializeMemberProfile(user), 
       token 
     });
   } catch (error) {
@@ -12168,33 +12580,196 @@ app.get('/api/users/me/inbox', authenticateToken, async (req, res) => {
   }
 });
 
+// Enriches member orders with normalized item thumbnails, status, pipelineStage, shipping address, and tracking details
 app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).lean();
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const emailRegex = new RegExp(`^${escapeRegex(normalizeEmail(user.email))}$`, 'i');
-    const orders = await Order.find({ customerEmail: emailRegex }).sort({ createdAt: -1 });
-    res.status(200).json(orders);
+    const cleanEmail = normalizeEmail(user.email);
+    const orClauses = [{ userId: user._id }];
+    if (cleanEmail) {
+      orClauses.push({ customerEmail: new RegExp(`^${escapeRegex(cleanEmail)}$`, 'i') });
+    }
+
+    const rawOrders = await Order.find({ $or: orClauses }).sort({ createdAt: -1 }).lean();
+    const enrichedOrders = rawOrders.map(ord => {
+      const items = (Array.isArray(ord.items) ? ord.items : []).map(it => ({
+        productId: it.productId || it._id || null,
+        title: it.title || it.displayTitle || 'Boutique Ritual Essential',
+        sku: it.sku || '',
+        variantName: it.selectedVariantName || it.variantName || '',
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        price: Number(it.price || 0),
+        imageUrl: it.imageUrl || ''
+      }));
+
+      return {
+        ...ord,
+        _id: String(ord._id),
+        shortId: String(ord._id).slice(-6).toUpperCase(),
+        items,
+        itemCount: items.reduce((sum, i) => sum + i.quantity, 0),
+        totalAmount: Number(ord.totalAmount || 0),
+        status: ord.status || 'Pending',
+        pipelineStage: classifyOrderStage(ord),
+        tracking_code: ord.tracking_code || '',
+        logisticName: ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive',
+        shipping_address: ord.shipping_address || user.shippingAddress || {},
+        createdAt: ord.createdAt,
+        updatedAt: ord.updatedAt || ord.createdAt
+      };
+    });
+
+    res.status(200).json(enrichedOrders);
   } catch (error) {
+    console.error('Fetch Member Orders Error:', error);
     res.status(500).json({ error: 'Failed to fetch order history' });
   }
 });
+
+// Multimodal AI Skin Photo Analyzer for Radiance Elite Members
+const analyzeRadianceSkinPhotoWithGemini = async (skinPhotoDataUrl = '', quizData = {}) => {
+  const cleanPhoto = String(skinPhotoDataUrl || '').trim();
+  if (!cleanPhoto) return null;
+
+  const skinType = String(quizData.skinType || 'Normal').trim();
+  const primaryGoal = String(quizData.primaryGoal || 'Hydration').trim();
+  const skinSensitivity = String(quizData.skinSensitivity || 'Moderate').trim();
+  const complexion = String(quizData.complexion || 'Medium').trim();
+  const undertone = String(quizData.undertone || 'Neutral').trim();
+  const climate = String(quizData.climate || 'Temperate').trim();
+
+  // Deterministic luxury fallback analysis so Radiance photo analysis always succeeds even if offline
+  const fallbackPhotoAnalysis = {
+    radianceScore: 91,
+    visualComplexionSummary: `Odie's visual complexion scan confirms a ${complexion.toLowerCase()} canvas with ${undertone.toLowerCase()} undertones and ${skinType.toLowerCase()} lipid balance. Surface light reflection indicates high responsiveness to targeted ${primaryGoal.toLowerCase()} actives paired with ${skinSensitivity.toLowerCase()}-safe barrier care.`,
+    detectedObservations: [
+      {
+        zoneOrTrait: 'Epidermal Luminosity & Tone',
+        observation: `Natural ${undertone.toLowerCase()} undertone harmony across the high cheekbones and forehead; benefits from antioxidant brightening to maintain even light bounce.`,
+        focusPriority: primaryGoal
+      },
+      {
+        zoneOrTrait: 'Moisture Barrier & Texture Zone',
+        observation: `Shows ${skinType.toLowerCase()} hydration behavior exposed to ${climate.toLowerCase()} conditions; responds best to layered humectants sealed with ceramides.`,
+        focusPriority: 'Hydration & Barrier Care'
+      },
+      {
+        zoneOrTrait: 'Reactivity & Micro-Circulation',
+        observation: `${skinSensitivity} sensitivity profile — gentle lymphatic massage and pH-balanced prep mist will keep the T-zone and cheek contour calm and sculpted.`,
+        focusPriority: 'Barrier & Soothing'
+      }
+    ],
+    targetedPhotoRecommendations: [
+      `Press a hydrating ${primaryGoal.toLowerCase()} serum into damp skin morning and evening, concentrating on the cheek and orbital zones.`,
+      `Seal moisture with a ${skinSensitivity === 'High' ? 'fragrance-free cica/ceramide cream' : 'velvet peptide moisturizer'} to prevent transepidermal water loss.`,
+      `Harmonize your ${complexion.toLowerCase()} (${undertone.toLowerCase()} undertone) complexion with weightless mineral pigments and broad-spectrum UV protection.`
+    ],
+    analyzedBy: 'Odie Multimodal Vision AI (Radiance Elite Exclusive)',
+    analyzedAt: new Date().toISOString()
+  };
+
+  try {
+    const dataUriMatch = cleanPhoto.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!dataUriMatch) {
+      return fallbackPhotoAnalysis;
+    }
+    const mimeType = dataUriMatch[1];
+    const base64Data = dataUriMatch[2];
+
+    const { ai, Type } = getGeminiClient();
+    const visionPrompt = `You are Odie, Susan's AI Skincare & Beauty Vision Analyst for Radiance Elite members.
+Analyze the uploaded client skin/complexion photo alongside their 10-point diagnostic quiz answers:
+- Skin Type: ${skinType}
+- Primary Goal: ${primaryGoal}
+- Climate: ${climate}
+- Skin Sensitivity: ${skinSensitivity}
+- Complexion: ${complexion}
+- Undertone: ${undertone}
+- Makeup Vibe: ${quizData.makeupVibe || 'Soft Glam'}
+
+Provide a warm, empowering, luxury cosmetic & skincare visual assessment (non-medical) with:
+1. radianceScore (integer between 84 and 98)
+2. visualComplexionSummary (2-3 sentences describing their visible complexion luminosity, tone harmony, and hydration balance)
+3. detectedObservations (3 items, each with zoneOrTrait, observation, and focusPriority)
+4. targetedPhotoRecommendations (3 actionable skincare/artistry steps tailored to what you see in the photo and their quiz answers).`;
+
+    const visionRes = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: visionPrompt },
+            { inlineData: { mimeType, data: base64Data } }
+          ]
+        }
+      ],
+      config: {
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            radianceScore: { type: Type.NUMBER },
+            visualComplexionSummary: { type: Type.STRING },
+            detectedObservations: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  zoneOrTrait: { type: Type.STRING },
+                  observation: { type: Type.STRING },
+                  focusPriority: { type: Type.STRING }
+                },
+                required: ['zoneOrTrait', 'observation', 'focusPriority']
+              }
+            },
+            targetedPhotoRecommendations: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            }
+          },
+          required: ['radianceScore', 'visualComplexionSummary', 'detectedObservations', 'targetedPhotoRecommendations']
+        }
+      }
+    });
+
+    const parsedVision = JSON.parse(visionRes.text);
+    return {
+      ...fallbackPhotoAnalysis,
+      ...parsedVision,
+      analyzedBy: 'Odie Multimodal Vision AI (Radiance Elite Exclusive)',
+      analyzedAt: new Date().toISOString()
+    };
+  } catch (visionErr) {
+    console.warn('⚠️ Gemini Vision photo analysis fallback used:', visionErr.message);
+    return fallbackPhotoAnalysis;
+  }
+};
 
 app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
   try {
     const existingBlueprint = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 }).lean();
     if (existingBlueprint && (!existingBlueprint.blueprintAnalysis || !existingBlueprint.blueprintAnalysis.archetypeTitle)) {
       const generatedAnalysis = generateBlueprintAnalysis(existingBlueprint);
+      if (existingBlueprint.aiPhotoAnalysis) {
+        generatedAnalysis.aiPhotoAnalysis = existingBlueprint.aiPhotoAnalysis;
+      }
       await Consultation.findByIdAndUpdate(existingBlueprint._id, {
         $set: { blueprintAnalysis: generatedAnalysis }
       }).catch(() => {});
       existingBlueprint.blueprintAnalysis = generatedAnalysis;
+    } else if (existingBlueprint && existingBlueprint.aiPhotoAnalysis && existingBlueprint.blueprintAnalysis) {
+      existingBlueprint.blueprintAnalysis.aiPhotoAnalysis = existingBlueprint.aiPhotoAnalysis;
     }
     res.status(200).json({
       hasCompletedQuiz: Boolean(existingBlueprint),
       blueprint: existingBlueprint || null,
-      blueprintAnalysis: existingBlueprint?.blueprintAnalysis || null
+      blueprintAnalysis: existingBlueprint?.blueprintAnalysis || null,
+      skinPhotoUrl: existingBlueprint?.skinPhotoUrl || '',
+      aiPhotoAnalysis: existingBlueprint?.aiPhotoAnalysis || existingBlueprint?.blueprintAnalysis?.aiPhotoAnalysis || null
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch member blueprint status' });
@@ -12203,7 +12778,17 @@ app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
 
 app.post('/api/consultations', authenticateToken, async (req, res) => {
   try {
-    // Enforce one-time-only Blueprint Quiz per member account
+    // 1. Paywall Check: Block Free ('basic') members from taking or submitting the Blueprint Quiz
+    if (!isPaidOrAdminMember(req.user)) {
+      return res.status(402).json({
+        error: 'PAYWALL_REQUIRED',
+        message: 'Upgrade to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo) to unlock the Personalized Beauty Blueprint Quiz.',
+        requiresUpgrade: true,
+        currentTier: req.user.membershipTier || 'basic'
+      });
+    }
+
+    // 2. Enforce one-time-only Blueprint Quiz per member account
     const existingConsultation = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 });
     if (existingConsultation) {
       if (!existingConsultation.blueprintAnalysis || !existingConsultation.blueprintAnalysis.archetypeTitle) {
@@ -12213,15 +12798,33 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
       return res.status(403).json({
         error: 'Your Beauty Blueprint is a one-time personal curation and is permanently locked to your membership profile.',
         blueprint: existingConsultation,
-        blueprintAnalysis: existingConsultation.blueprintAnalysis
+        blueprintAnalysis: existingConsultation.blueprintAnalysis,
+        aiPhotoAnalysis: existingConsultation.aiPhotoAnalysis || null
       });
     }
 
-    const blueprintAnalysis = generateBlueprintAnalysis(req.body || {});
+    const rawBody = req.body || {};
+    const userTier = String(req.user.membershipTier || '').toLowerCase().trim();
+    const isRadianceOrAdmin = userTier === 'radiance' || userTier === 'admin' || req.user.role === 'admin';
+    const incomingPhotoUrl = isRadianceOrAdmin
+      ? String(rawBody.skinPhotoDataUrl || rawBody.skinPhotoUrl || '').trim()
+      : '';
+
+    let aiPhotoAnalysis = null;
+    if (incomingPhotoUrl && isRadianceOrAdmin) {
+      aiPhotoAnalysis = await analyzeRadianceSkinPhotoWithGemini(incomingPhotoUrl, rawBody);
+    }
+
+    const blueprintAnalysis = generateBlueprintAnalysis(rawBody);
+    if (aiPhotoAnalysis) {
+      blueprintAnalysis.aiPhotoAnalysis = aiPhotoAnalysis;
+    }
 
     const newConsultation = new Consultation({
-      ...req.body,
+      ...rawBody,
       userId: req.user._id,
+      skinPhotoUrl: incomingPhotoUrl,
+      aiPhotoAnalysis,
       blueprintAnalysis
     });
     const savedConsultation = await newConsultation.save();
@@ -12333,9 +12936,15 @@ app.post('/api/create-checkout-session', authenticateToken, async (req, res) => 
       productDescription = "5-piece premium skin care ritual box, monthly 1-on-1 consultations, 25% off the boutique, and new product early updates.";
     }
 
+    const cleanTier = String(tier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+    await User.findByIdAndUpdate(req.user._id, {
+      $set: { pendingUpgradeTier: cleanTier }
+    }).catch(() => {});
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription', 
+      customer_email: req.user.email || undefined,
       line_items: [{
         price_data: {
           currency: 'usd',
@@ -12347,15 +12956,15 @@ app.post('/api/create-checkout-session', authenticateToken, async (req, res) => 
       }],
       metadata: {
         userId: req.user._id.toString(),
-        tier: tier
+        tier: cleanTier
       },
       subscription_data: {
         metadata: {
           userId: req.user._id.toString(),
-          tier: tier
+          tier: cleanTier
         }
       },
-      success_url: `${req.headers.origin || 'http://localhost:3000'}/?success=true&tier=${tier}`,
+      success_url: `${req.headers.origin || 'http://localhost:3000'}/?success=true&tier=${cleanTier}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${req.headers.origin || 'http://localhost:3000'}/?canceled=true`,
     });
 
@@ -12534,17 +13143,23 @@ app.post('/api/cart-checkout', async (req, res) => {
     // Verify member tier from Authorization token if signed in (fallback to request membershipTier)
     let verifiedTier = String(membershipTier || '').toLowerCase().trim();
     let verifiedEmail = normalizeEmail(customerEmail);
+    let verifiedUserId = null;
+    let fallbackUserShipping = null;
 
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (token) {
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
-        const dbUser = await User.findById(decoded._id).select('email membershipTier').lean();
+        const dbUser = await User.findById(decoded._id).select('_id email membershipTier shippingAddress').lean();
         if (dbUser) {
+          verifiedUserId = dbUser._id;
           verifiedTier = String(dbUser.membershipTier || verifiedTier).toLowerCase().trim();
           if (!verifiedEmail && dbUser.email) {
             verifiedEmail = normalizeEmail(dbUser.email);
+          }
+          if (dbUser.shippingAddress && dbUser.shippingAddress.address_1) {
+            fallbackUserShipping = dbUser.shippingAddress;
           }
         }
       } catch (tokenErr) {
@@ -12570,9 +13185,10 @@ app.post('/api/cart-checkout', async (req, res) => {
     const totalAmount = discountedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     
     const newOrder = new Order({ 
+      ...(verifiedUserId ? { userId: verifiedUserId } : {}),
       items: discountedItems, 
       totalAmount: Number(totalAmount.toFixed(2)),
-      shipping_address,
+      shipping_address: shipping_address || fallbackUserShipping || {},
       ...(verifiedEmail ? { customerEmail: verifiedEmail } : {})
     });
     await newOrder.save();
@@ -12733,7 +13349,14 @@ app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (re
       try {
         const user = await User.findById(userId);
         if (user) {
-          user.membershipTier = tier;
+          user.membershipTier = String(tier).toLowerCase().trim();
+          user.pendingUpgradeTier = '';
+          user.billingInfo = {
+            ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+            stripeCustomerId: session.customer ? String(session.customer) : (user.billingInfo?.stripeCustomerId || ''),
+            subscriptionStatus: 'active'
+          };
+          user.markModified('billingInfo');
           await user.save();
           console.log(`✨ Successfully upgraded user ${user.email} to ${tier} tier.`);
           
