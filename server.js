@@ -1538,24 +1538,29 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION (FULL BEAUTY & SKINCARE MULTI-QUERY SYNC) ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (STRICT SKINCARE & BEAUTY CURATED SYNC) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 120);
-const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 2500);
-const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
+let activeMaxCatalogCap = Math.max(
+  50,
+  Math.min(2000, Number(cleanEnv(process.env.CJ_MAX_CATALOG_CAP || process.env.CJ_MAX_PRODUCTS)) || 300)
+);
+const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 25);
+const CJ_MAX_PRODUCTS = activeMaxCatalogCap;
+const CJ_PAGE_SIZE = Math.min(50, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 50));
 
-// Normalizes a product title into a canonical alphanumeric key so near-identical CJ listings match
+// Normalizes a product title into a canonical alphanumeric key so near-identical CJ seller clones collapse into one item
 const normalizeCjTitleForDedupe = (rawTitle = '') =>
   String(rawTitle || '')
     .toLowerCase()
     .replace(/&amp;/g, 'and')
+    .replace(/\b\d+(\.\d+)?\s*(ml|g|mg|oz|fl\s*oz|pcs|pc|pack|packs|set|sets|bottle|bottles|jar|jars|sheet|sheets|pair|pairs)\b/gi, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(hot sale|new arrival|dropshipping|wholesale|free shipping|fast shipping|1pc|1pcs|pcs)\b/g, ' ')
+    .replace(/\b(hot sale|new arrival|dropshipping|wholesale|free shipping|fast shipping|private label|oem|odm|korean|for women|for men|women|men|unisex|lady|ladies|portable|professional|natural|organic|pure|instant|daily|care|beauty|skincare|skin)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-// Targeted Beauty, Skincare, Cosmetics & Personal Care search queries used to actively pull
-// all beauty & skincare items from CJ Dropshipping rather than scanning random general-merchandise pages.
+// Strictly Curated Skincare & Facial/Cosmetic Beauty search queries for Susan's Boutique
+// (Excludes all perfumes, fragrances, colognes, hair care, nail salon drills/gels, oral care, and general health gadgets)
 const CJ_BEAUTY_SEARCH_QUERIES = [
   'skincare',
   'skin care',
@@ -1568,39 +1573,31 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
   'sheet mask',
   'eye cream',
   'eye patch',
-  'hyaluronic acid',
-  'retinol',
+  'hyaluronic acid serum',
+  'retinol cream',
   'vitamin c serum',
-  'collagen',
-  'niacinamide',
-  'sunscreen',
+  'collagen face cream',
+  'niacinamide serum',
+  'ceramide moisturizer',
+  'sunscreen spf',
   'acne patch',
   'lip gloss',
   'lipstick',
   'lip balm',
   'lip oil',
-  'foundation',
-  'concealer',
-  'blush',
-  'highlighter',
-  'eyeshadow',
+  'foundation makeup',
+  'concealer makeup',
+  'blush makeup',
+  'highlighter makeup',
+  'eyeshadow palette',
   'mascara',
   'eyeliner',
-  'eyebrow',
-  'makeup brush',
+  'eyebrow pencil',
+  'makeup brush set',
   'beauty sponge',
-  'gua sha',
-  'jade roller',
-  'facial massager',
-  'body lotion',
-  'body scrub',
-  'essential oil',
-  'hair oil',
-  'hair mask',
-  'shampoo',
-  'conditioner',
-  'nail gel',
-  'perfume'
+  'gua sha facial',
+  'jade roller facial',
+  'led facial mask'
 ];
 
 const getCjHeaders = () => {
@@ -1615,45 +1612,46 @@ const getCjHeaders = () => {
   };
 };
 
-// Word-boundary exclusion list to reject non-beauty items that previously matched substrings
-// like "chair" (matched "hair"), "phone skin" (matched "skin"), "clock face" (matched "face"), or "ice cream" (matched "cream").
-const NON_BEAUTY_EXCLUSION_REGEX = /\b(chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton|tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
+// Strict word-boundary exclusion list: blocks non-beauty merchandise AND explicitly blocks
+// perfumes, fragrances, colognes, deodorants, hair care/wigs/dryers, nail salon drills/gels/acrylics,
+// oral/dental care, shaving/beard/epilators, tattoos, and orthopedic/posture devices.
+const NON_BEAUTY_EXCLUSION_REGEX = /\b(perfume|perfumes|fragrance|fragrances|parfum|cologne|eau de parfum|eau de toilette|body mist|deodorant|antiperspirant|pheromone|atomizer|shampoo|conditioner|hair oil|hair mask|hair serum|hair spray|hair mist|hair wax|hair dye|hair color|hair growth|hair loss|wig|wigs|toupee|hairpiece|hair extension|lace front|braiding hair|flat iron|curling iron|hair straightener|hair dryer|blow dryer|hot comb|hairbrush|comb|detangler|edge control|beard|mustache|shaver|razor|epilator|trimmer|clipper|waxing|wax beans|depilatory|nail polish|gel nail|nail gel|nail art|nail file|nail drill|nail lamp|uv lamp|cuticle|manicure|pedicure|press on nails|false nails|fake nails|poly gel|acrylic nail|acrylic powder|nail tip|nail sticker|nail glitter|rhinestone|toothbrush|toothpaste|teeth whitening|whitening strips|water flosser|oral irrigator|dental|denture|mouthwash|tongue scraper|breath spray|posture corrector|back brace|knee brace|ankle brace|neck brace|waist trainer|shapewear|corset|cupping|heating pad|hot water bottle|massage gun|foot massager|neck massager|tattoo|microblading|piercing|ear piercing|inhaler|hearing aid|oximeter|thermometer|blood pressure|pill box|first aid|bandage|insoles|shoe pad|foot file|callus|bunion|toe separator|snoring|nose clip|sleep mask|blindfold|earplug|essential oil diffuser|humidifier|incense|candle|ashtray|lighter|vape|hookah|chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton|tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
 
-// Non-beauty top-level CJ category names to reject immediately if present
-const NON_BEAUTY_CATEGORY_REGEX = /\b(computer|office|electronics|phone|automotive|automobile|motorcycle|home improvement|lighting|furniture|kitchen|dining|pet|toy|hobbies|sports|outdoors|apparel|clothing|shoes|bags|luggage|jewelry|watches|security|industrial|mother & kids|kids|baby)\b/i;
+// Non-Skincare/Non-Beauty CJ category names to reject immediately if present
+const NON_BEAUTY_CATEGORY_REGEX = /\b(perfume|fragrance|deodorant|hair|wig|extensions|nail|manicure|pedicure|oral|dental|shaving|epilator|beard|tattoo|body art|massage & relaxation|health care|medical|braces|supports|mobility|computer|office|electronics|phone|automotive|automobile|motorcycle|home improvement|lighting|furniture|kitchen|dining|pet|toy|hobbies|sports|outdoors|apparel|clothing|shoes|bags|luggage|jewelry|watches|security|industrial|mother & kids|kids|baby)\b/i;
 
-// Legitimate Health, Beauty & Skincare category indicators in CJ's category tree
-const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(health|beauty|cosmetic|cosmetics|skincare|skin care|skin|makeup|make-up|make up|personal care|fragrance|perfume|nail|manicure|pedicure|hair care|haircare|hair styling|hair|wig|extensions|salon|spa|hygiene|oral care|dental|body care|bath|shower|facial|face|massage|relaxation|wellness|shaving|epilator|grooming|eyelash|brow|lip|eye care)\b/i;
+// Strictly allowed Skincare & Facial/Cosmetic Beauty category indicators in CJ's category tree
+const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(skincare|skin care|facial|face care|makeup|make-up|make up|cosmetic|cosmetics|beauty tools|eyelash|brow|lip care|lip makeup|eye care|eye makeup|sun care|sunscreen|body lotion|body butter|body scrub)\b/i;
 
-// Comprehensive Beauty & Skincare product terms (matched on word boundaries)
-const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|facial|face care|cosmetic|cosmetics|makeup|make-up|beauty|serum|cleanser|cleansing|toner|moisturizer|moisturizing|lotion|cream|face cream|night cream|day cream|eye cream|hand cream|foot cream|body cream|bb cream|cc cream|balm|ointment|essence|ampoule|emulsion|gel|exfoliant|exfoliating|scrub|peel|peeling|mask|facial mask|face mask|sheet mask|clay mask|mud mask|eye mask|eye patch|eye patches|hydrogel|sleeping mask|lip mask|lip balm|lip gloss|lipgloss|lipstick|lip liner|lip oil|lip tint|lip stain|lip scrub|lip plumper|lip clay|lip glaze|foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lash extension|lash lift|lash curler|lash serum|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|makeup remover|micellar|cleansing oil|cleansing balm|cotton pad|nail polish|gel nail|nail gel|nail art|nail file|nail drill|nail lamp|uv lamp|cuticle|manicure|pedicure|press on nails|poly gel|acrylic nail|shampoo|conditioner|hair mask|hair oil|hair serum|hair spray|hair mist|hair wax|hair treatment|scalp|keratin|argan|biotin|rosemary|edge control|hair growth|beard oil|beard balm|curl cream|detangler|comb|hairbrush|flat iron|curling iron|hair straightener|hair dryer|diffuser|epilator|trimmer|shaver|razor|waxing|wax beans|depilatory|collagen|retinol|retinoid|hyaluronic|vitamin c|vitamin e|niacinamide|nicotinamide|salicylic|glycolic|lactic acid|aha|bha|pha|azelaic|ceramide|peptide|squalane|centella|cica|snail|mucin|tea tree|aloe vera|rosehip|turmeric|kojic|bakuchiol|spf|sunscreen|sunblock|self tanner|tanning|aftersun|fragrance|perfume|parfum|cologne|eau de|body mist|deodorant|antiperspirant|body wash|shower gel|bath bomb|bath salt|body butter|body scrub|body lotion|body oil|essential oil|aromatherapy|gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|blackhead|pore|ultrasonic scrubber|acne|pimple patch|blemish|spot treatment|anti-aging|anti aging|anti-wrinkle|wrinkle|whitening|brightening|hydrating|hydration|firming|lifting|soothing|repairing|barrier|massager|cupping|posture corrector|heating pad|sleep mask|teeth whitening|whitening strips|toothbrush|water flosser|oral irrigator|tongue scraper)\b/i;
+// Strictly allowed Skincare & Facial/Cosmetic Beauty product terms (matched on word boundaries in the actual product title)
+const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|facial|face care|cosmetic|cosmetics|makeup|make-up|serum|cleanser|cleansing|face wash|facial wash|toner|facial mist|face mist|rosewater|moisturizer|moisturizing|face lotion|body lotion|body butter|body scrub|face cream|night cream|day cream|eye cream|neck cream|barrier cream|bb cream|cc cream|facial balm|cleansing balm|cleansing oil|micellar|makeup remover|essence|ampoule|emulsion|exfoliant|exfoliating|facial scrub|face scrub|facial peel|peeling gel|facial mask|face mask|sheet mask|clay mask|mud mask|eye mask|eye patch|eye patches|hydrogel|sleeping mask|lip mask|lip balm|lip gloss|lipgloss|lipstick|lip liner|lip oil|lip tint|lip stain|lip scrub|lip plumper|lip clay|lip glaze|foundation|concealer|face primer|makeup primer|blush|blusher|bronzer|highlighter|illuminator|contour|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow gel|brow pencil|false lashes|eyelash|lash curler|lash serum|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|collagen|retinol|retinoid|hyaluronic|vitamin c|vitamin e|niacinamide|nicotinamide|salicylic|glycolic|lactic acid|aha|bha|pha|azelaic|ceramide|peptide|squalane|centella|cica|snail|mucin|tea tree|aloe vera|rosehip|turmeric|kojic|bakuchiol|spf|sunscreen|sunblock|gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|facial steamer|nano mister|blackhead|pore|ultrasonic scrubber|acne patch|pimple patch|blemish|spot treatment|anti-aging|anti aging|anti-wrinkle|brightening|hydrating|firming)\b/i;
 
-const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '', fromBeautySource = false) => {
+const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '') => {
   const cleanTitle = String(title || '').trim();
-  const cleanCategory = String(categoryName || '').trim();
-  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 400);
+  // Strip any legacy synthetic "Health & Beauty > ..." prefix so only CJ's real category is evaluated
+  const cleanCategory = String(categoryName || '')
+    .replace(/^Health\s*&\s*Beauty\s*>\s*/i, '')
+    .trim();
+  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 300);
   if (!cleanTitle) return false;
 
   const combinedTitleAndCat = `${cleanTitle} ${cleanCategory}`;
 
-  // 1. Hard exclusion gate: immediately reject if title or category hits any non-beauty exclusion keyword
+  // 1. Hard exclusion gate: immediately reject if title, category, or lead description hits any excluded term (including perfume, hair, nail, oral, etc.)
   if (NON_BEAUTY_EXCLUSION_REGEX.test(combinedTitleAndCat)) {
     return false;
   }
-
-  // 2. Reject if CJ explicitly placed the item in a non-beauty category (unless the category also says beauty/health/skincare/personal care)
-  if (cleanCategory && NON_BEAUTY_CATEGORY_REGEX.test(cleanCategory) && !HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
+  if (/\b(perfume|fragrance|parfum|cologne|deodorant|shampoo|conditioner|wig|nail polish|nail gel|nail drill|toothbrush|teeth whitening|shaver|razor|posture corrector|tattoo)\b/i.test(cleanDesc)) {
     return false;
   }
 
-  // 3. Accept if title or category matches our comprehensive Beauty & Skincare product regex
-  if (HEALTH_BEAUTY_PRODUCT_REGEX.test(combinedTitleAndCat)) {
-    return true;
+  // 2. Reject if CJ placed the item in an excluded category (e.g., Fragrance, Hair, Nail, Oral Care, Electronics, Apparel)
+  if (cleanCategory && NON_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
+    return false;
   }
 
-  // 4. If fetched from a verified CJ Beauty category or beauty search query, also check category + short description
-  if ((fromBeautySource || HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) &&
-      (HEALTH_BEAUTY_CATEGORY_REGEX.test(combinedTitleAndCat) || HEALTH_BEAUTY_PRODUCT_REGEX.test(cleanDesc))) {
+  // 3. Require the product's actual TITLE to contain a verified Skincare or Facial/Cosmetic Beauty keyword
+  if (HEALTH_BEAUTY_PRODUCT_REGEX.test(cleanTitle)) {
     return true;
   }
 
@@ -1668,12 +1666,10 @@ const extractCleanTags = (categoryName = '', title = '') => {
     .filter(Boolean);
 
   const allowedTagSet = new Set([
-    'health', 'beauty', 'skincare', 'cosmetics', 'makeup', 'serum', 'cleanser',
+    'beauty', 'skincare', 'cosmetics', 'makeup', 'serum', 'cleanser',
     'toner', 'moisturizer', 'lotion', 'cream', 'mask', 'facial', 'lip', 'eye',
-    'nail', 'manicure', 'hair', 'shampoo', 'conditioner', 'scalp', 'fragrance',
-    'perfume', 'bath', 'body', 'wellness', 'massage', 'oral', 'hydration',
-    'brightening', 'anti-aging', 'acne', 'sensitive', 'collagen', 'retinol',
-    'sunscreen', 'hyaluronic', 'niacinamide', 'vitamin', 'exfoliant', 'scrub'
+    'hydration', 'brightening', 'anti-aging', 'acne', 'sensitive', 'collagen',
+    'retinol', 'sunscreen', 'hyaluronic', 'niacinamide', 'vitamin', 'exfoliant', 'scrub'
   ]);
 
   const tags = [];
@@ -1718,7 +1714,7 @@ const classifyProductForBlueprint = (title = '', categoryName = '', description 
     ritualStep = String(customFields.ritualStep).trim();
   } else if (/\b(foundation|concealer|primer|blush|blusher|bronzer|highlighter|illuminator|contour|palette|setting powder|loose powder|pressed powder|compact powder|setting spray|makeup fixer|eyeshadow|eye shadow|eyeliner|eye liner|mascara|eyebrow|brow|false lashes|eyelash|lipstick|lip gloss|lipgloss|lip liner|lip tint|lip stain|lip clay|lip glaze|bb cream|cc cream|makeup|cosmetic)\b/i.test(corpus)) {
     ritualStep = 'Makeup & Artistry';
-  } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|massager|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler|nail|manicure|pedicure|shampoo|conditioner|hair oil|hair mask|hair serum|scalp|perfume|fragrance|parfum|cologne|body mist|bath bomb|bath salt)\b/i.test(corpus)) {
+  } else if (/\b(gua sha|jade roller|quartz roller|ice roller|derma roller|microneedle|led mask|light therapy|facial steamer|nano mister|ultrasonic|makeup brush|brush set|kabuki|beauty sponge|makeup sponge|blender sponge|powder puff|lash curler)\b/i.test(corpus)) {
     ritualStep = 'Beauty Tool & Spa';
   } else if (/\b(cleanser|cleansing|face wash|facial wash|micellar|makeup remover|exfoliant|exfoliating|scrub|peel|peeling|blackhead remover|foam wash)\b/i.test(corpus)) {
     ritualStep = 'Step 1: Cleanser';
@@ -2344,19 +2340,30 @@ const backfillConsultationAnalyses = async () => {
   }
 };
 
-// Purges any previously synced CJ products in MongoDB that fail the strict Health & Beauty filter,
-// while preserving Susan's manually added custom boutique products.
+// Purges any previously synced CJ products in MongoDB that fail the strict Skincare & Facial/Cosmetic Beauty filter
+// (including perfumes, fragrances, hair/wig items, nail drills/gels, oral care, and non-beauty merchandise),
+// while preserving Susan's manually locked custom boutique products.
 const purgeNonBeautyCjProducts = async () => {
   try {
-    const cjProducts = await Product.find({ rawCjData: { $exists: true, $ne: null } }).lean();
+    const candidateProducts = await Product.find({
+      customTitleLocked: { $ne: true }
+    }).lean();
     const idsToDelete = [];
 
-    for (const prod of cjProducts) {
-      const catName = prod.rawCjData?.categoryName || (Array.isArray(prod.tags) ? prod.tags.join(' ') : '');
+    for (const prod of candidateProducts) {
+      const rawTitle = String(
+        prod.rawCjData?.nameEn || prod.rawCjData?.productNameEn || prod.title || ''
+      ).trim();
+      const displayTitle = String(prod.title || rawTitle).trim();
+      const realCatName = String(prod.rawCjData?.categoryName || '')
+        .replace(/^Health\s*&\s*Beauty\s*>\s*/i, '')
+        .trim();
       const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
-      const isValidBeauty = isStrictHealthAndBeautyProduct(prod.title, catName, prod.description, false);
 
-      if (!isValidBeauty || !(price > 0)) {
+      const isValidDisplay = isStrictHealthAndBeautyProduct(displayTitle, realCatName, prod.description);
+      const isValidRaw = rawTitle ? isStrictHealthAndBeautyProduct(rawTitle, realCatName, prod.description) : true;
+
+      if (!isValidDisplay || !isValidRaw || !(price > 0)) {
         idsToDelete.push(prod._id);
       }
     }
@@ -2368,7 +2375,7 @@ const purgeNonBeautyCjProducts = async () => {
         { $pull: { recommendedProducts: { $in: idsToDelete } } }
       );
       await InboxItem.deleteMany({ productId: { $in: idsToDelete } });
-      console.log(`🧹 Purged ${idsToDelete.length} non-Health/Beauty or invalid CJ products from MongoDB.`);
+      console.log(`🧹 Purged ${idsToDelete.length} perfume, hair/nail/oral, or non-Skincare/Beauty CJ products from MongoDB.`);
     }
 
     return idsToDelete.length;
@@ -2378,7 +2385,8 @@ const purgeNonBeautyCjProducts = async () => {
   }
 };
 
-// Discovers CJ's dedicated Health, Beauty & Skincare category IDs from /product/getCategory
+// Discovers strictly Skincare & Facial/Cosmetic Beauty leaf category IDs from /product/getCategory
+// (Rejecting Fragrance/Perfume, Hair/Wigs, Nail Art, Oral Care, Shaving, and broad uncurated parent categories)
 const fetchCjBeautyCategoryIds = async (headers) => {
   try {
     const res = await axios.get(`${CJ_BASE_URL}/product/getCategory`, { headers, timeout: 15000 });
@@ -2388,40 +2396,42 @@ const fetchCjBeautyCategoryIds = async (headers) => {
     const beautyCatIds = [];
     const seenIds = new Set();
 
-    const addCatId = (id, name) => {
+    const addCatId = (id, fullPathName, leafName) => {
       const cleanId = String(id || '').trim();
-      const cleanName = String(name || '').trim();
+      const cleanPath = String(fullPathName || '').trim();
+      const cleanLeaf = String(leafName || cleanPath).trim();
       if (!cleanId || seenIds.has(cleanId)) return;
-      if (NON_BEAUTY_EXCLUSION_REGEX.test(cleanName)) return;
+      if (NON_BEAUTY_EXCLUSION_REGEX.test(cleanPath) || NON_BEAUTY_CATEGORY_REGEX.test(cleanPath)) return;
+      if (!HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanLeaf)) return;
       seenIds.add(cleanId);
-      beautyCatIds.push({ id: cleanId, name: cleanName });
+      beautyCatIds.push({ id: cleanId, name: cleanPath });
     };
 
     for (const first of firstList) {
       const firstName = String(first.categoryFirstName || first.nameEn || first.name || '');
-      const firstIsBeauty = HEALTH_BEAUTY_CATEGORY_REGEX.test(firstName) && !NON_BEAUTY_CATEGORY_REGEX.test(firstName);
+      if (NON_BEAUTY_CATEGORY_REGEX.test(firstName)) continue;
       const children1 = first.categoryFirstChildList || first.children || [];
 
       for (const second of (Array.isArray(children1) ? children1 : [])) {
         const secondName = String(second.categorySecondName || second.nameEn || second.name || '');
-        const secondIsBeauty = firstIsBeauty || (HEALTH_BEAUTY_CATEGORY_REGEX.test(secondName) && !NON_BEAUTY_CATEGORY_REGEX.test(secondName));
+        if (NON_BEAUTY_EXCLUSION_REGEX.test(secondName) || NON_BEAUTY_CATEGORY_REGEX.test(secondName)) continue;
         const children2 = second.categorySecondChildList || second.children || [];
 
-        if (secondIsBeauty && second.categorySecondId) {
-          addCatId(second.categorySecondId, `${firstName} > ${secondName}`);
+        if (HEALTH_BEAUTY_CATEGORY_REGEX.test(secondName) && second.categorySecondId && (!Array.isArray(children2) || children2.length === 0)) {
+          addCatId(second.categorySecondId, `${firstName} > ${secondName}`, secondName);
         }
 
         for (const third of (Array.isArray(children2) ? children2 : [])) {
           const thirdName = String(third.categoryName || third.nameEn || third.name || '');
           const thirdId = third.categoryId || third.id;
-          if ((secondIsBeauty || HEALTH_BEAUTY_CATEGORY_REGEX.test(thirdName)) && thirdId) {
-            addCatId(thirdId, `${firstName} > ${secondName} > ${thirdName}`);
+          if (thirdId && HEALTH_BEAUTY_CATEGORY_REGEX.test(thirdName) && !NON_BEAUTY_EXCLUSION_REGEX.test(thirdName) && !NON_BEAUTY_CATEGORY_REGEX.test(thirdName)) {
+            addCatId(thirdId, `${firstName} > ${secondName} > ${thirdName}`, thirdName);
           }
         }
       }
     }
 
-    return beautyCatIds.slice(0, 45);
+    return beautyCatIds.slice(0, 18);
   } catch (err) {
     console.warn("⚠️ Could not fetch CJ category list (falling back to keyword search):", err.message);
     return [];
@@ -2440,6 +2450,8 @@ let cjCatalogSyncTelemetry = {
   lastSanitizedAt: null,
   lastDuplicatesPurgedCount: 0,
   lastNonBeautyPurgedCount: 0,
+  lastExcessCapPrunedCount: 0,
+  maxCatalogCap: activeMaxCatalogCap,
   activeCatalogTotal: 0,
   nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)',
   timezone: 'America/Chicago'
@@ -2448,13 +2460,23 @@ let cjCatalogSyncTelemetry = {
 // Scans the entire MongoDB Product collection, purges non-beauty items, backfills cjPid/cjSku/normalizedTitleKey,
 // groups duplicate products (by cjPid, cjSku, normalizedTitleKey, or identical CJ image), merges analytics counters,
 // re-points all foreign keys in Order, InboxItem, User.recommendedProducts, and MemberMonthlyBox, and deletes duplicates.
-const sanitizeAndDeduplicateCatalog = async () => {
+const sanitizeAndDeduplicateCatalog = async (options = {}) => {
+  if (options && options.maxCatalogCap !== undefined) {
+    const parsedCap = Number(options.maxCatalogCap);
+    if (!Number.isNaN(parsedCap) && parsedCap >= 50 && parsedCap <= 2000) {
+      activeMaxCatalogCap = Math.round(parsedCap);
+      cjCatalogSyncTelemetry.maxCatalogCap = activeMaxCatalogCap;
+    }
+  }
+
   if (isCatalogSanitizeRunning) {
     return {
       status: 'already_running',
       nonBeautyPurgedCount: 0,
       duplicatesPurged: 0,
+      excessPrunedCount: 0,
       groupsMerged: 0,
+      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal: await Product.countDocuments()
     };
   }
@@ -2631,6 +2653,81 @@ const sanitizeAndDeduplicateCatalog = async () => {
       await Product.deleteMany({ _id: { $in: dupIds } }).catch(() => {});
     }
 
+    // 3. Enforce Curated Boutique Catalog Cap (activeMaxCatalogCap) so inventory never grows unbounded
+    let excessPrunedCount = 0;
+    const currentCountAfterDedupe = await Product.countDocuments();
+    if (currentCountAfterDedupe > activeMaxCatalogCap) {
+      // Collect protected product IDs from User recommendations, Inbox curations, and Monthly Boxes
+      const [usersWithRecs, inboxDocs, boxDocs] = await Promise.all([
+        User.find({ 'recommendedProducts.0': { $exists: true } }).select('recommendedProducts').lean().catch(() => []),
+        InboxItem.find({}).select('productId').lean().catch(() => []),
+        MemberMonthlyBox.find({}).select('curatedProducts.productId').lean().catch(() => [])
+      ]);
+
+      const protectedIdSet = new Set();
+      for (const u of usersWithRecs) {
+        for (const pid of (u.recommendedProducts || [])) {
+          if (pid) protectedIdSet.add(String(pid));
+        }
+      }
+      for (const ib of inboxDocs) {
+        if (ib.productId) protectedIdSet.add(String(ib.productId));
+      }
+      for (const bx of boxDocs) {
+        for (const cp of (bx.curatedProducts || [])) {
+          if (cp?.productId) protectedIdSet.add(String(cp.productId));
+        }
+      }
+
+      const remainingProducts = await Product.find({})
+        .select('_id title customTitleLocked purchaseCount curatedCount cartAddCount viewCount')
+        .lean();
+
+      const rankedRemaining = [...remainingProducts].sort((a, b) => {
+        const aProtected =
+          Boolean(a.customTitleLocked) ||
+          protectedIdSet.has(String(a._id)) ||
+          Number(a.purchaseCount || 0) > 0 ||
+          Number(a.curatedCount || 0) > 0 ||
+          Number(a.cartAddCount || 0) > 0;
+        const bProtected =
+          Boolean(b.customTitleLocked) ||
+          protectedIdSet.has(String(b._id)) ||
+          Number(b.purchaseCount || 0) > 0 ||
+          Number(b.curatedCount || 0) > 0 ||
+          Number(b.cartAddCount || 0) > 0;
+        if (bProtected !== aProtected) return Number(bProtected) - Number(aProtected);
+
+        const scoreA =
+          (Number(a.purchaseCount || 0) * 100) +
+          (Number(a.curatedCount || 0) * 25) +
+          (Number(a.cartAddCount || 0) * 10) +
+          Number(a.viewCount || 0);
+        const scoreB =
+          (Number(b.purchaseCount || 0) * 100) +
+          (Number(b.curatedCount || 0) * 25) +
+          (Number(b.cartAddCount || 0) * 10) +
+          Number(b.viewCount || 0);
+        if (scoreB !== scoreA) return scoreB - scoreA;
+        return String(a._id).localeCompare(String(b._id));
+      });
+
+      const excessCandidates = rankedRemaining.slice(activeMaxCatalogCap).filter(
+        (p) =>
+          !p.customTitleLocked &&
+          !protectedIdSet.has(String(p._id)) &&
+          !(Number(p.purchaseCount || 0) > 0) &&
+          !(Number(p.curatedCount || 0) > 0)
+      );
+
+      if (excessCandidates.length > 0) {
+        const excessIds = excessCandidates.map((p) => p._id);
+        await Product.deleteMany({ _id: { $in: excessIds } }).catch(() => {});
+        excessPrunedCount = excessIds.length;
+        console.log(`✂️ Enforced Curated Catalog Cap (${activeMaxCatalogCap}): pruned ${excessPrunedCount} excess unengaged CJ listings.`);
+      }
+    }
+
     const activeCatalogTotal = await Product.countDocuments();
     const nowIso = new Date().toISOString();
 
@@ -2639,11 +2736,13 @@ const sanitizeAndDeduplicateCatalog = async () => {
       lastSanitizedAt: nowIso,
       lastDuplicatesPurgedCount: duplicatesPurged,
       lastNonBeautyPurgedCount: nonBeautyPurgedCount,
+      lastExcessCapPrunedCount: excessPrunedCount,
+      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal
     };
 
     console.log(
-      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-beauty items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicate records removed) -> ${activeCatalogTotal} unique Beauty & Skincare products active.`
+      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-skincare/perfume items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicates removed), pruned ${excessPrunedCount} over-cap items -> ${activeCatalogTotal}/${activeMaxCatalogCap} unique Skincare & Beauty products active.`
     );
 
     return {
@@ -2652,6 +2751,8 @@ const sanitizeAndDeduplicateCatalog = async () => {
       nonBeautyPurgedCount,
       groupsMerged,
       duplicatesPurged,
+      excessPrunedCount,
+      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal,
       sanitizedAt: nowIso,
       telemetry: cjCatalogSyncTelemetry
@@ -2688,19 +2789,22 @@ const syncCJCatalog = async (options = {}) => {
   }
 
   isCjSyncRunning = true;
+  if (options.maxCatalogCap !== undefined) {
+    const parsedCap = Number(options.maxCatalogCap);
+    if (!Number.isNaN(parsedCap) && parsedCap >= 50 && parsedCap <= 2000) {
+      activeMaxCatalogCap = Math.round(parsedCap);
+      cjCatalogSyncTelemetry.maxCatalogCap = activeMaxCatalogCap;
+    }
+  }
   const fullCatalog = options.fullCatalog !== undefined ? Boolean(options.fullCatalog) : true;
   const sanitizeAfter = options.sanitizeAfter !== undefined ? Boolean(options.sanitizeAfter) : true;
-  const maxPages = fullCatalog
-    ? Math.max(60, Number(options.maxPages) || CJ_MAX_PAGES)
-    : Math.max(1, Number(options.maxPages) || 40);
-  const maxProducts = fullCatalog
-    ? Math.max(500, Number(options.maxProducts) || CJ_MAX_PRODUCTS)
-    : Math.max(1, Number(options.maxProducts) || 500);
+  const maxPages = Math.min(35, Math.max(1, Number(options.maxPages) || CJ_MAX_PAGES));
+  const maxProducts = Math.min(activeMaxCatalogCap, Math.max(50, Number(options.maxProducts) || activeMaxCatalogCap));
   const pageSize = CJ_PAGE_SIZE;
 
   try {
-    // 1. Pre-sanitize existing catalog before pulling new CJ batches
-    const preSanitize = await sanitizeAndDeduplicateCatalog();
+    // 1. Pre-sanitize existing catalog (and enforce cap) before pulling new CJ batches
+    const preSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: activeMaxCatalogCap });
     const purgedCount = preSanitize.nonBeautyPurgedCount || 0;
 
     const headers = getCjHeaders();
@@ -2737,7 +2841,8 @@ const syncCJCatalog = async (options = {}) => {
         const rawTitle = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
         const cjPid = (item.pid || item.productId || '').toString().trim();
         const baseSku = (item.productSku || item.sku || cjPid || '').toString().trim();
-        const category = (item.categoryName || sourceLabel || '').toString().trim();
+        const realCjCategory = (item.categoryName || '').toString().trim();
+        const category = realCjCategory || sourceLabel || 'Skincare & Beauty';
         const desc = item.description || item.productDescription || '';
 
         if (!rawTitle || !baseSku) continue;
@@ -2755,7 +2860,8 @@ const syncCJCatalog = async (options = {}) => {
           continue;
         }
 
-        if (!isStrictHealthAndBeautyProduct(rawTitle, category, desc, fromBeautySource)) {
+        // Evaluate strictly against the item's real title and real CJ category (never let synthetic sourceLabel bypass filtering)
+        if (!isStrictHealthAndBeautyProduct(rawTitle, realCjCategory, desc)) {
           continue;
         }
 
@@ -2944,23 +3050,23 @@ const syncCJCatalog = async (options = {}) => {
       }
     }
 
-    // Stage B: Sweep all targeted Beauty & Skincare keyword queries (?productNameEn=...)
+    // Stage B: Sweep strictly curated Skincare & Facial/Cosmetic Beauty keyword queries using CJ v2 keyWord + productNameEn
     for (const query of CJ_BEAUTY_SEARCH_QUERIES) {
       if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
       pagesFetched++;
-      const url = `${CJ_BASE_URL}/product/list?productNameEn=${encodeURIComponent(query)}&pageNum=1&pageSize=${pageSize}`;
+      const url = `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&productNameEn=${encodeURIComponent(query)}&pageNum=1&pageSize=${pageSize}`;
       const list = await fetchCjProductPage(url);
-      const saved = await processCjBatch(list, true, `Health & Beauty > ${query}`);
-      console.log(`🔍 CJ Keyword "${query}" -> +${saved} items (Total processed: ${totalProcessed})`);
+      const saved = await processCjBatch(list, false, `Skincare & Beauty > ${query}`);
+      console.log(`🔍 CJ Skincare Keyword "${query}" -> +${saved} verified items (Total processed: ${totalProcessed}/${maxProducts})`);
       if (pagesFetched < maxPages && totalProcessed < maxProducts) {
         await delay(380);
       }
     }
 
-    // Stage C: Post-Sync Sanitization & Deduplication so MongoDB has zero duplicate products
+    // Stage C: Post-Sync Sanitization, Deduplication & Curated Cap Enforcement
     let postSanitize = null;
     if (sanitizeAfter) {
-      postSanitize = await sanitizeAndDeduplicateCatalog();
+      postSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: activeMaxCatalogCap });
     }
 
     await backfillProductBlueprintLabels(false);
@@ -9591,14 +9697,16 @@ app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res)
 
 app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { purgeOnly, sanitizeOnly, maxPages, maxProducts } = req.body || {};
+    const { purgeOnly, sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (purgeOnly || sanitizeOnly) {
-      const sanitizeRes = await sanitizeAndDeduplicateCatalog();
+      const sanitizeRes = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
-        message: `🧹 Sanitized MongoDB catalog: purged ${sanitizeRes.nonBeautyPurgedCount || 0} non-beauty items and removed ${sanitizeRes.duplicatesPurged || 0} duplicate records (${products.length} unique products active) ✧`,
+        message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeRes.duplicatesPurged || 0} duplicates, and ${sanitizeRes.excessPrunedCount || 0} over-cap listings (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
         purgedCount: sanitizeRes.nonBeautyPurgedCount || 0,
         duplicatesPurged: sanitizeRes.duplicatesPurged || 0,
+        excessPrunedCount: sanitizeRes.excessPrunedCount || 0,
+        maxCatalogCap: activeMaxCatalogCap,
         syncedCount: 0,
         activeTotal: products.length,
         syncTelemetry: cjCatalogSyncTelemetry,
@@ -9606,47 +9714,51 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
       });
     }
 
-    const result = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts });
+    const result = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `✨ Full Beauty & Skincare sync + sanitization complete! Synced ${result.syncedCount || 0} items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} non-beauty items (${products.length} unique products active) ✧`,
+      message: `✨ Strict Skincare & Beauty Sync Complete! Synced ${result.syncedCount || 0} verified items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} perfume/non-skincare items (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
       ...result,
+      maxCatalogCap: activeMaxCatalogCap,
       activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
     });
   } catch (error) {
     console.error('Admin CJ Sync Error:', error);
-    res.status(500).json({ error: error.message || 'Failed to run CJ Health & Beauty sync.' });
+    res.status(500).json({ error: error.message || 'Failed to run CJ Skincare & Beauty sync.' });
   }
 });
 
-// POST /api/admin/products/sync-and-sanitize — Pulls all Skincare & Beauty products and sanitizes MongoDB (or runs sanitizeOnly)
+// POST /api/admin/products/sync-and-sanitize — Pulls strictly Skincare & Beauty products and sanitizes MongoDB (or runs sanitizeOnly)
 app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { sanitizeOnly, maxPages, maxProducts } = req.body || {};
+    const { sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (sanitizeOnly) {
-      const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+      const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
-        message: `🧹 MongoDB Catalog Sanitized! Merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed, ${sanitizeResult.nonBeautyPurgedCount || 0} non-beauty removed) → ${products.length} unique Beauty & Skincare products active ✧`,
+        message: `🧹 Strict Skincare & Beauty Sanitization Complete! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed), and pruned ${sanitizeResult.excessPrunedCount || 0} over-cap items → ${products.length}/${activeMaxCatalogCap} unique products active ✧`,
         sanitizeResult,
         duplicatesPurged: sanitizeResult.duplicatesPurged || 0,
         purgedCount: sanitizeResult.nonBeautyPurgedCount || 0,
+        excessPrunedCount: sanitizeResult.excessPrunedCount || 0,
+        maxCatalogCap: activeMaxCatalogCap,
         activeTotal: products.length,
         syncTelemetry: cjCatalogSyncTelemetry,
         products
       });
     }
 
-    const syncResult = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts });
+    const syncResult = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `✨ Full Skincare & Beauty Sync + MongoDB Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} non-beauty items → ${products.length} unique products active ✧`,
+      message: `✨ Strict Skincare & Beauty Sync + Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} perfume/non-skincare items → ${products.length}/${activeMaxCatalogCap} unique products active ✧`,
       syncResult,
       duplicatesPurged: syncResult.duplicatesPurged || 0,
       purgedCount: syncResult.purgedCount || 0,
       syncedCount: syncResult.syncedCount || 0,
+      maxCatalogCap: activeMaxCatalogCap,
       activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
@@ -9657,14 +9769,16 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
   }
 });
 
-// POST /api/admin/products/deduplicate — Runs immediate MongoDB deduplication & sanitization
-app.post('/api/admin/products/deduplicate', authenticateToken, requireAdmin, async (req, res) => {
+// POST /api/admin/products/deduplicate & POST /api/admin/products/strict-skincare-purge — Runs immediate strict Skincare & Beauty purge, deduplication & cap enforcement
+app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincare-purge'], authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+    const { maxCatalogCap } = req.body || {};
+    const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `🧹 Deduplicated & Sanitized MongoDB! Removed ${sanitizeResult.duplicatesPurged || 0} duplicates and ${sanitizeResult.nonBeautyPurgedCount || 0} non-beauty items (${products.length} unique products active) ✧`,
+      message: `🧹 Strict Skincare & Beauty Purge + Cap Enforcement Complete! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeResult.duplicatesPurged || 0} duplicates, and ${sanitizeResult.excessPrunedCount || 0} over-cap listings (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
       ...sanitizeResult,
+      maxCatalogCap: activeMaxCatalogCap,
       activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
