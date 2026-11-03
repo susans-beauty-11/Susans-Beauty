@@ -48,7 +48,12 @@ app.use(cors({
 // Surgically bypass body parsers for the Stripe webhook so it retains the raw buffer,
 // while enabling both JSON and URL-encoded form parsing on all other routes (including OAuth POST callbacks).
 app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook/stripe') {
+  const cleanPath = String(req.originalUrl || req.url || '').split('?')[0];
+  if (
+    cleanPath === '/webhook/stripe' ||
+    cleanPath === '/api/webhook/stripe' ||
+    cleanPath === '/api/webhooks/stripe'
+  ) {
     next();
   } else {
     express.json({ limit: '10mb' })(req, res, (err) => {
@@ -1261,6 +1266,58 @@ const inboundEmailSchema = new mongoose.Schema({
   lastReplyPreview: { type: String, default: '' }
 });
 const InboundEmail = mongoose.model('InboundEmail', inboundEmailSchema);
+
+// Live Production Webhook Delivery Audit Log (Stripe, CJ Dropshipping & Inbound Email)
+const webhookEventLogSchema = new mongoose.Schema({
+  source: {
+    type: String,
+    enum: ['STRIPE', 'CJ', 'INBOUND_EMAIL'],
+    required: true,
+    index: true
+  },
+  eventType: { type: String, required: true, index: true },
+  eventId: { type: String, default: '', index: true },
+  livemode: { type: Boolean, default: true },
+  status: {
+    type: String,
+    enum: ['PROCESSED', 'VERIFIED_PING', 'REJECTED', 'ERROR'],
+    default: 'PROCESSED',
+    index: true
+  },
+  summary: { type: String, default: '' },
+  ipAddress: { type: String, default: '' },
+  metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const WebhookEventLog = mongoose.model('WebhookEventLog', webhookEventLogSchema);
+
+const logWebhookDelivery = async ({
+  source = 'STRIPE',
+  eventType = 'UNKNOWN',
+  eventId = '',
+  livemode = true,
+  status = 'PROCESSED',
+  summary = '',
+  ipAddress = '',
+  metadata = {}
+} = {}) => {
+  try {
+    if (mongoose.connection.readyState !== 1) return null;
+    return await WebhookEventLog.create({
+      source,
+      eventType: String(eventType || 'UNKNOWN'),
+      eventId: String(eventId || ''),
+      livemode: Boolean(livemode),
+      status,
+      summary: String(summary || '').slice(0, 500),
+      ipAddress: String(ipAddress || ''),
+      metadata: metadata && typeof metadata === 'object' ? metadata : {}
+    });
+  } catch (err) {
+    console.warn('⚠️ WebhookEventLog write notice:', err.message);
+    return null;
+  }
+};
 
 const inboxItemSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -5941,6 +5998,16 @@ app.post('/api/webhooks/inbound-email', async (req, res) => {
       },
       { upsert: true, returnDocument: 'after' }
     );
+
+    await logWebhookDelivery({
+      source: 'INBOUND_EMAIL',
+      eventType: 'email.received',
+      eventId: String(saved?._id || messageId),
+      livemode: true,
+      status: 'PROCESSED',
+      summary: `Inbound email from ${parsedFrom.email}: "${String(subject || '(No Subject)').slice(0, 80)}"`,
+      ipAddress: req.ip || ''
+    });
 
     res.status(200).json({ message: 'Inbound email recorded.', email: saved });
   } catch (error) {
@@ -12374,7 +12441,7 @@ app.put('/api/users/me/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/users/me/confirm-upgrade — Activates 'luminary' or 'radiance' tier after Stripe Checkout return
+// POST /api/users/me/confirm-upgrade — Strictly verifies a paid Stripe Checkout session before activating 'luminary' or 'radiance'
 app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -12383,39 +12450,103 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
     }
 
     const { tier, sessionId } = req.body || {};
-    let resolvedTier = String(tier || user.pendingUpgradeTier || '').toLowerCase().trim();
-
-    let stripeCustomerId = user.billingInfo?.stripeCustomerId || '';
-    let cardBrand = user.billingInfo?.cardBrand || '';
-    let cardLast4 = user.billingInfo?.cardLast4 || '';
-
+    const cleanSessionId = String(sessionId || '').trim();
     const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
-    if (sessionId && String(sessionId).startsWith('cs_') && rawStripeKey) {
-      try {
-        const sessionObj = await stripe.checkout.sessions.retrieve(String(sessionId), {
-          expand: ['subscription.default_payment_method']
-        });
-        if (sessionObj) {
-          if (sessionObj.metadata?.tier && ['luminary', 'radiance'].includes(String(sessionObj.metadata.tier).toLowerCase())) {
-            resolvedTier = String(sessionObj.metadata.tier).toLowerCase();
-          }
-          if (sessionObj.customer) {
-            stripeCustomerId = String(sessionObj.customer);
-          }
-          const pmCard = sessionObj.subscription?.default_payment_method?.card;
-          if (pmCard) {
-            cardBrand = String(pmCard.brand || cardBrand).toUpperCase();
-            cardLast4 = String(pmCard.last4 || cardLast4);
-          }
-        }
-      } catch (stripeErr) {
-        console.warn('⚠️ Stripe session lookup notice in confirm-upgrade:', stripeErr.message);
-      }
+
+    if (!rawStripeKey) {
+      return res.status(503).json({
+        error: 'Stripe payment gateway is not configured on the server. Please configure STRIPE_SECRET_KEY.'
+      });
     }
 
+    // If the webhook already processed this upgrade in the background and no sessionId was passed, return current verified state
+    if (!cleanSessionId || !cleanSessionId.startsWith('cs_')) {
+      if (['luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) && user.billingInfo?.subscriptionStatus === 'active') {
+        const quotaInfo = await computeMemberConsultationQuota(user);
+        return res.status(200).json({
+          message: `Your ${user.membershipTier === 'radiance' ? 'Radiance Elite' : 'Luminary Circle'} membership is active ✧`,
+          user: serializeMemberProfile(user),
+          quotaInfo
+        });
+      }
+      return res.status(402).json({
+        error: 'A verified Stripe Checkout session (cs_...) is required to activate a paid membership tier.',
+        requiresCheckout: true
+      });
+    }
+
+    let sessionObj;
+    try {
+      sessionObj = await stripe.checkout.sessions.retrieve(cleanSessionId, {
+        expand: ['subscription.default_payment_method', 'payment_intent.payment_method']
+      });
+    } catch (stripeErr) {
+      console.error('⚠️ Stripe session verification failed in confirm-upgrade:', stripeErr.message);
+      return res.status(400).json({
+        error: `Could not verify Stripe Checkout session: ${stripeErr.message}`,
+        requiresCheckout: true
+      });
+    }
+
+    const isPaidOrComplete =
+      sessionObj &&
+      (sessionObj.payment_status === 'paid' ||
+        sessionObj.payment_status === 'no_payment_required' ||
+        sessionObj.status === 'complete');
+
+    if (!isPaidOrComplete) {
+      return res.status(402).json({
+        error: `Stripe Checkout session is not yet paid (status: ${sessionObj?.payment_status || 'incomplete'}).`,
+        requiresCheckout: true
+      });
+    }
+
+    // Verify the session belongs to this authenticated member
+    const sessionUserId = String(sessionObj.metadata?.userId || '').trim();
+    const sessionEmail = normalizeEmail(sessionObj.customer_details?.email || sessionObj.customer_email || '');
+    if (
+      sessionUserId &&
+      sessionUserId !== String(user._id) &&
+      sessionEmail &&
+      sessionEmail !== normalizeEmail(user.email)
+    ) {
+      return res.status(403).json({
+        error: 'This Stripe Checkout session belongs to a different account.'
+      });
+    }
+
+    let resolvedTier = String(
+      sessionObj.metadata?.tier || tier || user.pendingUpgradeTier || 'luminary'
+    ).toLowerCase().trim();
     if (!['luminary', 'radiance'].includes(resolvedTier)) {
       resolvedTier = 'luminary';
     }
+
+    const stripeCustomerId = sessionObj.customer
+      ? String(typeof sessionObj.customer === 'object' ? sessionObj.customer.id : sessionObj.customer)
+      : (user.billingInfo?.stripeCustomerId || '');
+
+    const pmCard =
+      sessionObj.subscription?.default_payment_method?.card ||
+      sessionObj.payment_intent?.payment_method?.card ||
+      null;
+    const billingDetails =
+      sessionObj.subscription?.default_payment_method?.billing_details ||
+      sessionObj.payment_intent?.payment_method?.billing_details ||
+      sessionObj.customer_details ||
+      {};
+
+    const cardBrand = pmCard?.brand
+      ? String(pmCard.brand).charAt(0).toUpperCase() + String(pmCard.brand).slice(1)
+      : (user.billingInfo?.cardBrand || '');
+    const cardLast4 = pmCard?.last4 ? String(pmCard.last4) : (user.billingInfo?.cardLast4 || '');
+    const expMonth = pmCard?.exp_month ? String(pmCard.exp_month).padStart(2, '0') : (user.billingInfo?.expMonth || '');
+    const expYear = pmCard?.exp_year ? String(pmCard.exp_year) : (user.billingInfo?.expYear || '');
+    const billingName = billingDetails?.name || user.billingInfo?.billingName || user.name || '';
+    const bAddr = billingDetails?.address || {};
+    const formattedBillingAddr = [bAddr.line1, bAddr.line2, bAddr.city, bAddr.state, bAddr.postal_code, bAddr.country]
+      .filter(Boolean)
+      .join(', ') || (user.billingInfo?.billingAddress || '');
 
     if (user.role !== 'admin' && user.membershipTier !== 'admin') {
       user.membershipTier = resolvedTier;
@@ -12426,6 +12557,10 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
       ...(stripeCustomerId ? { stripeCustomerId } : {}),
       ...(cardBrand ? { cardBrand } : {}),
       ...(cardLast4 ? { cardLast4 } : {}),
+      ...(expMonth ? { expMonth } : {}),
+      ...(expYear ? { expYear } : {}),
+      ...(billingName ? { billingName } : {}),
+      ...(formattedBillingAddr ? { billingAddress: formattedBillingAddr } : {}),
       subscriptionStatus: 'active'
     };
     user.markModified('billingInfo');
@@ -12434,13 +12569,85 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
     const quotaInfo = await computeMemberConsultationQuota(user);
 
     res.status(200).json({
-      message: `Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'}! Your membership benefits are now unlocked ✧`,
+      message: `Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'}! Your Stripe payment is verified and your membership benefits are now unlocked ✧`,
       user: serializeMemberProfile(user),
       quotaInfo
     });
   } catch (error) {
     console.error('Confirm Upgrade Error:', error);
     res.status(500).json({ error: error.message || 'Failed to confirm membership upgrade.' });
+  }
+});
+
+// POST /api/users/me/billing-portal — Creates a live Stripe Customer Billing Portal session for managing cards & subscriptions
+app.post('/api/users/me/billing-portal', authenticateToken, async (req, res) => {
+  try {
+    const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+    if (!rawStripeKey) {
+      return res.status(503).json({
+        error: 'Stripe is not configured on the server. Please set STRIPE_SECRET_KEY in your environment.'
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    let customerId = String(user.billingInfo?.stripeCustomerId || '').trim();
+
+    if (!customerId && user.email) {
+      const existingCustomers = await stripe.customers.list({
+        email: normalizeEmail(user.email),
+        limit: 1
+      });
+      if (existingCustomers?.data?.length > 0) {
+        customerId = existingCustomers.data[0].id;
+      } else {
+        const createdCustomer = await stripe.customers.create({
+          email: normalizeEmail(user.email),
+          name: user.name || undefined,
+          phone: user.phone || undefined,
+          metadata: {
+            userId: String(user._id),
+            membershipTier: String(user.membershipTier || 'basic')
+          }
+        });
+        customerId = createdCustomer.id;
+      }
+
+      user.billingInfo = {
+        ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+        stripeCustomerId: customerId
+      };
+      user.markModified('billingInfo');
+      await user.save();
+    }
+
+    if (!customerId) {
+      return res.status(400).json({
+        error: 'No Stripe Customer record found for your account yet.'
+      });
+    }
+
+    const returnUrl =
+      req.body?.returnUrl ||
+      `${req.headers.origin || process.env.FRONTEND_URL || 'https://susansbeautyconsulting.com'}/?portal_return=true`;
+
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl
+    });
+
+    res.status(200).json({
+      url: portalSession.url,
+      stripeCustomerId: customerId
+    });
+  } catch (error) {
+    console.error('Stripe Billing Portal Error:', error);
+    res.status(400).json({
+      error: error.message || 'Could not open Stripe Billing Portal. Ensure your Customer Portal settings are saved in the Stripe Dashboard.'
+    });
   }
 });
 
@@ -13237,239 +13444,445 @@ app.post('/api/cart-checkout', async (req, res) => {
   }
 });
 
-app.post('/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  const webhookSecret = cleanEnv(process.env.STRIPE_WEBHOOK_SECRET);
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-  } catch (err) {
-    console.error(`⚠️ Stripe Webhook Error: ${err.message}`);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+// Helper to find a member by userId, stripeCustomerId, or email for Stripe lifecycle events
+const findUserForStripeEvent = async ({ userId = '', stripeCustomerId = '', email = '' } = {}) => {
+  if (userId && mongoose.Types.ObjectId.isValid(String(userId))) {
+    const byId = await User.findById(String(userId));
+    if (byId) return byId;
   }
+  if (stripeCustomerId) {
+    const byCust = await User.findOne({ 'billingInfo.stripeCustomerId': String(stripeCustomerId) });
+    if (byCust) return byCust;
+  }
+  const cleanMail = normalizeEmail(email);
+  if (cleanMail) {
+    const byEmail = await User.findOne({ email: new RegExp(`^${escapeRegex(cleanMail)}$`, 'i') });
+    if (byEmail) return byEmail;
+  }
+  return null;
+};
 
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    
-    const orderId = session.metadata?.orderId;
-    const tier = session.metadata?.tier;
-    const userId = session.metadata?.userId;
-    const topupType = session.metadata?.topupType;
+app.post(
+  ['/webhook/stripe', '/api/webhook/stripe', '/api/webhooks/stripe'],
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    const webhookSecret = cleanEnv(process.env.STRIPE_WEBHOOK_SECRET);
+    let event;
 
-    if (topupType === 'CJ_WALLET_CARD_DEPOSIT') {
-      try {
-        await confirmCjWalletCardTopUp({
-          sessionId: session.id,
-          amountUsd: session.amount_total ? Number((session.amount_total / 100).toFixed(2)) : undefined,
-          autoPayOrders: session.metadata?.autoPayOrders !== 'false',
-          notes: session.metadata?.notes || '',
-          triggeredBy: session.metadata?.triggeredBy || 'susan'
-        });
-        console.log(`💳 Webhook confirmed CJ Wallet Bank Card Top-Up for session ${session.id}`);
-      } catch (topupErr) {
-        console.error('⚠️ Webhook CJ Wallet Card Top-Up confirm error:', topupErr.message);
+    try {
+      if (!webhookSecret) {
+        throw new Error('STRIPE_WEBHOOK_SECRET is not configured in environment.');
       }
-    } else if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
-      try {
-        const order = await Order.findById(orderId);
-        if (order && order.status === 'Pending') {
-          
-          order.status = 'PAID_PROCESSING';
-          const rawEmail = session.customer_details?.email || session.customer_email || order.customerEmail || 'Customer';
-          order.customerEmail = rawEmail !== 'Customer' ? String(rawEmail).toLowerCase().trim() : 'Customer';
-          order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || {});
-          await order.save();
-          await incrementProductPurchaseCountsForOrder(order);
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } catch (err) {
+      console.error(`⚠️ Stripe Webhook Error: ${err.message}`);
+      await logWebhookDelivery({
+        source: 'STRIPE',
+        eventType: 'signature.verification_failed',
+        status: 'REJECTED',
+        summary: `Stripe webhook signature error: ${err.message}`,
+        ipAddress: req.ip || ''
+      });
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
 
-          if (order.customerEmail !== 'Customer') {
-            const receiptHtml = `
-              <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-                <h1 style="color: #B38B8F; font-style: italic;">Payment Confirmed ✧</h1>
-                <p style="font-size: 1.2rem; line-height: 1.6;">Thank you for your order! Your ritual essentials are being prepared.</p>
-                <p style="font-size: 1.1rem;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
-                <p style="font-size: 0.9rem; color: #8A797A; margin-top: 30px;">You will receive another update as soon as your package ships.</p>
-              </div>
-            `;
-            
-            const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+    let webhookSummary = `Stripe ${event.type} received`;
 
-            await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText).catch(() => {});
+    try {
+      if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        const orderId = session.metadata?.orderId;
+        const tier = session.metadata?.tier;
+        const userId = session.metadata?.userId;
+        const topupType = session.metadata?.topupType;
+
+        if (topupType === 'CJ_WALLET_CARD_DEPOSIT') {
+          try {
+            await confirmCjWalletCardTopUp({
+              sessionId: session.id,
+              amountUsd: session.amount_total ? Number((session.amount_total / 100).toFixed(2)) : undefined,
+              autoPayOrders: session.metadata?.autoPayOrders !== 'false',
+              notes: session.metadata?.notes || '',
+              triggeredBy: session.metadata?.triggeredBy || 'susan'
+            });
+            webhookSummary = `Confirmed CJ Wallet Bank Card Top-Up ($${((session.amount_total || 0) / 100).toFixed(2)})`;
+            console.log(`💳 Webhook confirmed CJ Wallet Bank Card Top-Up for session ${session.id}`);
+          } catch (topupErr) {
+            console.error('⚠️ Webhook CJ Wallet Card Top-Up confirm error:', topupErr.message);
           }
+        } else if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
+          try {
+            const order = await Order.findById(orderId);
+            if (order && order.status === 'Pending') {
+              order.status = 'PAID_PROCESSING';
+              const rawEmail = session.customer_details?.email || session.customer_email || order.customerEmail || 'Customer';
+              order.customerEmail = rawEmail !== 'Customer' ? String(rawEmail).toLowerCase().trim() : 'Customer';
+              order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || {});
+              await order.save();
+              await incrementProductPurchaseCountsForOrder(order);
 
-          const headers = getCjHeaders();
-          const cjPayload = buildCjOrderPayload(order);
-          let cjStatusNote = 'Routed to CJ Dropshipping';
-
-          if (headers) {
-            try {
-              const cjOrderRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
-              const returnedCjId = cjOrderRes?.data?.data?.orderId || (typeof cjOrderRes?.data?.data === 'string' ? cjOrderRes.data.data : '');
-              if (returnedCjId) {
-                order.cjOrderId = String(returnedCjId);
-                order.cjOrderStatus = 'CREATED';
-                await order.save();
+              if (order.customerEmail !== 'Customer') {
+                const receiptHtml = `
+                  <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+                    <h1 style="color: #B38B8F; font-style: italic;">Payment Confirmed ✧</h1>
+                    <p style="font-size: 1.2rem; line-height: 1.6;">Thank you for your order! Your ritual essentials are being prepared.</p>
+                    <p style="font-size: 1.1rem;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
+                    <p style="font-size: 0.9rem; color: #8A797A; margin-top: 30px;">You will receive another update as soon as your package ships.</p>
+                  </div>
+                `;
+                const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+                await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText).catch(() => {});
               }
-              console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
-            } catch (cjErr) {
-              cjStatusNote = `Manual review needed (CJ API response: ${cjErr?.response?.data?.message || cjErr.message})`;
-              console.warn(`⚠️ CJ createOrderV2 warning for Order ${orderId}:`, cjStatusNote);
+
+              const headers = getCjHeaders();
+              const cjPayload = buildCjOrderPayload(order);
+              let cjStatusNote = 'Routed to CJ Dropshipping';
+
+              if (headers) {
+                try {
+                  const cjOrderRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
+                  const returnedCjId = cjOrderRes?.data?.data?.orderId || (typeof cjOrderRes?.data?.data === 'string' ? cjOrderRes.data.data : '');
+                  if (returnedCjId) {
+                    order.cjOrderId = String(returnedCjId);
+                    order.cjOrderStatus = 'CREATED';
+                    await order.save();
+                  }
+                  console.log(`💸 Payment cleared. Order ${orderId} forwarded to CJ Dropshipping.`);
+                } catch (cjErr) {
+                  cjStatusNote = `Manual review needed (CJ API response: ${cjErr?.response?.data?.message || cjErr.message})`;
+                  console.warn(`⚠️ CJ createOrderV2 warning for Order ${orderId}:`, cjStatusNote);
+                }
+              } else {
+                cjStatusNote = 'CJ_ACCESS_TOKEN not configured; ready for manual fulfillment';
+              }
+
+              const susanHtml = `
+                <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+                  <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Automated Order Processed ✧</h2>
+                  <p style="font-size: 1.1rem; line-height: 1.6;">Susan,</p>
+                  <p style="font-size: 1.1rem; line-height: 1.6;">A new order has been paid via Stripe.</p>
+                  <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                    <p style="margin: 5px 0;"><strong>Customer:</strong> ${cjPayload.shippingCustomerName} (${order.customerEmail})</p>
+                    <p style="margin: 5px 0;"><strong>Ship To:</strong> ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}, ${cjPayload.shippingCountryCode}</p>
+                    <p style="margin: 5px 0;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
+                    <p style="margin: 5px 0;"><strong>Order ID:</strong> ${order._id.toString()}</p>
+                    <p style="margin: 5px 0;"><strong>Fulfillment Status:</strong> ${cjStatusNote}</p>
+                  </div>
+                </div>
+              `;
+              const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} (${order.customerEmail}) for $${(order.totalAmount || 0).toFixed(2)}.\nShip To: ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}\nFulfillment: ${cjStatusNote}\nOrder ID: ${order._id.toString()}`;
+              await sendEmail(getPrimaryAdminEmail(), '✧ New Order Auto-Processed', susanHtml, susanText).catch(() => {});
+              webhookSummary = `Order ${String(order._id).slice(-6).toUpperCase()} paid ($${(order.totalAmount || 0).toFixed(2)}) & routed to CJ`;
             }
-          } else {
-            cjStatusNote = 'CJ_ACCESS_TOKEN not configured; ready for manual fulfillment';
+          } catch (err) {
+            console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
           }
+        } else if (tier || userId) {
+          try {
+            const user = await findUserForStripeEvent({
+              userId,
+              stripeCustomerId: session.customer ? String(session.customer) : '',
+              email: session.customer_details?.email || session.customer_email || ''
+            });
+            if (user) {
+              const resolvedTier = ['luminary', 'radiance'].includes(String(tier || user.pendingUpgradeTier || '').toLowerCase())
+                ? String(tier || user.pendingUpgradeTier).toLowerCase()
+                : 'luminary';
 
-          // --- NOTIFY SUSAN ---
-          const susanHtml = `
-            <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-              <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Automated Order Processed ✧</h2>
-              <p style="font-size: 1.1rem; line-height: 1.6;">Susan,</p>
-              <p style="font-size: 1.1rem; line-height: 1.6;">A new order has been paid via Stripe.</p>
-              <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                <p style="margin: 5px 0;"><strong>Customer:</strong> ${cjPayload.shippingCustomerName} (${order.customerEmail})</p>
-                <p style="margin: 5px 0;"><strong>Ship To:</strong> ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}, ${cjPayload.shippingCountryCode}</p>
-                <p style="margin: 5px 0;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
-                <p style="margin: 5px 0;"><strong>Order ID:</strong> ${order._id.toString()}</p>
-                <p style="margin: 5px 0;"><strong>Fulfillment Status:</strong> ${cjStatusNote}</p>
-              </div>
-            </div>
-          `;
-          
-          const susanText = `Automated Order Processed ✧\n\nSusan, a new order has been placed by ${cjPayload.shippingCustomerName} (${order.customerEmail}) for $${(order.totalAmount || 0).toFixed(2)}.\nShip To: ${cjPayload.shippingAddress}, ${cjPayload.shippingCity}, ${cjPayload.shippingProvince} ${cjPayload.shippingZip}\nFulfillment: ${cjStatusNote}\nOrder ID: ${order._id.toString()}`;
+              let cardBrand = user.billingInfo?.cardBrand || '';
+              let cardLast4 = user.billingInfo?.cardLast4 || '';
+              let expMonth = user.billingInfo?.expMonth || '';
+              let expYear = user.billingInfo?.expYear || '';
 
-          await sendEmail(getPrimaryAdminEmail(), '✧ New Order Auto-Processed', susanHtml, susanText).catch(() => {});
-          console.log(`✉️ Admin notification dispatched to Susan for Order ${orderId}`);
+              if (session.subscription && cleanEnv(process.env.STRIPE_SECRET_KEY)) {
+                try {
+                  const subObj = await stripe.subscriptions.retrieve(String(session.subscription), {
+                    expand: ['default_payment_method']
+                  });
+                  const pmCard = subObj?.default_payment_method?.card;
+                  if (pmCard) {
+                    cardBrand = pmCard.brand ? String(pmCard.brand).charAt(0).toUpperCase() + String(pmCard.brand).slice(1) : cardBrand;
+                    cardLast4 = pmCard.last4 ? String(pmCard.last4) : cardLast4;
+                    expMonth = pmCard.exp_month ? String(pmCard.exp_month).padStart(2, '0') : expMonth;
+                    expYear = pmCard.exp_year ? String(pmCard.exp_year) : expYear;
+                  }
+                } catch {
+                  // Ignore optional subscription expansion error
+                }
+              }
 
+              if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+                user.membershipTier = resolvedTier;
+              }
+              user.pendingUpgradeTier = '';
+              user.billingInfo = {
+                ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+                stripeCustomerId: session.customer ? String(session.customer) : (user.billingInfo?.stripeCustomerId || ''),
+                ...(cardBrand ? { cardBrand } : {}),
+                ...(cardLast4 ? { cardLast4 } : {}),
+                ...(expMonth ? { expMonth } : {}),
+                ...(expYear ? { expYear } : {}),
+                subscriptionStatus: 'active'
+              };
+              user.markModified('billingInfo');
+              await user.save();
+              webhookSummary = `Upgraded ${user.email} to ${resolvedTier} tier`;
+              console.log(`✨ Successfully upgraded user ${user.email} to ${resolvedTier} tier.`);
+
+              const welcomeHtml = `
+                <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+                  <h1 style="color: #B38B8F; font-style: italic;">Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'} ✧</h1>
+                  <p style="font-size: 1.2rem; line-height: 1.6;">Your membership payment is verified. You can now access your member dashboard and complete your personalized beauty blueprint.</p>
+                </div>
+              `;
+              const welcomeText = `Welcome to the ${resolvedTier} tier! Your membership is now active. \n\nWarmly,\nSusan's Beauty Consulting`;
+              await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText).catch(() => {});
+            }
+          } catch (err) {
+            console.error(`⚠️ Failed to upgrade user ${userId} to ${tier}:`, err.message);
+          }
         }
-      } catch (err) {
-        console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
-      }
-    } 
-    else if (tier && userId && mongoose.Types.ObjectId.isValid(String(userId))) {
-      try {
-        const user = await User.findById(userId);
+      } else if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
+        const invoice = event.data.object;
+        const user = await findUserForStripeEvent({
+          stripeCustomerId: invoice.customer ? String(invoice.customer) : '',
+          email: invoice.customer_email || ''
+        });
         if (user) {
-          user.membershipTier = String(tier).toLowerCase().trim();
-          user.pendingUpgradeTier = '';
           user.billingInfo = {
             ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
-            stripeCustomerId: session.customer ? String(session.customer) : (user.billingInfo?.stripeCustomerId || ''),
+            stripeCustomerId: invoice.customer ? String(invoice.customer) : (user.billingInfo?.stripeCustomerId || ''),
             subscriptionStatus: 'active'
           };
           user.markModified('billingInfo');
           await user.save();
-          console.log(`✨ Successfully upgraded user ${user.email} to ${tier} tier.`);
-          
-          const welcomeHtml = `
-            <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-              <h1 style="color: #B38B8F; font-style: italic;">Welcome to ${tier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'} ✧</h1>
-              <p style="font-size: 1.2rem; line-height: 1.6;">Your membership payment is verified. You can now access your member dashboard and complete your personalized beauty blueprint.</p>
-            </div>
-          `;
-          const welcomeText = `Welcome to the ${tier} tier! Your membership is now active. \n\nWarmly,\nSusan's Beauty Consulting`;
-          
-          await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText).catch(() => {});
+          webhookSummary = `Subscription renewal invoice paid for ${user.email}`;
         }
-      } catch (err) {
-        console.error(`⚠️ Failed to upgrade user ${userId} to ${tier}:`, err.message);
+      } else if (event.type === 'invoice.payment_failed') {
+        const invoice = event.data.object;
+        const user = await findUserForStripeEvent({
+          stripeCustomerId: invoice.customer ? String(invoice.customer) : '',
+          email: invoice.customer_email || ''
+        });
+        if (user) {
+          user.billingInfo = {
+            ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+            subscriptionStatus: 'past_due'
+          };
+          user.markModified('billingInfo');
+          await user.save();
+          webhookSummary = `Subscription invoice payment failed for ${user.email} (marked past_due)`;
+        }
+      } else if (event.type === 'customer.subscription.updated') {
+        const subscription = event.data.object;
+        const user = await findUserForStripeEvent({
+          userId: subscription.metadata?.userId || '',
+          stripeCustomerId: subscription.customer ? String(subscription.customer) : ''
+        });
+        if (user) {
+          const subStatus = String(subscription.status || 'active').toLowerCase();
+          const metaTier = String(subscription.metadata?.tier || '').toLowerCase();
+          if (['active', 'trialing'].includes(subStatus) && ['luminary', 'radiance'].includes(metaTier)) {
+            if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+              user.membershipTier = metaTier;
+            }
+          } else if (['canceled', 'unpaid', 'incomplete_expired'].includes(subStatus)) {
+            if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+              user.membershipTier = 'basic';
+            }
+          }
+          user.billingInfo = {
+            ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+            stripeCustomerId: subscription.customer ? String(subscription.customer) : (user.billingInfo?.stripeCustomerId || ''),
+            subscriptionStatus: subStatus
+          };
+          user.markModified('billingInfo');
+          await user.save();
+          webhookSummary = `Subscription updated for ${user.email} (status: ${subStatus}, tier: ${user.membershipTier})`;
+        }
+      } else if (event.type === 'customer.subscription.deleted') {
+        const subscription = event.data.object;
+        const user = await findUserForStripeEvent({
+          userId: subscription.metadata?.userId || '',
+          stripeCustomerId: subscription.customer ? String(subscription.customer) : ''
+        });
+        if (user) {
+          if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+            user.membershipTier = 'basic';
+          }
+          user.pendingUpgradeTier = '';
+          user.billingInfo = {
+            ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+            subscriptionStatus: 'canceled'
+          };
+          user.markModified('billingInfo');
+          await user.save();
+          webhookSummary = `Subscription canceled for ${user.email} — downgraded to Free (basic) tier`;
+        }
       }
+
+      await logWebhookDelivery({
+        source: 'STRIPE',
+        eventType: event.type,
+        eventId: event.id || '',
+        livemode: Boolean(event.livemode),
+        status: 'PROCESSED',
+        summary: webhookSummary,
+        ipAddress: req.ip || ''
+      });
+    } catch (handlerErr) {
+      console.error(`⚠️ Stripe webhook processing error (${event.type}):`, handlerErr.message);
+      await logWebhookDelivery({
+        source: 'STRIPE',
+        eventType: event.type,
+        eventId: event.id || '',
+        livemode: Boolean(event.livemode),
+        status: 'ERROR',
+        summary: handlerErr.message,
+        ipAddress: req.ip || ''
+      });
     }
+
+    res.status(200).json({ received: true, eventType: event.type, livemode: Boolean(event.livemode) });
   }
+);
 
-  res.status(200).json({ received: true });
-});
+app.post(
+  ['/webhook/cj', '/api/webhook/cj', '/api/webhooks/cj'],
+  express.json(),
+  async (req, res) => {
+    try {
+      const providedToken = cleanEnv(
+        req.query.token ||
+        req.headers['x-cj-webhook-token'] ||
+        (req.headers['authorization'] && req.headers['authorization'].startsWith('Bearer ')
+          ? req.headers['authorization'].split(' ')[1]
+          : '')
+      );
+      const expectedToken = cleanEnv(process.env.CJ_WEBHOOK_SECRET);
+      const parsed = parseCjWebhookFields(req.body);
 
-app.post('/webhook/cj', express.json(), async (req, res) => {
-  try {
-    const providedToken = cleanEnv(
-      req.query.token ||
-      req.headers['x-cj-webhook-token'] ||
-      (req.headers['authorization'] && req.headers['authorization'].startsWith('Bearer ')
-        ? req.headers['authorization'].split(' ')[1]
-        : '')
-    );
-    const expectedToken = cleanEnv(process.env.CJ_WEBHOOK_SECRET);
+      if (!parsed.orderNumber) {
+        console.log(`📡 CJ Webhook Verification Ping received from IP: ${req.ip}`);
+        await logWebhookDelivery({
+          source: 'CJ',
+          eventType: 'cj.verification_ping',
+          livemode: true,
+          status: 'VERIFIED_PING',
+          summary: 'CJ Dropshipping webhook URL verification ping acknowledged (200 OK)',
+          ipAddress: req.ip || ''
+        });
+        return res.status(200).json({
+          received: true,
+          ping: true,
+          message: 'CJ webhook endpoint is online and ready.'
+        });
+      }
 
-    // If CJ_WEBHOOK_SECRET is configured, enforce token match whenever ?token= or header is supplied,
-    // while allowing CJ's initial unauthenticated URL verification ping (which sends no orderNumber) to return 200 OK.
-    const parsed = parseCjWebhookFields(req.body);
+      if (expectedToken && providedToken && providedToken !== expectedToken) {
+        console.warn(`⚠️ Unauthorized CJ webhook attempt from IP: ${req.ip}`);
+        await logWebhookDelivery({
+          source: 'CJ',
+          eventType: parsed.messageType || 'ORDER_STATUS',
+          eventId: parsed.orderNumber,
+          livemode: true,
+          status: 'REJECTED',
+          summary: `Rejected CJ webhook for order ${parsed.orderNumber}: invalid token`,
+          ipAddress: req.ip || ''
+        });
+        return res.status(403).json({ error: 'Forbidden: Invalid webhook authentication.' });
+      }
 
-    if (!parsed.orderNumber) {
-      console.log(`📡 CJ Webhook Verification Ping received from IP: ${req.ip}`);
-      return res.status(200).json({
-        received: true,
-        ping: true,
-        message: 'CJ webhook endpoint is online and ready.'
-      });
-    }
+      const { orderNumber, trackingNumber, status, logisticName } = parsed;
+      console.log(`📦 CJ Webhook Received - Order: ${orderNumber}, Status: ${status}, Tracking: ${trackingNumber}`);
 
-    if (expectedToken && providedToken !== expectedToken) {
-      console.warn(`⚠️ Unauthorized CJ webhook attempt from IP: ${req.ip}`);
-      return res.status(403).json({ error: 'Forbidden: Invalid webhook authentication.' });
-    }
+      const updateFields = {
+        status: status || 'SHIPPED',
+        cjOrderStatus: status || 'SHIPPED'
+      };
+      if (trackingNumber) {
+        updateFields.tracking_code = trackingNumber;
+      }
+      if (logisticName) {
+        updateFields.logisticName = logisticName;
+      }
 
-    const { orderNumber, trackingNumber, status, logisticName } = parsed;
-    console.log(`📦 CJ Webhook Received - Order: ${orderNumber}, Status: ${status}, Tracking: ${trackingNumber}`);
+      // Match by MongoDB _id OR by cjOrderId so live CJ order numbers (both ObjectId and CJ IDs) update the real database record
+      const lookupClauses = [{ cjOrderId: String(orderNumber).trim() }];
+      if (mongoose.Types.ObjectId.isValid(String(orderNumber).trim())) {
+        lookupClauses.unshift({ _id: String(orderNumber).trim() });
+      }
 
-    // Prevent Mongoose CastError 500 if CJ sends a test/non-ObjectId orderNumber (e.g. "TEST-12345")
-    if (!mongoose.Types.ObjectId.isValid(orderNumber)) {
-      console.log(`🧪 CJ Webhook Test Mode - Non-ObjectId orderNumber "${orderNumber}" acknowledged safely.`);
-      return res.status(200).json({
-        received: true,
-        testMode: true,
-        orderNumber,
-        status,
-        trackingNumber,
-        logisticName
-      });
-    }
+      const updatedOrder = await Order.findOneAndUpdate(
+        { $or: lookupClauses },
+        { $set: updateFields },
+        { returnDocument: 'after' }
+      );
 
-    const updateFields = { status: status || 'SHIPPED' };
-    if (trackingNumber) {
-      updateFields.tracking_code = trackingNumber;
-    }
+      if (!updatedOrder) {
+        console.warn(`⚠️ CJ webhook notice: Order ${orderNumber} not found in DB.`);
+        await logWebhookDelivery({
+          source: 'CJ',
+          eventType: parsed.messageType || 'ORDER_STATUS',
+          eventId: String(orderNumber),
+          livemode: !String(orderNumber).startsWith('TEST-'),
+          status: 'PROCESSED',
+          summary: `CJ webhook received for order ${orderNumber} (${status}) — no matching local order record`,
+          ipAddress: req.ip || ''
+        });
+        return res.status(200).json({
+          received: true,
+          orderFound: false,
+          orderNumber,
+          status,
+          trackingNumber,
+          logisticName
+        });
+      }
 
-    const updatedOrder = await Order.findByIdAndUpdate(
-      orderNumber, 
-      updateFields,
-      { returnDocument: 'after' } 
-    );
-
-    if (!updatedOrder) {
-      console.warn(`⚠️ CJ webhook notice: Order ${orderNumber} not found in DB.`);
-      return res.status(200).json({ received: true, orderFound: false, orderNumber });
-    }
-
-    if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
-      const shippingHtml = `
-        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-          <h1 style="color: #B38B8F; font-style: italic;">Your Ritual has Shipped ✈️</h1>
-          <p style="font-size: 1.2rem; line-height: 1.6;">Your bespoke beauty products have left our facility and are on their way to you!</p>
-          <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; display: inline-block; margin: 20px 0;">
-            <p style="margin: 0; font-size: 1.1rem;">Tracking Number${logisticName ? ` (${logisticName})` : ''}:</p>
-            <strong style="font-size: 1.3rem; color: #B38B8F;">${trackingNumber}</strong>
+      if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
+        const shippingHtml = `
+          <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
+            <h1 style="color: #B38B8F; font-style: italic;">Your Ritual has Shipped ✈️</h1>
+            <p style="font-size: 1.2rem; line-height: 1.6;">Your bespoke beauty products have left our facility and are on their way to you!</p>
+            <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; display: inline-block; margin: 20px 0;">
+              <p style="margin: 0; font-size: 1.1rem;">Tracking Number${logisticName ? ` (${logisticName})` : ''}:</p>
+              <strong style="font-size: 1.3rem; color: #B38B8F;">${trackingNumber}</strong>
+            </div>
+            <p style="font-size: 0.9rem; color: #8A797A;">Please allow up to 24-48 hours for the tracking link to activate with the courier.</p>
           </div>
-          <p style="font-size: 0.9rem; color: #8A797A;">Please allow up to 24-48 hours for the tracking link to activate with the courier.</p>
-        </div>
-      `;
+        `;
 
-      const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
+        const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
 
-      await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText).catch(() => {});
+        await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText).catch(() => {});
+      }
+
+      await logWebhookDelivery({
+        source: 'CJ',
+        eventType: parsed.messageType || 'ORDER_STATUS',
+        eventId: String(updatedOrder._id),
+        livemode: true,
+        status: 'PROCESSED',
+        summary: `Order #${String(updatedOrder._id).slice(-6).toUpperCase()} updated to ${updatedOrder.status}${trackingNumber ? ` (Tracking: ${trackingNumber})` : ''}`,
+        ipAddress: req.ip || ''
+      });
+
+      res.status(200).json({
+        received: true,
+        orderFound: true,
+        orderId: updatedOrder._id.toString(),
+        status: updatedOrder.status,
+        trackingNumber: updatedOrder.tracking_code || '',
+        logisticName: updatedOrder.logisticName || ''
+      });
+    } catch (err) {
+      console.error(`⚠️ Error handling CJ webhook:`, err.message);
+      res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    res.status(200).json({
-      received: true,
-      orderFound: true,
-      orderId: updatedOrder._id.toString(),
-      status: updatedOrder.status,
-      trackingNumber: updatedOrder.tracking_code || ''
-    });
-  } catch (err) {
-    console.error(`⚠️ Error handling CJ webhook:`, err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
   }
-});
+);
 
 // ---------------- PUBLIC HEALTH & ADMIN WEBHOOK DIAGNOSTICS ROUTES ---------------- //
 
@@ -13667,12 +14080,52 @@ app.post('/api/admin/diagnostics/run-all', authenticateToken, requireAdmin, asyn
 
 app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    // 1. Test CJ v2 nested webhook payload parsing & non-ObjectId safety
+    const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+    const stripeKeyMode = !rawStripeKey
+      ? 'UNCONFIGURED'
+      : rawStripeKey.startsWith('sk_live_')
+      ? 'LIVE'
+      : 'TEST';
+
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'susansbeautyconsulting.com';
+    const publicBaseUrl = cleanEnv(process.env.PUBLIC_BACKEND_URL || process.env.RENDER_EXTERNAL_URL) || `${protocol}://${host}`;
+
+    const productionEndpoints = {
+      stripeWebhookUrl: `${publicBaseUrl.replace(/\/+$/, '')}/webhook/stripe`,
+      cjWebhookUrl: `${publicBaseUrl.replace(/\/+$/, '')}/webhook/cj`,
+      inboundEmailWebhookUrl: `${publicBaseUrl.replace(/\/+$/, '')}/api/webhooks/inbound-email`
+    };
+
+    // 1. Query live registered Stripe Webhook Endpoints directly from Stripe API
+    let registeredStripeEndpoints = [];
+    let stripeWebhookApiError = '';
+    if (rawStripeKey) {
+      try {
+        const endpointsRes = await stripe.webhookEndpoints.list({ limit: 15 });
+        registeredStripeEndpoints = (endpointsRes?.data || []).map(ep => ({
+          id: ep.id,
+          url: ep.url,
+          status: ep.status,
+          livemode: Boolean(ep.livemode),
+          enabledEvents: ep.enabled_events || []
+        }));
+      } catch (epErr) {
+        stripeWebhookApiError = epErr.message || 'Unable to list Stripe webhook endpoints.';
+      }
+    }
+
+    // 2. Fetch recent real webhook deliveries from MongoDB WebhookEventLog
+    const recentWebhookEvents = mongoose.connection.readyState === 1
+      ? await WebhookEventLog.find().sort({ createdAt: -1 }).limit(15).lean()
+      : [];
+
+    // 3. Verify CJ v2 payload parser & Stripe -> CJ createOrderV2 formatter
     const sampleCjV2Payload = {
-      messageId: `TEST-MSG-${Date.now()}`,
+      messageId: `VERIFY-MSG-${Date.now()}`,
       type: 'ORDER',
       params: {
-        orderNumber: 'TEST-CJ-ORDER-999',
+        orderNumber: 'CJ-LIVE-FORMAT-CHECK',
         orderStatus: 'SHIPPED',
         trackNumber: 'CJ123456789US',
         logisticName: 'USPS'
@@ -13680,20 +14133,18 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
     };
     const parsedCj = parseCjWebhookFields(sampleCjV2Payload);
     const cjTestPassed =
-      parsedCj.orderNumber === 'TEST-CJ-ORDER-999' &&
+      parsedCj.orderNumber === 'CJ-LIVE-FORMAT-CHECK' &&
       parsedCj.trackingNumber === 'CJ123456789US' &&
-      parsedCj.status === 'SHIPPED' &&
-      !mongoose.Types.ObjectId.isValid(parsedCj.orderNumber);
+      parsedCj.status === 'SHIPPED';
 
-    // 2. Test Stripe shipping_details extraction & CJ createOrderV2 payload formatting
     const sampleStripeSession = {
       customer_details: {
-        name: 'Susan Test Client',
-        email: 'client@example.com',
+        name: 'Susan Live Verification',
+        email: 'client@susansbeautyconsulting.com',
         phone: '+13165550199'
       },
       shipping_details: {
-        name: 'Susan Test Client',
+        name: 'Susan Live Verification',
         address: {
           line1: '742 Evergreen Terrace',
           line2: 'Suite 200',
@@ -13715,12 +14166,11 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
       sampleCjOrderPayload.shippingCity === 'Wichita' &&
       sampleCjOrderPayload.shippingProvince === 'KS' &&
       sampleCjOrderPayload.shippingZip === '67202' &&
-      sampleCjOrderPayload.shippingPhone === '+13165550199' &&
       sampleCjOrderPayload.products[0]?.vid === 'CJ-BEAUTY-SKU-01';
 
-    // 3. Check environment configuration readiness
     const envStatus = {
-      stripeSecretConfigured: Boolean(cleanEnv(process.env.STRIPE_SECRET_KEY)),
+      stripeKeyMode,
+      stripeSecretConfigured: Boolean(rawStripeKey),
       stripeWebhookSecretConfigured: Boolean(cleanEnv(process.env.STRIPE_WEBHOOK_SECRET)),
       cjAccessTokenConfigured: Boolean(cleanEnv(process.env.CJ_ACCESS_TOKEN)),
       cjWebhookSecretConfigured: Boolean(cleanEnv(process.env.CJ_WEBHOOK_SECRET)),
@@ -13728,13 +14178,18 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
       geminiConfigured: Boolean(cleanEnv(process.env.GEMINI_API_KEY))
     };
 
-    const allPassed = cjTestPassed && stripeTestPassed;
+    const allPassed = cjTestPassed && stripeTestPassed && envStatus.stripeSecretConfigured && envStatus.stripeWebhookSecretConfigured;
 
     res.status(200).json({
       overallStatus: allPassed ? 'PASSED' : 'WARNING',
+      stripeKeyMode,
+      productionEndpoints,
+      registeredStripeEndpoints,
+      stripeWebhookApiError,
+      recentWebhookEvents,
       message: allPassed
-        ? 'All webhook parsers, shipping extractors, and CJ fulfillment formatters passed verification! ✧'
-        : 'One or more webhook checks reported a warning.',
+        ? `Production webhooks verified (${stripeKeyMode} mode)! Stripe & CJ lifecycle listeners are active ✧`
+        : `Webhook parsers verified (${stripeKeyMode} mode). Check environment keys or Stripe dashboard endpoint registration below.`,
       checks: {
         cjWebhookParser: {
           passed: cjTestPassed,
