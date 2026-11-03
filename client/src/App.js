@@ -10813,6 +10813,238 @@ function App() {
     ['luminary', 'radiance', 'admin'].includes(effectiveMemberTier);
   const isFreeBasicMember = !isPaidMemberOrAdmin;
 
+  const [accountForm, setAccountForm] = useState({
+    name: userDetails?.name || '',
+    username: userDetails?.username || '',
+    email: userDetails?.email || '',
+    phone: userDetails?.phone || '',
+    avatarUrl: userDetails?.avatarUrl || '',
+    newPassword: '',
+    shippingAddress: {
+      address_1: userDetails?.shippingAddress?.address_1 || '',
+      address_2: userDetails?.shippingAddress?.address_2 || '',
+      city: userDetails?.shippingAddress?.city || '',
+      state: userDetails?.shippingAddress?.state || '',
+      postcode: userDetails?.shippingAddress?.postcode || '',
+      country: userDetails?.shippingAddress?.country || 'US'
+    },
+    billingInfo: {
+      billingName: userDetails?.billingInfo?.billingName || userDetails?.name || '',
+      cardBrand: userDetails?.billingInfo?.cardBrand || 'Visa',
+      cardLast4: userDetails?.billingInfo?.cardLast4 || '',
+      expMonth: userDetails?.billingInfo?.expMonth || '',
+      expYear: userDetails?.billingInfo?.expYear || '',
+      billingAddress: userDetails?.billingInfo?.billingAddress || ''
+    }
+  });
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [accountStatusBanner, setAccountStatusBanner] = useState({ type: '', text: '' });
+
+  useEffect(() => {
+    setAccountForm(prev => ({
+      ...prev,
+      name: userDetails?.name || '',
+      username: userDetails?.username || '',
+      email: userDetails?.email || '',
+      phone: userDetails?.phone || '',
+      avatarUrl: userDetails?.avatarUrl || '',
+      shippingAddress: {
+        address_1: userDetails?.shippingAddress?.address_1 || '',
+        address_2: userDetails?.shippingAddress?.address_2 || '',
+        city: userDetails?.shippingAddress?.city || '',
+        state: userDetails?.shippingAddress?.state || '',
+        postcode: userDetails?.shippingAddress?.postcode || '',
+        country: userDetails?.shippingAddress?.country || 'US'
+      },
+      billingInfo: {
+        billingName: userDetails?.billingInfo?.billingName || userDetails?.name || '',
+        cardBrand: userDetails?.billingInfo?.cardBrand || 'Visa',
+        cardLast4: userDetails?.billingInfo?.cardLast4 || '',
+        expMonth: userDetails?.billingInfo?.expMonth || '',
+        expYear: userDetails?.billingInfo?.expYear || '',
+        billingAddress: userDetails?.billingInfo?.billingAddress || ''
+      }
+    }));
+  }, [
+    userDetails?.name,
+    userDetails?.username,
+    userDetails?.email,
+    userDetails?.phone,
+    userDetails?.avatarUrl,
+    userDetails?.shippingAddress,
+    userDetails?.billingInfo
+  ]);
+
+  const handleAccountAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAvatar(true);
+    setAccountStatusBanner({ type: '', text: '' });
+    try {
+      const compressedDataUrl = await compressImageFileToDataUrl(file, 500, 0.85);
+      setAccountForm(prev => ({ ...prev, avatarUrl: compressedDataUrl }));
+      setUserDetails(prev => ({ ...prev, avatarUrl: compressedDataUrl }));
+
+      const token = localStorage.getItem('token');
+      if (token) {
+        const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ avatarUrl: compressedDataUrl })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.user) {
+          setUserDetails(prev => ({ ...prev, ...data.user, password: '' }));
+          setAccountStatusBanner({
+            type: 'success',
+            text: 'Profile picture uploaded and synced to your Sanctuary header!'
+          });
+        }
+      }
+    } catch (err) {
+      setAccountStatusBanner({
+        type: 'error',
+        text: err.message || 'Could not process profile picture. Please try a JPG or PNG image.'
+      });
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const handleRemoveAccountAvatar = async () => {
+    setAccountForm(prev => ({ ...prev, avatarUrl: '' }));
+    setUserDetails(prev => ({ ...prev, avatarUrl: '' }));
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ avatarUrl: '' })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.user) {
+        setUserDetails(prev => ({ ...prev, ...data.user, password: '' }));
+        setAccountStatusBanner({ type: 'success', text: 'Profile picture removed.' });
+      }
+    } catch {
+      // Ignore network error on local removal
+    }
+  };
+
+  const handleSaveAccountProfile = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setAccountStatusBanner({ type: 'error', text: 'Please sign in again to save your account details.' });
+      return;
+    }
+
+    setIsSavingAccount(true);
+    setAccountStatusBanner({ type: '', text: '' });
+    try {
+      const payload = {
+        name: accountForm.name,
+        username: accountForm.username,
+        email: accountForm.email,
+        phone: accountForm.phone,
+        avatarUrl: accountForm.avatarUrl,
+        shippingAddress: accountForm.shippingAddress,
+        billingInfo: {
+          ...accountForm.billingInfo,
+          cardLast4: String(accountForm.billingInfo?.cardLast4 || '').replace(/\D/g, '').slice(-4)
+        }
+      };
+      if (accountForm.newPassword && accountForm.newPassword.trim().length > 0) {
+        payload.newPassword = accountForm.newPassword.trim();
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAccountStatusBanner({
+          type: 'error',
+          text: data.error || 'Could not update your account profile. Please verify your details.'
+        });
+        return;
+      }
+
+      if (data.user) {
+        setUserDetails(prev => ({
+          ...prev,
+          ...data.user,
+          password: ''
+        }));
+      }
+      setAccountForm(prev => ({ ...prev, newPassword: '' }));
+      setAccountStatusBanner({
+        type: 'success',
+        text: data.message || 'Your Account Info, Shipping Address, and Billing Details have been saved!'
+      });
+    } catch (err) {
+      console.error('Save Account Profile Error:', err);
+      setAccountStatusBanner({
+        type: 'error',
+        text: 'Network error while saving your profile. Please try again.'
+      });
+    } finally {
+      setIsSavingAccount(false);
+    }
+  };
+
+  const handleReorderSingleItem = (item) => {
+    if (!item) return;
+    const matchedProduct = backendProducts.find(
+      p =>
+        (item.productId && String(p._id) === String(item.productId)) ||
+        (item.sku && p.sku === item.sku) ||
+        (item.title && p.title === item.title)
+    );
+    const cartCandidate = matchedProduct
+      ? {
+          ...matchedProduct,
+          sku: item.sku || matchedProduct.sku || String(matchedProduct._id || item.title),
+          price: Number(item.price || matchedProduct.price || 0),
+          selectedVariantName: item.variantName || ''
+        }
+      : {
+          _id: item.productId || item.sku || item.title,
+          title: item.title || 'Boutique Ritual Essential',
+          sku: item.sku || `REORDER-${Date.now()}`,
+          price: Number(item.price || 0),
+          imageUrl: item.imageUrl || '',
+          selectedVariantName: item.variantName || ''
+        };
+    handleAddToCart(cartCandidate);
+    setIsCartOpen(true);
+  };
+
+  const handleReorderFullOrder = (order) => {
+    const items = Array.isArray(order?.items) ? order.items : [];
+    if (items.length === 0) return;
+    items.forEach(item => {
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      for (let i = 0; i < qty; i += 1) {
+        handleReorderSingleItem(item);
+      }
+    });
+    setIsCartOpen(true);
+  };
+
   const openPaywallModal = (featureContext = '') => {
     setPaywallModal({
       isOpen: true,
@@ -12372,8 +12604,8 @@ function App() {
                 <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
               </div>
 
-              <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
-                {['Blueprint', 'Boutique', 'Inbox', 'Consultations'].map(tab => {
+              <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', padding: '0 20px' }}>
+                {['Blueprint', 'Boutique', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
                   const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
                   return (
                     <button
@@ -12385,10 +12617,10 @@ function App() {
                         }
                       }}
                       style={{
-                        padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                        padding: '12px 18px', textAlign: 'left', border: 'none', borderRadius: '12px',
                         backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
                         color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
-                        fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
+                        fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer',
                         transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
                         boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none',
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between'
@@ -12399,11 +12631,18 @@ function App() {
                         {tab === 'Boutique' && '🛍️ '}
                         {tab === 'Inbox' && '💌 '}
                         {tab === 'Consultations' && '🎥 '}
+                        {tab === 'Order History' && '📦 '}
+                        {tab === 'Account Info' && '👤 '}
                         {tab}
                       </span>
                       {isLockedForFree && (
                         <span style={{ fontSize: '0.85rem', color: '#B38B8F' }} title="Paid Membership Required">
                           🔒
+                        </span>
+                      )}
+                      {tab === 'Order History' && userOrders.length > 0 && (
+                        <span style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '2px 8px', fontWeight: 'bold' }}>
+                          {userOrders.length}
                         </span>
                       )}
                     </button>
@@ -12426,12 +12665,36 @@ function App() {
                 </h1>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    {userDetails.avatarUrl && (
+                    {userDetails.avatarUrl ? (
                       <img
                         src={userDetails.avatarUrl}
                         alt={userDetails.name || 'Member'}
-                        style={{ width: '34px', height: '34px', borderRadius: '50%', objectFit: 'cover', border: '1.5px solid #B38B8F' }}
+                        onClick={() => setActiveMemberTab('Account Info')}
+                        title="Click to manage your Profile Picture & Account Info"
+                        style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #B38B8F', cursor: 'pointer', boxShadow: '0 2px 8px rgba(179, 139, 143, 0.25)' }}
                       />
+                    ) : (
+                      <div
+                        onClick={() => setActiveMemberTab('Account Info')}
+                        title="Click to upload a Profile Picture in Account Info"
+                        style={{
+                          width: '40px',
+                          height: '40px',
+                          borderRadius: '50%',
+                          backgroundColor: '#FFF0F2',
+                          border: '1.5px solid #B38B8F',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#B38B8F',
+                          fontWeight: 'bold',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.15rem',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {(userDetails.name || userDetails.username || userDetails.email || 'M').charAt(0).toUpperCase()}
+                      </div>
                     )}
                     <span style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', color: '#A89999', fontSize: '1.2rem' }}>
                       Welcome, {userDetails.name || 'Valued Member'}
@@ -13081,7 +13344,26 @@ function App() {
 
                   {userOrders.length > 0 && (
                     <div style={{ textAlign: 'left', backgroundColor: 'rgba(255, 255, 255, 0.8)', border: '1px solid #E8C5C8', borderRadius: '15px', padding: '30px', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)' }}>
-                      <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: '0 0 20px 0' }}>Order History</h3>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '2.2rem', color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", margin: 0 }}>Recent Orders</h3>
+                        <button
+                          type="button"
+                          onClick={() => setActiveMemberTab('Order History')}
+                          style={{
+                            backgroundColor: '#FFF0F2',
+                            color: '#B38B8F',
+                            border: '1px solid #B38B8F',
+                            borderRadius: '20px',
+                            padding: '8px 18px',
+                            fontFamily: "'Cormorant Garamond', serif",
+                            fontSize: '1.05rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          📦 View Full Order History & Re-Order ({userOrders.length}) →
+                        </button>
+                      </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                         {userOrders.map((order, idx) => (
                           <div key={order._id || idx} style={{ padding: '15px', border: '1px solid #E8C5C8', borderRadius: '10px', backgroundColor: '#FFF9F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
@@ -13245,6 +13527,911 @@ function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* 5. ORDER HISTORY TAB */}
+              {activeMemberTab === 'Order History' && (
+                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  <div style={{ backgroundColor: '#FFFFFF', padding: '28px 32px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div>
+                      <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '3px 12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '8px' }}>
+                        📦 SANCTUARY BOUTIQUE ARCHIVE
+                      </span>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.1rem', margin: '0 0 6px 0' }}>
+                        Your Ritual Order History
+                      </h2>
+                      <p style={{ margin: 0, color: '#736A6A', fontFamily: 'sans-serif', fontSize: '0.94rem' }}>
+                        Track active shipments, review past boutique curations, and replenish your favorite skincare essentials in one click.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                      <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '10px 18px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
+                          Total Orders
+                        </div>
+                        <div style={{ fontSize: '1.5rem', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontWeight: 'bold' }}>
+                          {userOrders.length}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveMemberTab('Boutique')}
+                        style={{
+                          backgroundColor: '#B38B8F',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '22px',
+                          padding: '11px 22px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.1rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                        }}
+                      >
+                        🛍️ Shop the Boutique ✧
+                      </button>
+                    </div>
+                  </div>
+
+                  {userOrders.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+                      {userOrders.map((order, idx) => {
+                        const orderIdShort = order.shortId || String(order._id || '').slice(-6).toUpperCase() || `ORD-${idx + 1}`;
+                        const orderDateStr = order.createdAt
+                          ? new Date(order.createdAt).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric'
+                            })
+                          : 'Recent Order';
+                        const rawStatus = String(order.status || 'Pending').toUpperCase();
+                        const isDelivered = rawStatus.includes('DELIVERED');
+                        const isShipped = rawStatus.includes('SHIPPED');
+                        const isPaidProcessing = rawStatus.includes('PAID') || rawStatus.includes('PROCESSING');
+                        const statusBadgeStyle = isDelivered
+                          ? { bg: '#E8F5E9', color: '#2E7D32', border: '#A5D6A7', label: '✓ Delivered' }
+                          : isShipped
+                          ? { bg: '#F4F0FF', color: '#5E35B1', border: '#D1C4E9', label: '🚚 Shipped' }
+                          : isPaidProcessing
+                          ? { bg: '#FFF0F2', color: '#B38B8F', border: '#E8C5C8', label: '✨ Paid • Preparing Ritual' }
+                          : { bg: '#FFF8E1', color: '#8D6E63', border: '#FFE082', label: order.status || 'Pending' };
+
+                        const shipAddr = order.shipping_address || {};
+                        const hasShipAddr = Boolean(shipAddr.address_1 || shipAddr.city || shipAddr.postcode);
+                        const orderItems = Array.isArray(order.items) ? order.items : [];
+
+                        return (
+                          <div
+                            key={order._id || idx}
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              borderRadius: '18px',
+                              border: '1px solid #E8C5C8',
+                              boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)',
+                              overflow: 'hidden'
+                            }}
+                          >
+                            {/* Order Top Header Bar */}
+                            <div
+                              style={{
+                                backgroundColor: '#FFF9F9',
+                                borderBottom: '1px solid #E8C5C8',
+                                padding: '18px 26px',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '14px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
+                                <div>
+                                  <div style={{ fontSize: '0.73rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+                                    Order Reference
+                                  </div>
+                                  <div style={{ fontSize: '1.25rem', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontWeight: 'bold' }}>
+                                    #{orderIdShort}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: '0.73rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+                                    Order Date
+                                  </div>
+                                  <div style={{ fontSize: '0.96rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold' }}>
+                                    {orderDateStr}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: '0.73rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+                                    Total Investment
+                                  </div>
+                                  <div style={{ fontSize: '1.05rem', fontFamily: 'sans-serif', color: '#B38B8F', fontWeight: 'bold' }}>
+                                    ${Number(order.totalAmount || 0).toFixed(2)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                                <span
+                                  style={{
+                                    backgroundColor: statusBadgeStyle.bg,
+                                    color: statusBadgeStyle.color,
+                                    border: `1px solid ${statusBadgeStyle.border}`,
+                                    borderRadius: '18px',
+                                    padding: '6px 14px',
+                                    fontSize: '0.82rem',
+                                    fontFamily: 'sans-serif',
+                                    fontWeight: 'bold'
+                                  }}
+                                >
+                                  {statusBadgeStyle.label}
+                                </span>
+                                {orderItems.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReorderFullOrder(order)}
+                                    style={{
+                                      backgroundColor: '#5C5454',
+                                      color: '#FFFFFF',
+                                      border: 'none',
+                                      borderRadius: '18px',
+                                      padding: '8px 16px',
+                                      fontFamily: "'Cormorant Garamond', serif",
+                                      fontSize: '1rem',
+                                      fontWeight: 'bold',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    ↻ Re-Order / Add to Ritual Bag
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Order Body: Itemized Products + Shipping & Tracking */}
+                            <div style={{ padding: '24px 26px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                              {orderItems.length > 0 ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                  {orderItems.map((item, itemIdx) => (
+                                    <div
+                                      key={`${order._id || idx}-item-${itemIdx}`}
+                                      style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        flexWrap: 'wrap',
+                                        gap: '14px',
+                                        padding: '14px 16px',
+                                        borderRadius: '14px',
+                                        backgroundColor: '#FFFDFD',
+                                        border: '1px solid #F2D4D7'
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: '1 1 260px' }}>
+                                        {item.imageUrl ? (
+                                          <img
+                                            src={item.imageUrl}
+                                            alt={item.title || 'Product'}
+                                            style={{
+                                              width: '62px',
+                                              height: '62px',
+                                              borderRadius: '10px',
+                                              objectFit: 'cover',
+                                              border: '1px solid #E8C5C8',
+                                              backgroundColor: '#FFF9F9',
+                                              flexShrink: 0
+                                            }}
+                                          />
+                                        ) : (
+                                          <div
+                                            style={{
+                                              width: '62px',
+                                              height: '62px',
+                                              borderRadius: '10px',
+                                              backgroundColor: '#FFF0F2',
+                                              border: '1px solid #E8C5C8',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                              fontSize: '1.5rem',
+                                              flexShrink: 0
+                                            }}
+                                          >
+                                            ✨
+                                          </div>
+                                        )}
+                                        <div>
+                                          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454', fontWeight: 'bold' }}>
+                                            {item.title || 'Boutique Ritual Essential'}
+                                          </div>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '4px', fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                                            <span>Qty: <strong>{item.quantity || 1}</strong></span>
+                                            <span>•</span>
+                                            <span>Unit: <strong>${Number(item.price || 0).toFixed(2)}</strong></span>
+                                            {item.variantName && (
+                                              <>
+                                                <span>•</span>
+                                                <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>Variant: {item.variantName}</span>
+                                              </>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                                        <div style={{ textAlign: 'right' }}>
+                                          <div style={{ fontSize: '0.74rem', fontFamily: 'sans-serif', color: '#8A797A' }}>Subtotal</div>
+                                          <div style={{ fontSize: '1rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold' }}>
+                                            ${(Number(item.price || 0) * Math.max(1, Number(item.quantity) || 1)).toFixed(2)}
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleReorderSingleItem(item)}
+                                          style={{
+                                            backgroundColor: '#FFF0F2',
+                                            color: '#B38B8F',
+                                            border: '1px solid #B38B8F',
+                                            borderRadius: '16px',
+                                            padding: '7px 14px',
+                                            fontSize: '0.85rem',
+                                            fontFamily: 'sans-serif',
+                                            fontWeight: 'bold',
+                                            cursor: 'pointer'
+                                          }}
+                                        >
+                                          + Add to Ritual Bag
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p style={{ margin: 0, color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem' }}>
+                                  Curated Sanctuary Boutique Order
+                                </p>
+                              )}
+
+                              {/* Shipping Address & Tracking Row */}
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '14px', paddingTop: '6px' }}>
+                                <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px 18px' }}>
+                                  <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#B38B8F', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '5px' }}>
+                                    📍 Shipping Destination
+                                  </div>
+                                  {hasShipAddr ? (
+                                    <div style={{ fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#5C5454', lineHeight: '1.5' }}>
+                                      {shipAddr.name && <div style={{ fontWeight: 'bold' }}>{shipAddr.name}</div>}
+                                      <div>
+                                        {shipAddr.address_1}
+                                        {shipAddr.address_2 ? `, ${shipAddr.address_2}` : ''}
+                                      </div>
+                                      <div>
+                                        {[shipAddr.city, shipAddr.state, shipAddr.postcode].filter(Boolean).join(', ')}
+                                        {shipAddr.country ? ` (${shipAddr.country})` : ''}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: '0.88rem', fontFamily: 'sans-serif', color: '#8A797A', fontStyle: 'italic' }}>
+                                      Saved Sanctuary Member Address ({order.customerEmail || userDetails.email || 'On File'})
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div style={{ backgroundColor: order.tracking_code ? '#F4F0FF' : '#FFF9F9', border: order.tracking_code ? '1px solid #D1C4E9' : '1px solid #E8C5C8', borderRadius: '12px', padding: '14px 18px' }}>
+                                  <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: order.tracking_code ? '#5E35B1' : '#B38B8F', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '5px' }}>
+                                    🚚 Live Courier & Tracking
+                                  </div>
+                                  {order.tracking_code ? (
+                                    <div>
+                                      <div style={{ fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#5C5454', marginBottom: '3px' }}>
+                                        Carrier: <strong>{order.logisticName || 'Express Sanctuary Courier'}</strong>
+                                      </div>
+                                      <div style={{ fontSize: '1.05rem', fontFamily: 'monospace', color: '#5E35B1', fontWeight: 'bold', letterSpacing: '0.5px' }}>
+                                        {order.tracking_code}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: '0.88rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                                      Carrier: <strong>{order.logisticName || 'Sanctuary Priority Fulfillment'}</strong>
+                                      <div style={{ fontStyle: 'italic', marginTop: '3px' }}>
+                                        Tracking number will appear automatically as soon as your parcel dispatches.
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '55px 35px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px dashed #E8C5C8', borderRadius: '18px' }}>
+                      <div style={{ fontSize: '2.6rem', marginBottom: '10px' }}>🛍️</div>
+                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: '0 0 10px 0' }}>
+                        No Boutique Orders Yet
+                      </h3>
+                      <p style={{ color: '#8A797A', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', maxWidth: '520px', margin: '0 auto 24px auto' }}>
+                        Explore Susan's curated skincare essentials in the Boutique to begin your personalized beauty ritual.
+                      </p>
+                      <EmpowermentButton text="Browse the Boutique ✧" onClick={() => setActiveMemberTab('Boutique')} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 6. ACCOUNT INFO TAB */}
+              {activeMemberTab === 'Account Info' && (
+                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '26px' }}>
+                  {accountStatusBanner.text && (
+                    <div
+                      style={{
+                        padding: '15px 22px',
+                        borderRadius: '14px',
+                        backgroundColor: accountStatusBanner.type === 'error' ? '#FFEBEE' : '#E8F5E9',
+                        color: accountStatusBanner.type === 'error' ? '#C62828' : '#2E7D32',
+                        border: `1px solid ${accountStatusBanner.type === 'error' ? '#EF9A9A' : '#A5D6A7'}`,
+                        fontFamily: 'sans-serif',
+                        fontSize: '0.95rem',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <span>{accountStatusBanner.type === 'error' ? '⚠️ ' : '✓ '}{accountStatusBanner.text}</span>
+                      <button
+                        type="button"
+                        onClick={() => setAccountStatusBanner({ type: '', text: '' })}
+                        style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1.1rem', fontWeight: 'bold' }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Top Card: Profile Picture Uploader + Membership Tier Card */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
+                    {/* Profile Picture Uploader Card */}
+                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '28px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
+                      <div style={{ position: 'relative', width: '108px', height: '108px', flexShrink: 0 }}>
+                        {accountForm.avatarUrl ? (
+                          <img
+                            src={accountForm.avatarUrl}
+                            alt={accountForm.name || 'Member Avatar'}
+                            style={{
+                              width: '108px',
+                              height: '108px',
+                              borderRadius: '50%',
+                              objectFit: 'cover',
+                              border: '3px solid #B38B8F',
+                              boxShadow: '0 6px 18px rgba(179, 139, 143, 0.28)'
+                            }}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: '108px',
+                              height: '108px',
+                              borderRadius: '50%',
+                              backgroundColor: '#FFF0F2',
+                              border: '2.5px dashed #B38B8F',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontFamily: "'Cormorant Garamond', serif",
+                              fontSize: '2.6rem',
+                              color: '#B38B8F',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            {(accountForm.name || accountForm.username || accountForm.email || 'M').charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ flex: 1, minWidth: '200px' }}>
+                        <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '3px 10px', fontSize: '0.74rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '6px' }}>
+                          📸 SANCTUARY PORTRAIT
+                        </span>
+                        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.65rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                          Profile Picture
+                        </h3>
+                        <p style={{ margin: '0 0 14px 0', fontSize: '0.86rem', fontFamily: 'sans-serif', color: '#736A6A', lineHeight: '1.45' }}>
+                          Upload a portrait to personalize your Sanctuary header and consultations with Susan.
+                        </p>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <label
+                            style={{
+                              display: 'inline-block',
+                              backgroundColor: '#B38B8F',
+                              color: '#FFFFFF',
+                              borderRadius: '18px',
+                              padding: '8px 16px',
+                              fontSize: '0.88rem',
+                              fontFamily: 'sans-serif',
+                              fontWeight: 'bold',
+                              cursor: isUploadingAvatar ? 'wait' : 'pointer',
+                              boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                            }}
+                          >
+                            {isUploadingAvatar ? 'Processing Photo...' : '📷 Upload New Photo'}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleAccountAvatarUpload}
+                              style={{ display: 'none' }}
+                              disabled={isUploadingAvatar}
+                            />
+                          </label>
+                          {accountForm.avatarUrl && (
+                            <button
+                              type="button"
+                              onClick={handleRemoveAccountAvatar}
+                              style={{
+                                backgroundColor: 'transparent',
+                                color: '#8A797A',
+                                border: '1px solid #E8C5C8',
+                                borderRadius: '18px',
+                                padding: '7px 14px',
+                                fontSize: '0.84rem',
+                                fontFamily: 'sans-serif',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Remove Photo
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Membership Tier Status & Upgrade Card */}
+                    <div
+                      style={{
+                        backgroundColor: effectiveMemberTier === 'radiance' ? '#FAF7FF' : '#FFFFFF',
+                        borderRadius: '18px',
+                        border: effectiveMemberTier === 'radiance' ? '1.5px solid #D1C4E9' : '1px solid #E8C5C8',
+                        padding: '28px',
+                        boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between'
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                          <span style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: effectiveMemberTier === 'radiance' ? '#5E35B1' : '#B38B8F', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+                            Active Sanctuary Tier
+                          </span>
+                          <span
+                            style={{
+                              backgroundColor: effectiveMemberTier === 'radiance' ? '#EDE7F6' : effectiveMemberTier === 'luminary' ? '#FFF0F2' : '#F5F0F0',
+                              color: effectiveMemberTier === 'radiance' ? '#5E35B1' : effectiveMemberTier === 'luminary' ? '#B38B8F' : '#736A6A',
+                              borderRadius: '14px',
+                              padding: '4px 12px',
+                              fontSize: '0.78rem',
+                              fontFamily: 'sans-serif',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            {effectiveMemberTier === 'radiance'
+                              ? '💎 $119 / month'
+                              : effectiveMemberTier === 'luminary'
+                              ? '✨ $49 / month'
+                              : '🌿 $0 / month (Free)'}
+                          </span>
+                        </div>
+                        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: '0 0 8px 0' }}>
+                          {effectiveMemberTier === 'radiance'
+                            ? 'The Radiance Elite'
+                            : effectiveMemberTier === 'luminary'
+                            ? 'The Luminary Circle'
+                            : 'Free Sanctuary Member'}
+                        </h3>
+                        <p style={{ margin: '0 0 16px 0', fontSize: '0.88rem', fontFamily: 'sans-serif', color: '#736A6A', lineHeight: '1.5' }}>
+                          {effectiveMemberTier === 'radiance'
+                            ? 'Includes Monthly 1-on-1 Consultations (every 30 days), Odie AI Skin Photo Analysis on your Blueprint Quiz, and 25% off the Boutique.'
+                            : effectiveMemberTier === 'luminary'
+                            ? 'Includes Quarterly 1-on-1 Consultations (1 every 90 days), full 10-Step Beauty Blueprint Quiz access, and 10% off the Boutique.'
+                            : 'Includes Boutique shopping and Account management. Upgrade to unlock the 10-Step Beauty Blueprint Quiz and 1-on-1 Consultations with Susan.'}
+                        </p>
+                      </div>
+
+                      {effectiveMemberTier !== 'radiance' ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openPaywallModal(
+                              effectiveMemberTier === 'luminary'
+                                ? 'Upgrade from The Luminary Circle to The Radiance Elite ($119/mo) to unlock Monthly Consultations, AI Skin Photo Analysis, and 25% off the Boutique.'
+                                : 'Upgrade your Free Sanctuary account to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo).'
+                            )
+                          }
+                          style={{
+                            alignSelf: 'flex-start',
+                            background: effectiveMemberTier === 'luminary'
+                              ? 'linear-gradient(135deg, #5E35B1 0%, #7E57C2 100%)'
+                              : 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '20px',
+                            padding: '10px 20px',
+                            fontFamily: "'Cormorant Garamond', serif",
+                            fontSize: '1.08rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            boxShadow: '0 4px 12px rgba(94, 53, 177, 0.2)'
+                          }}
+                        >
+                          {effectiveMemberTier === 'luminary'
+                            ? '💎 Upgrade to The Radiance Elite ($119/mo) ✧'
+                            : '✨ View Membership Tiers & Upgrade ✧'}
+                        </button>
+                      ) : (
+                        <div style={{ fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#5E35B1', fontWeight: 'bold' }}>
+                          ✓ Highest Sanctuary Tier Unlocked
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Account, Shipping & Billing Form */}
+                  <form onSubmit={handleSaveAccountProfile} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                    {/* Section 1: Personal & Account Details */}
+                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
+                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                        1. Personal & Account Details
+                      </h3>
+                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                        Manage your display name, unique Sanctuary username, email address, and phone number.
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Full Name
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.name}
+                            onChange={(e) => setAccountForm(prev => ({ ...prev, name: e.target.value }))}
+                            placeholder="Jane Doe"
+                            required
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Username
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.username}
+                            onChange={(e) => setAccountForm(prev => ({ ...prev, username: e.target.value }))}
+                            placeholder="janedoe_glow"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Email Address
+                          </label>
+                          <input
+                            type="email"
+                            value={accountForm.email}
+                            onChange={(e) => setAccountForm(prev => ({ ...prev, email: e.target.value }))}
+                            placeholder="jane@example.com"
+                            required
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Phone Number
+                          </label>
+                          <input
+                            type="tel"
+                            value={accountForm.phone}
+                            onChange={(e) => setAccountForm(prev => ({ ...prev, phone: e.target.value }))}
+                            placeholder="(555) 234-5678"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Update Password <span style={{ fontWeight: 'normal', color: '#8A797A' }}>(Optional)</span>
+                          </label>
+                          <input
+                            type="password"
+                            value={accountForm.newPassword}
+                            onChange={(e) => setAccountForm(prev => ({ ...prev, newPassword: e.target.value }))}
+                            placeholder="Leave blank to keep current password"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Section 2: Default Shipping Address */}
+                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
+                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0' }}>
+                        2. Shipping Address
+                      </h3>
+                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                        Your saved delivery destination for Boutique orders and curated beauty boxes.
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Street Address
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.address_1}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, address_1: e.target.value }
+                              }))
+                            }
+                            placeholder="123 Rosewater Boulevard"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Apartment, Suite, or Unit <span style={{ fontWeight: 'normal', color: '#8A797A' }}>(Optional)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.address_2}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, address_2: e.target.value }
+                              }))
+                            }
+                            placeholder="Suite 4B"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            City
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.city}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, city: e.target.value }
+                              }))
+                            }
+                            placeholder="Beverly Hills"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            State / Province
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.state}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, state: e.target.value }
+                              }))
+                            }
+                            placeholder="CA"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            ZIP / Postal Code
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.postcode}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, postcode: e.target.value }
+                              }))
+                            }
+                            placeholder="90210"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Country
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.shippingAddress.country}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                shippingAddress: { ...prev.shippingAddress, country: e.target.value }
+                              }))
+                            }
+                            placeholder="US"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Section 3: Billing Information */}
+                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '6px' }}>
+                        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+                          3. Billing Information
+                        </h3>
+                        <span style={{ fontSize: '0.78rem', fontFamily: 'sans-serif', color: '#8A797A', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '4px 10px' }}>
+                          🔒 Encrypted Stripe Billing Record
+                        </span>
+                      </div>
+                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                        Keep your preferred payment method summary and billing address on file for Sanctuary memberships and orders.
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '18px' }}>
+                        <div style={{ gridColumn: 'span 2' }}>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Cardholder Name
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.billingInfo.billingName}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, billingName: e.target.value }
+                              }))
+                            }
+                            placeholder="Jane Doe"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Card Brand
+                          </label>
+                          <select
+                            value={accountForm.billingInfo.cardBrand || 'Visa'}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, cardBrand: e.target.value }
+                              }))
+                            }
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          >
+                            <option value="Visa">Visa</option>
+                            <option value="Mastercard">Mastercard</option>
+                            <option value="American Express">American Express</option>
+                            <option value="Discover">Discover</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Last 4 Digits of Card
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={4}
+                            value={accountForm.billingInfo.cardLast4}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, cardLast4: e.target.value.replace(/\D/g, '').slice(0, 4) }
+                              }))
+                            }
+                            placeholder="4242"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Exp. Month (MM)
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={2}
+                            value={accountForm.billingInfo.expMonth}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, expMonth: e.target.value.replace(/\D/g, '').slice(0, 2) }
+                              }))
+                            }
+                            placeholder="08"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Exp. Year (YYYY)
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={4}
+                            value={accountForm.billingInfo.expYear}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, expYear: e.target.value.replace(/\D/g, '').slice(0, 4) }
+                              }))
+                            }
+                            placeholder="2028"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Billing Address
+                          </label>
+                          <input
+                            type="text"
+                            value={accountForm.billingInfo.billingAddress}
+                            onChange={(e) =>
+                              setAccountForm(prev => ({
+                                ...prev,
+                                billingInfo: { ...prev.billingInfo, billingAddress: e.target.value }
+                              }))
+                            }
+                            placeholder="123 Rosewater Boulevard, Beverly Hills, CA 90210"
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Save Button Row */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px' }}>
+                      <button
+                        type="submit"
+                        disabled={isSavingAccount}
+                        style={{
+                          background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '25px',
+                          padding: '15px 36px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.3rem',
+                          fontWeight: 'bold',
+                          cursor: isSavingAccount ? 'wait' : 'pointer',
+                          boxShadow: '0 8px 22px rgba(179, 139, 143, 0.35)'
+                        }}
+                      >
+                        {isSavingAccount ? 'Saving Your Sanctuary Profile...' : '💾 Save Account & Billing Info ✧'}
+                      </button>
+                    </div>
+                  </form>
                 </div>
               )}
 
