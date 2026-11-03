@@ -5540,9 +5540,9 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
               type="button"
               disabled={isTestingWebhooks}
               onClick={handleRunWebhookDiagnostics}
-              style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: isTestingWebhooks ? 'not-allowed' : 'pointer' }}
+              style={{ backgroundColor: '#B38B8F', border: 'none', color: '#FFFFFF', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: isTestingWebhooks ? 'not-allowed' : 'pointer' }}
             >
-              {isTestingWebhooks ? '⏳ Testing Webhooks...' : '🧪 Test CJ & Stripe Webhooks'}
+              {isTestingWebhooks ? '⏳ Checking Live Webhooks...' : '🌐 Verify Live Production Webhooks'}
             </button>
 
             {onAskOdieToTest && (
@@ -5618,11 +5618,26 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
         )}
 
         {webhookReport && (
-          <div style={{ marginTop: '18px', padding: '16px', borderRadius: '12px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-              <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
-                Webhook & Public Launch Readiness Report ({webhookReport.overallStatus})
-              </strong>
+          <div style={{ marginTop: '18px', padding: '20px', borderRadius: '14px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.9rem', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#5C5454' }}>
+                  🌐 Live Production Webhook & Launch Readiness ({webhookReport.overallStatus})
+                </strong>
+                <span
+                  style={{
+                    padding: '4px 12px',
+                    borderRadius: '14px',
+                    fontSize: '0.76rem',
+                    fontWeight: 'bold',
+                    backgroundColor: webhookReport.stripeKeyMode === 'LIVE' ? '#E8F5E9' : '#FFF8E1',
+                    color: webhookReport.stripeKeyMode === 'LIVE' ? '#2E7D32' : '#8D6E63',
+                    border: `1px solid ${webhookReport.stripeKeyMode === 'LIVE' ? '#A5D6A7' : '#FFE082'}`
+                  }}
+                >
+                  {webhookReport.stripeKeyMode === 'LIVE' ? '🟢 STRIPE LIVE PRODUCTION KEY' : `🟡 STRIPE ${webhookReport.stripeKeyMode || 'TEST'} KEY`}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setWebhookReport(null)}
@@ -5631,34 +5646,115 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
                 Hide Report
               </button>
             </div>
+
+            {/* Copyable Production Webhook Endpoint URLs */}
+            {webhookReport.productionEndpoints && (
+              <div style={{ backgroundColor: '#FFFFFF', padding: '14px 16px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <strong style={{ color: '#5C5454', display: 'block', marginBottom: '8px', fontSize: '0.88rem' }}>
+                  🔗 Your Live Production Webhook Endpoint URLs (Click to Copy for Stripe & CJ Dashboards):
+                </strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {[
+                    { label: 'Stripe Webhook URL (checkout.session.completed, invoice.paid, customer.subscription.*)', url: webhookReport.productionEndpoints.stripeWebhookUrl },
+                    { label: 'CJ Dropshipping Webhook URL (Order Status & Tracking Sync)', url: webhookReport.productionEndpoints.cjWebhookUrl },
+                    { label: 'Inbound Email Webhook URL (HTTPS Fallback)', url: webhookReport.productionEndpoints.inboundEmailWebhookUrl }
+                  ].map((ep, idx) => (
+                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', padding: '8px 12px', borderRadius: '8px', backgroundColor: '#FFFDFD', border: '1px solid #F2D4D7' }}>
+                      <div>
+                        <div style={{ fontSize: '0.76rem', color: '#8A797A', fontWeight: 'bold' }}>{ep.label}</div>
+                        <code style={{ fontSize: '0.84rem', color: '#5C5454', wordBreak: 'break-all' }}>{ep.url}</code>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (navigator.clipboard && ep.url) {
+                            navigator.clipboard.writeText(ep.url);
+                          }
+                        }}
+                        style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '14px', padding: '5px 12px', fontSize: '0.78rem', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        📋 Copy URL
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Subsystem Readiness Cards */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
               <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
                 <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
-                  {webhookReport.checks?.cjWebhookParser?.passed ? '✅' : '⚠️'} CJ v2 Webhook Parser
+                  {webhookReport.checks?.cjWebhookParser?.passed ? '✅' : '⚠️'} CJ v2 Production Webhook
                 </strong>
-                <span style={{ color: '#736A6A', fontSize: '0.85rem' }}>
-                  Nested <code>params</code> & test order IDs handled without CastError.
+                <span style={{ color: '#736A6A', fontSize: '0.84rem' }}>
+                  Matches live orders by MongoDB <code>_id</code> or <code>cjOrderId</code> and dispatches customer tracking emails.
                 </span>
               </div>
               <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
                 <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
-                  {webhookReport.checks?.stripeToCjFulfillment?.passed ? '✅' : '⚠️'} Stripe → CJ Fulfillment
+                  {webhookReport.checks?.stripeToCjFulfillment?.passed ? '✅' : '⚠️'} Stripe Lifecycle & CJ Bridge
                 </strong>
-                <span style={{ color: '#736A6A', fontSize: '0.85rem' }}>
-                  Extracts Stripe shipping address & phone into CJ <code>createOrderV2</code>.
+                <span style={{ color: '#736A6A', fontSize: '0.84rem' }}>
+                  Handles checkout, subscription renewals, cancellations, and CJ <code>createOrderV2</code> routing.
                 </span>
               </div>
               <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
                 <strong style={{ color: '#5C5454', display: 'block', marginBottom: '4px' }}>
-                  🔐 Environment Keys
+                  🔐 Environment Secrets
                 </strong>
                 <span style={{ color: '#736A6A', fontSize: '0.82rem', display: 'block' }}>
-                  Stripe Key: {webhookReport.checks?.environment?.stripeSecretConfigured ? '✓' : 'Missing'} | Webhook: {webhookReport.checks?.environment?.stripeWebhookSecretConfigured ? '✓' : 'Missing'}
+                  Stripe Key: {webhookReport.checks?.environment?.stripeSecretConfigured ? '✓' : 'Missing'} | Signing Secret: {webhookReport.checks?.environment?.stripeWebhookSecretConfigured ? '✓' : 'Missing'}
                 </span>
                 <span style={{ color: '#736A6A', fontSize: '0.82rem', display: 'block' }}>
-                  CJ Token: {webhookReport.checks?.environment?.cjAccessTokenConfigured ? '✓' : 'Missing'} | SMTP: {webhookReport.checks?.environment?.smtpConfigured ? '✓' : 'Missing'}
+                  CJ Token: {webhookReport.checks?.environment?.cjAccessTokenConfigured ? '✓' : 'Missing'} | CJ Secret: {webhookReport.checks?.environment?.cjWebhookSecretConfigured ? '✓' : 'Optional'}
                 </span>
               </div>
+            </div>
+
+            {/* Registered Stripe Webhook Endpoints from Stripe API */}
+            {Array.isArray(webhookReport.registeredStripeEndpoints) && webhookReport.registeredStripeEndpoints.length > 0 && (
+              <div style={{ backgroundColor: '#FFFFFF', padding: '14px 16px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                <strong style={{ color: '#5C5454', display: 'block', marginBottom: '8px', fontSize: '0.88rem' }}>
+                  📡 Registered Endpoints in Your Stripe Account ({webhookReport.registeredStripeEndpoints.length}):
+                </strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {webhookReport.registeredStripeEndpoints.map((ep) => (
+                    <div key={ep.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.82rem', padding: '6px 10px', borderRadius: '6px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8' }}>
+                      <code>{ep.url}</code>
+                      <span style={{ fontWeight: 'bold', color: ep.status === 'enabled' ? '#2E7D32' : '#8A797A' }}>
+                        {ep.status?.toUpperCase()} • {ep.livemode ? 'LIVE' : 'TEST'} • {(ep.enabledEvents || []).length} events
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recent Real Webhook Deliveries from MongoDB WebhookEventLog */}
+            <div style={{ backgroundColor: '#FFFFFF', padding: '14px 16px', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+              <strong style={{ color: '#5C5454', display: 'block', marginBottom: '8px', fontSize: '0.88rem' }}>
+                📜 Recent Live Webhook Deliveries ({Array.isArray(webhookReport.recentWebhookEvents) ? webhookReport.recentWebhookEvents.length : 0}):
+              </strong>
+              {Array.isArray(webhookReport.recentWebhookEvents) && webhookReport.recentWebhookEvents.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '220px', overflowY: 'auto' }}>
+                  {webhookReport.recentWebhookEvents.map((ev, i) => (
+                    <div key={ev._id || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.81rem', padding: '7px 10px', borderRadius: '6px', backgroundColor: '#FFFDFD', border: '1px solid #F2D4D7' }}>
+                      <div>
+                        <strong style={{ color: '#5C5454' }}>[{ev.source}] {ev.eventType}</strong>
+                        <span style={{ color: '#736A6A', marginLeft: '8px' }}>{ev.summary}</span>
+                      </div>
+                      <div style={{ color: '#8A797A', fontSize: '0.76rem' }}>
+                        {ev.status} • {ev.createdAt ? new Date(ev.createdAt).toLocaleString() : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <span style={{ color: '#8A797A', fontSize: '0.84rem', fontStyle: 'italic' }}>
+                  No live webhook deliveries recorded yet. As soon as Stripe or CJ sends a webhook event to your production URLs above, it will appear here in real time.
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -10838,7 +10934,13 @@ function App() {
     }
   });
   const [isSavingAccount, setIsSavingAccount] = useState(false);
+  const [savingSection, setSavingSection] = useState(''); // '' | 'avatar' | 'personal' | 'shipping' | 'billing' | 'all'
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarPendingSave, setAvatarPendingSave] = useState(false);
+  const [isEditingPersonal, setIsEditingPersonal] = useState(false);
+  const [isEditingShipping, setIsEditingShipping] = useState(false);
+  const [isEditingBilling, setIsEditingBilling] = useState(false);
+  const [isOpeningBillingPortal, setIsOpeningBillingPortal] = useState(false);
   const [accountStatusBanner, setAccountStatusBanner] = useState({ type: '', text: '' });
 
   useEffect(() => {
@@ -10884,27 +10986,11 @@ function App() {
     try {
       const compressedDataUrl = await compressImageFileToDataUrl(file, 500, 0.85);
       setAccountForm(prev => ({ ...prev, avatarUrl: compressedDataUrl }));
-      setUserDetails(prev => ({ ...prev, avatarUrl: compressedDataUrl }));
-
-      const token = localStorage.getItem('token');
-      if (token) {
-        const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ avatarUrl: compressedDataUrl })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.user) {
-          setUserDetails(prev => ({ ...prev, ...data.user, password: '' }));
-          setAccountStatusBanner({
-            type: 'success',
-            text: 'Profile picture uploaded and synced to your Sanctuary header!'
-          });
-        }
-      }
+      setAvatarPendingSave(true);
+      setAccountStatusBanner({
+        type: 'success',
+        text: 'New portrait selected! Click "💾 Save Profile Picture" to save and sync it to your Sanctuary header.'
+      });
     } catch (err) {
       setAccountStatusBanner({
         type: 'error',
@@ -10915,9 +11001,58 @@ function App() {
     }
   };
 
+  const handleSaveProfilePicture = async () => {
+    const token = localStorage.getItem('token');
+    setUserDetails(prev => ({ ...prev, avatarUrl: accountForm.avatarUrl || '' }));
+    if (!token) {
+      setAvatarPendingSave(false);
+      setAccountStatusBanner({ type: 'success', text: 'Profile picture updated in your Sanctuary header!' });
+      return;
+    }
+
+    setSavingSection('avatar');
+    setIsSavingAccount(true);
+    setAccountStatusBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ avatarUrl: accountForm.avatarUrl || '' })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAccountStatusBanner({
+          type: 'error',
+          text: data.error || 'Could not save your profile picture.'
+        });
+        return;
+      }
+      if (data.user) {
+        setUserDetails(prev => ({ ...prev, ...data.user, password: '' }));
+      }
+      setAvatarPendingSave(false);
+      setAccountStatusBanner({
+        type: 'success',
+        text: 'Profile picture saved and synced to your Sanctuary header ✧'
+      });
+    } catch {
+      setAccountStatusBanner({
+        type: 'error',
+        text: 'Network error while saving your profile picture.'
+      });
+    } finally {
+      setIsSavingAccount(false);
+      setSavingSection('');
+    }
+  };
+
   const handleRemoveAccountAvatar = async () => {
     setAccountForm(prev => ({ ...prev, avatarUrl: '' }));
     setUserDetails(prev => ({ ...prev, avatarUrl: '' }));
+    setAvatarPendingSave(false);
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
@@ -10939,7 +11074,47 @@ function App() {
     }
   };
 
-  const handleSaveAccountProfile = async (e) => {
+  const handleCancelAccountSection = (section) => {
+    if (section === 'personal') {
+      setAccountForm(prev => ({
+        ...prev,
+        name: userDetails?.name || '',
+        username: userDetails?.username || '',
+        email: userDetails?.email || '',
+        phone: userDetails?.phone || '',
+        newPassword: ''
+      }));
+      setIsEditingPersonal(false);
+    } else if (section === 'shipping') {
+      setAccountForm(prev => ({
+        ...prev,
+        shippingAddress: {
+          address_1: userDetails?.shippingAddress?.address_1 || '',
+          address_2: userDetails?.shippingAddress?.address_2 || '',
+          city: userDetails?.shippingAddress?.city || '',
+          state: userDetails?.shippingAddress?.state || '',
+          postcode: userDetails?.shippingAddress?.postcode || '',
+          country: userDetails?.shippingAddress?.country || 'US'
+        }
+      }));
+      setIsEditingShipping(false);
+    } else if (section === 'billing') {
+      setAccountForm(prev => ({
+        ...prev,
+        billingInfo: {
+          billingName: userDetails?.billingInfo?.billingName || userDetails?.name || '',
+          cardBrand: userDetails?.billingInfo?.cardBrand || 'Visa',
+          cardLast4: userDetails?.billingInfo?.cardLast4 || '',
+          expMonth: userDetails?.billingInfo?.expMonth || '',
+          expYear: userDetails?.billingInfo?.expYear || '',
+          billingAddress: userDetails?.billingInfo?.billingAddress || ''
+        }
+      }));
+      setIsEditingBilling(false);
+    }
+  };
+
+  const handleSaveAccountSection = async (section = 'all', e = null) => {
     if (e && e.preventDefault) e.preventDefault();
     const token = localStorage.getItem('token');
     if (!token) {
@@ -10947,23 +11122,48 @@ function App() {
       return;
     }
 
+    setSavingSection(section);
     setIsSavingAccount(true);
     setAccountStatusBanner({ type: '', text: '' });
     try {
-      const payload = {
-        name: accountForm.name,
-        username: accountForm.username,
-        email: accountForm.email,
-        phone: accountForm.phone,
-        avatarUrl: accountForm.avatarUrl,
-        shippingAddress: accountForm.shippingAddress,
-        billingInfo: {
-          ...accountForm.billingInfo,
-          cardLast4: String(accountForm.billingInfo?.cardLast4 || '').replace(/\D/g, '').slice(-4)
+      let payload = {};
+      if (section === 'personal') {
+        payload = {
+          name: accountForm.name,
+          username: accountForm.username,
+          email: accountForm.email,
+          phone: accountForm.phone
+        };
+        if (accountForm.newPassword && accountForm.newPassword.trim().length > 0) {
+          payload.newPassword = accountForm.newPassword.trim();
         }
-      };
-      if (accountForm.newPassword && accountForm.newPassword.trim().length > 0) {
-        payload.newPassword = accountForm.newPassword.trim();
+      } else if (section === 'shipping') {
+        payload = {
+          shippingAddress: accountForm.shippingAddress
+        };
+      } else if (section === 'billing') {
+        payload = {
+          billingInfo: {
+            ...accountForm.billingInfo,
+            cardLast4: String(accountForm.billingInfo?.cardLast4 || '').replace(/\D/g, '').slice(-4)
+          }
+        };
+      } else {
+        payload = {
+          name: accountForm.name,
+          username: accountForm.username,
+          email: accountForm.email,
+          phone: accountForm.phone,
+          avatarUrl: accountForm.avatarUrl,
+          shippingAddress: accountForm.shippingAddress,
+          billingInfo: {
+            ...accountForm.billingInfo,
+            cardLast4: String(accountForm.billingInfo?.cardLast4 || '').replace(/\D/g, '').slice(-4)
+          }
+        };
+        if (accountForm.newPassword && accountForm.newPassword.trim().length > 0) {
+          payload.newPassword = accountForm.newPassword.trim();
+        }
       }
 
       const res = await fetch(`${API_BASE_URL}/api/users/me/profile`, {
@@ -10990,10 +11190,30 @@ function App() {
           password: ''
         }));
       }
-      setAccountForm(prev => ({ ...prev, newPassword: '' }));
+
+      if (section === 'personal' || section === 'all') {
+        setAccountForm(prev => ({ ...prev, newPassword: '' }));
+        setIsEditingPersonal(false);
+      }
+      if (section === 'shipping' || section === 'all') {
+        setIsEditingShipping(false);
+      }
+      if (section === 'billing' || section === 'all') {
+        setIsEditingBilling(false);
+      }
+      if (section === 'all') {
+        setAvatarPendingSave(false);
+      }
+
+      const sectionLabelMap = {
+        personal: 'Personal & Account Info saved successfully ✧',
+        shipping: 'Shipping Address updated & saved ✧',
+        billing: 'Billing Information updated & saved ✧',
+        all: data.message || 'All Account Info, Shipping Address, and Billing Details have been saved ✧'
+      };
       setAccountStatusBanner({
         type: 'success',
-        text: data.message || 'Your Account Info, Shipping Address, and Billing Details have been saved!'
+        text: sectionLabelMap[section] || sectionLabelMap.all
       });
     } catch (err) {
       console.error('Save Account Profile Error:', err);
@@ -11003,6 +11223,45 @@ function App() {
       });
     } finally {
       setIsSavingAccount(false);
+      setSavingSection('');
+    }
+  };
+
+  const handleSaveAccountProfile = (e) => handleSaveAccountSection('all', e);
+
+  const handleOpenStripeBillingPortal = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setAccountStatusBanner({ type: 'error', text: 'Please sign in to access the Stripe Billing Portal.' });
+      return;
+    }
+    setIsOpeningBillingPortal(true);
+    setAccountStatusBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/billing-portal`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ returnUrl: window.location.href })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      setAccountStatusBanner({
+        type: 'error',
+        text: data.error || 'Could not open live Stripe Billing Portal. You can still update and save your card record directly below.'
+      });
+    } catch {
+      setAccountStatusBanner({
+        type: 'error',
+        text: 'Network error while connecting to the Stripe Billing Portal.'
+      });
+    } finally {
+      setIsOpeningBillingPortal(false);
     }
   };
 
@@ -11538,7 +11797,7 @@ function App() {
     
     if (query.get('success')) {
       const tierStr = String(query.get('tier') || 'luminary').toLowerCase().trim();
-      const sessionId = query.get('session_id') || '';
+      const sessionId = String(query.get('session_id') || '').trim();
       window.history.replaceState(null, '', window.location.pathname);
 
       const token = localStorage.getItem('token');
@@ -11557,23 +11816,30 @@ function App() {
             if (confirmRes.ok && confirmData.user) {
               setUserDetails(prev => ({ ...prev, ...confirmData.user, password: '' }));
               setSelectedTier(confirmData.user.membershipTier || tierStr);
+              setIsSubscribing(true);
+              setPaywallModal({ isOpen: false, featureContext: '' });
             } else {
-              setUserDetails(prev => ({ ...prev, membershipTier: tierStr }));
-              setSelectedTier(tierStr);
+              alert(
+                confirmData.error ||
+                  'Your Stripe Checkout session could not be verified. Please complete checkout to activate your paid tier.'
+              );
             }
           } catch (e) {
-            setUserDetails(prev => ({ ...prev, membershipTier: tierStr }));
-            setSelectedTier(tierStr);
+            console.error('Stripe confirm-upgrade verification error:', e);
           }
-          setIsSubscribing(true);
-          setPaywallModal({ isOpen: false, featureContext: '' });
           setStep(5);
         })();
       } else {
-        setSelectedTier(tierStr);
-        setUserDetails(prev => ({ ...prev, name: prev.name || 'Valued Member', membershipTier: tierStr }));
-        setIsSubscribing(true);
+        setStep(4);
+      }
+    }
+
+    if (query.get('portal_return')) {
+      window.history.replaceState(null, '', window.location.pathname);
+      const token = localStorage.getItem('token');
+      if (token) {
         setStep(5);
+        setActiveMemberTab('Account Info');
       }
     }
 
@@ -11806,7 +12072,7 @@ function App() {
   const handleInputChange = (e) => setUserDetails({ ...userDetails, [e.target.name]: e.target.value });
   const handleLoginInputChange = (e) => setLoginCredentials({ ...loginCredentials, [e.target.name]: e.target.value });
 
-  // Triggers a Stripe subscription checkout for an existing signed-in Free ('basic') or Luminary member upgrading tiers
+  // Triggers a live Stripe subscription checkout for an existing signed-in Free ('basic') or Luminary member upgrading tiers
   const handleTriggerStripeUpgrade = async (targetTier = 'luminary') => {
     const cleanTargetTier = String(targetTier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
     const token = localStorage.getItem('token');
@@ -11834,27 +12100,13 @@ function App() {
         return;
       }
 
-      // Graceful local/sandbox fallback if Stripe key is not configured with a live redirect URL
-      const confirmRes = await fetch(`${API_BASE_URL}/api/users/me/confirm-upgrade`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ tier: cleanTargetTier })
-      });
-      const confirmData = await confirmRes.json().catch(() => ({}));
-      if (confirmRes.ok && confirmData.user) {
-        setUserDetails(prev => ({ ...prev, ...confirmData.user, password: '' }));
-        setSelectedTier(confirmData.user.membershipTier || cleanTargetTier);
-        setIsSubscribing(true);
-        setPaywallModal({ isOpen: false, featureContext: '' });
-      } else {
-        alert(stripeData.error || confirmData.error || 'Could not initiate membership upgrade checkout.');
-      }
+      alert(
+        stripeData.error ||
+          'Unable to start Stripe Checkout session. Please verify your STRIPE_SECRET_KEY configuration on the server.'
+      );
     } catch (err) {
       console.error('Membership upgrade error:', err);
-      alert('Network error while connecting to membership checkout.');
+      alert('Network error while connecting to Stripe Checkout.');
     }
     setIsUpgradingTier(false);
   };
@@ -13865,6 +14117,63 @@ function App() {
               {/* 6. ACCOUNT INFO TAB */}
               {activeMemberTab === 'Account Info' && (
                 <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '26px' }}>
+                  {/* Top Master Action Bar */}
+                  <div style={{ backgroundColor: '#FFFFFF', padding: '22px 28px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div>
+                      <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '3px 12px', fontSize: '0.75rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '6px' }}>
+                        👤 MEMBER PROFILE & BILLING COMMAND
+                      </span>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.05rem', color: '#5C5454', margin: '0 0 4px 0' }}>
+                        Account Info, Shipping & Billing
+                      </h2>
+                      <p style={{ margin: 0, fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#736A6A' }}>
+                        Click <strong>✏️ Update</strong> on any card below to edit that section, or use <strong>💾 Save All Account Changes</strong> to save everything at once.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsEditingPersonal(true);
+                          setIsEditingShipping(true);
+                          setIsEditingBilling(true);
+                        }}
+                        style={{
+                          backgroundColor: '#FFF0F2',
+                          color: '#5C5454',
+                          border: '1px solid #B38B8F',
+                          borderRadius: '22px',
+                          padding: '10px 20px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.08rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ✏️ Update All Fields
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isSavingAccount}
+                        onClick={() => handleSaveAccountSection('all')}
+                        style={{
+                          background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '22px',
+                          padding: '11px 24px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.12rem',
+                          fontWeight: 'bold',
+                          cursor: isSavingAccount ? 'wait' : 'pointer',
+                          boxShadow: '0 4px 14px rgba(179, 139, 143, 0.3)'
+                        }}
+                      >
+                        {savingSection === 'all' ? '⏳ Saving All Changes...' : '💾 Save All Account Changes ✧'}
+                      </button>
+                    </div>
+                  </div>
+
                   {accountStatusBanner.text && (
                     <div
                       style={{
@@ -13892,10 +14201,10 @@ function App() {
                     </div>
                   )}
 
-                  {/* Top Card: Profile Picture Uploader + Membership Tier Card */}
+                  {/* Top Grid: Profile Picture Uploader + Membership Tier Card */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
                     {/* Profile Picture Uploader Card */}
-                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '28px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
+                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: avatarPendingSave ? '2px solid #B38B8F' : '1px solid #E8C5C8', padding: '28px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
                       <div style={{ position: 'relative', width: '108px', height: '108px', flexShrink: 0 }}>
                         {accountForm.avatarUrl ? (
                           <img
@@ -13932,7 +14241,7 @@ function App() {
                         )}
                       </div>
 
-                      <div style={{ flex: 1, minWidth: '200px' }}>
+                      <div style={{ flex: 1, minWidth: '210px' }}>
                         <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '3px 10px', fontSize: '0.74rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '6px' }}>
                           📸 SANCTUARY PORTRAIT
                         </span>
@@ -13940,24 +14249,24 @@ function App() {
                           Profile Picture
                         </h3>
                         <p style={{ margin: '0 0 14px 0', fontSize: '0.86rem', fontFamily: 'sans-serif', color: '#736A6A', lineHeight: '1.45' }}>
-                          Upload a portrait to personalize your Sanctuary header and consultations with Susan.
+                          Choose a new portrait and click <strong>Save Profile Picture</strong> to update your Sanctuary header.
                         </p>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                           <label
                             style={{
                               display: 'inline-block',
-                              backgroundColor: '#B38B8F',
-                              color: '#FFFFFF',
+                              backgroundColor: '#FFF0F2',
+                              color: '#5C5454',
+                              border: '1px solid #B38B8F',
                               borderRadius: '18px',
-                              padding: '8px 16px',
-                              fontSize: '0.88rem',
+                              padding: '8px 15px',
+                              fontSize: '0.86rem',
                               fontFamily: 'sans-serif',
                               fontWeight: 'bold',
-                              cursor: isUploadingAvatar ? 'wait' : 'pointer',
-                              boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                              cursor: isUploadingAvatar ? 'wait' : 'pointer'
                             }}
                           >
-                            {isUploadingAvatar ? 'Processing Photo...' : '📷 Upload New Photo'}
+                            {isUploadingAvatar ? '⏳ Processing...' : '📷 Choose / Update Photo'}
                             <input
                               type="file"
                               accept="image/*"
@@ -13966,6 +14275,27 @@ function App() {
                               disabled={isUploadingAvatar}
                             />
                           </label>
+
+                          <button
+                            type="button"
+                            disabled={isSavingAccount}
+                            onClick={handleSaveProfilePicture}
+                            style={{
+                              backgroundColor: '#B38B8F',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              borderRadius: '18px',
+                              padding: '8px 16px',
+                              fontSize: '0.86rem',
+                              fontFamily: 'sans-serif',
+                              fontWeight: 'bold',
+                              cursor: isSavingAccount ? 'wait' : 'pointer',
+                              boxShadow: '0 4px 12px rgba(179, 139, 143, 0.28)'
+                            }}
+                          >
+                            {savingSection === 'avatar' ? '⏳ Saving...' : '💾 Save Profile Picture'}
+                          </button>
+
                           {accountForm.avatarUrl && (
                             <button
                               type="button"
@@ -13976,12 +14306,12 @@ function App() {
                                 border: '1px solid #E8C5C8',
                                 borderRadius: '18px',
                                 padding: '7px 14px',
-                                fontSize: '0.84rem',
+                                fontSize: '0.82rem',
                                 fontFamily: 'sans-serif',
                                 cursor: 'pointer'
                               }}
                             >
-                              Remove Photo
+                              🗑️ Remove Photo
                             </button>
                           )}
                         </div>
@@ -14040,56 +14370,129 @@ function App() {
                         </p>
                       </div>
 
-                      {effectiveMemberTier !== 'radiance' ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            openPaywallModal(
-                              effectiveMemberTier === 'luminary'
-                                ? 'Upgrade from The Luminary Circle to The Radiance Elite ($119/mo) to unlock Monthly Consultations, AI Skin Photo Analysis, and 25% off the Boutique.'
-                                : 'Upgrade your Free Sanctuary account to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo).'
-                            )
-                          }
-                          style={{
-                            alignSelf: 'flex-start',
-                            background: effectiveMemberTier === 'luminary'
-                              ? 'linear-gradient(135deg, #5E35B1 0%, #7E57C2 100%)'
-                              : 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
-                            color: '#FFFFFF',
-                            border: 'none',
-                            borderRadius: '20px',
-                            padding: '10px 20px',
-                            fontFamily: "'Cormorant Garamond', serif",
-                            fontSize: '1.08rem',
-                            fontWeight: 'bold',
-                            cursor: 'pointer',
-                            boxShadow: '0 4px 12px rgba(94, 53, 177, 0.2)'
-                          }}
-                        >
-                          {effectiveMemberTier === 'luminary'
-                            ? '💎 Upgrade to The Radiance Elite ($119/mo) ✧'
-                            : '✨ View Membership Tiers & Upgrade ✧'}
-                        </button>
-                      ) : (
-                        <div style={{ fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#5E35B1', fontWeight: 'bold' }}>
-                          ✓ Highest Sanctuary Tier Unlocked
-                        </div>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        {effectiveMemberTier !== 'radiance' ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openPaywallModal(
+                                effectiveMemberTier === 'luminary'
+                                  ? 'Upgrade from The Luminary Circle to The Radiance Elite ($119/mo) to unlock Monthly Consultations, AI Skin Photo Analysis, and 25% off the Boutique.'
+                                  : 'Upgrade your Free Sanctuary account to The Luminary Circle ($49/mo) or The Radiance Elite ($119/mo).'
+                              )
+                            }
+                            style={{
+                              background: effectiveMemberTier === 'luminary'
+                                ? 'linear-gradient(135deg, #5E35B1 0%, #7E57C2 100%)'
+                                : 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              borderRadius: '20px',
+                              padding: '10px 20px',
+                              fontFamily: "'Cormorant Garamond', serif",
+                              fontSize: '1.08rem',
+                              fontWeight: 'bold',
+                              cursor: 'pointer',
+                              boxShadow: '0 4px 12px rgba(94, 53, 177, 0.2)'
+                            }}
+                          >
+                            {effectiveMemberTier === 'luminary'
+                              ? '💎 Upgrade to The Radiance Elite ($119/mo) ✧'
+                              : '✨ View Membership Tiers & Upgrade ✧'}
+                          </button>
+                        ) : (
+                          <div style={{ fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#5E35B1', fontWeight: 'bold' }}>
+                            ✓ Highest Sanctuary Tier Unlocked
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
                   {/* Account, Shipping & Billing Form */}
                   <form onSubmit={handleSaveAccountProfile} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                     {/* Section 1: Personal & Account Details */}
-                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
-                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0' }}>
-                        1. Personal & Account Details
-                      </h3>
-                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
-                        Manage your display name, unique Sanctuary username, email address, and phone number.
-                      </p>
+                    <div
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: '18px',
+                        border: isEditingPersonal ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+                        padding: '30px',
+                        boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '6px' }}>
+                        <div>
+                          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+                            1. Personal & Account Details
+                          </h3>
+                          <p style={{ margin: '4px 0 0 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                            Manage your display name, unique Sanctuary username, email address, phone number, and password.
+                          </p>
+                        </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          {!isEditingPersonal ? (
+                            <button
+                              type="button"
+                              onClick={() => setIsEditingPersonal(true)}
+                              style={{
+                                backgroundColor: '#FFF0F2',
+                                color: '#5C5454',
+                                border: '1px solid #B38B8F',
+                                borderRadius: '18px',
+                                padding: '9px 18px',
+                                fontFamily: 'sans-serif',
+                                fontSize: '0.86rem',
+                                fontWeight: 'bold',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              ✏️ Update Account Info
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelAccountSection('personal')}
+                                style={{
+                                  backgroundColor: 'transparent',
+                                  color: '#8A797A',
+                                  border: '1px solid #E8C5C8',
+                                  borderRadius: '18px',
+                                  padding: '8px 15px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.84rem',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSavingAccount}
+                                onClick={() => handleSaveAccountSection('personal')}
+                                style={{
+                                  backgroundColor: '#B38B8F',
+                                  color: '#FFFFFF',
+                                  border: 'none',
+                                  borderRadius: '18px',
+                                  padding: '9px 18px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.86rem',
+                                  fontWeight: 'bold',
+                                  cursor: isSavingAccount ? 'wait' : 'pointer',
+                                  boxShadow: '0 4px 12px rgba(179, 139, 143, 0.28)'
+                                }}
+                              >
+                                {savingSection === 'personal' ? '⏳ Saving...' : '💾 Save Account Info'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px', marginTop: '20px' }}>
                         <div>
                           <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
                             Full Name
@@ -14097,10 +14500,12 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.name}
+                            readOnly={!isEditingPersonal}
+                            onClick={() => { if (!isEditingPersonal) setIsEditingPersonal(true); }}
                             onChange={(e) => setAccountForm(prev => ({ ...prev, name: e.target.value }))}
                             placeholder="Jane Doe"
                             required
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingPersonal ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingPersonal ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14111,9 +14516,11 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.username}
+                            readOnly={!isEditingPersonal}
+                            onClick={() => { if (!isEditingPersonal) setIsEditingPersonal(true); }}
                             onChange={(e) => setAccountForm(prev => ({ ...prev, username: e.target.value }))}
                             placeholder="janedoe_glow"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingPersonal ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingPersonal ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14124,10 +14531,12 @@ function App() {
                           <input
                             type="email"
                             value={accountForm.email}
+                            readOnly={!isEditingPersonal}
+                            onClick={() => { if (!isEditingPersonal) setIsEditingPersonal(true); }}
                             onChange={(e) => setAccountForm(prev => ({ ...prev, email: e.target.value }))}
                             placeholder="jane@example.com"
                             required
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingPersonal ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingPersonal ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14138,9 +14547,11 @@ function App() {
                           <input
                             type="tel"
                             value={accountForm.phone}
+                            readOnly={!isEditingPersonal}
+                            onClick={() => { if (!isEditingPersonal) setIsEditingPersonal(true); }}
                             onChange={(e) => setAccountForm(prev => ({ ...prev, phone: e.target.value }))}
                             placeholder="(555) 234-5678"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingPersonal ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingPersonal ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14151,24 +14562,139 @@ function App() {
                           <input
                             type="password"
                             value={accountForm.newPassword}
+                            readOnly={!isEditingPersonal}
+                            onClick={() => { if (!isEditingPersonal) setIsEditingPersonal(true); }}
                             onChange={(e) => setAccountForm(prev => ({ ...prev, newPassword: e.target.value }))}
                             placeholder="Leave blank to keep current password"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingPersonal ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingPersonal ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #F5E6E8' }}>
+                        {!isEditingPersonal && (
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingPersonal(true)}
+                            style={{
+                              backgroundColor: '#FFF0F2',
+                              color: '#5C5454',
+                              border: '1px solid #B38B8F',
+                              borderRadius: '18px',
+                              padding: '9px 18px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.86rem',
+                              fontWeight: 'bold',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            ✏️ Update Account Info
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isSavingAccount}
+                          onClick={() => handleSaveAccountSection('personal')}
+                          style={{
+                            backgroundColor: '#B38B8F',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '18px',
+                            padding: '9px 20px',
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.86rem',
+                            fontWeight: 'bold',
+                            cursor: isSavingAccount ? 'wait' : 'pointer',
+                            boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                          }}
+                        >
+                          {savingSection === 'personal' ? '⏳ Saving Account Info...' : '💾 Save Account Info'}
+                        </button>
                       </div>
                     </div>
 
                     {/* Section 2: Default Shipping Address */}
-                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
-                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0' }}>
-                        2. Shipping Address
-                      </h3>
-                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
-                        Your saved delivery destination for Boutique orders and curated beauty boxes.
-                      </p>
+                    <div
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: '18px',
+                        border: isEditingShipping ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+                        padding: '30px',
+                        boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '6px' }}>
+                        <div>
+                          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+                            2. Shipping Address
+                          </h3>
+                          <p style={{ margin: '4px 0 0 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                            Your saved delivery destination for Boutique orders and curated beauty boxes.
+                          </p>
+                        </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          {!isEditingShipping ? (
+                            <button
+                              type="button"
+                              onClick={() => setIsEditingShipping(true)}
+                              style={{
+                                backgroundColor: '#FFF0F2',
+                                color: '#5C5454',
+                                border: '1px solid #B38B8F',
+                                borderRadius: '18px',
+                                padding: '9px 18px',
+                                fontFamily: 'sans-serif',
+                                fontSize: '0.86rem',
+                                fontWeight: 'bold',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              ✏️ Update Shipping Address
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelAccountSection('shipping')}
+                                style={{
+                                  backgroundColor: 'transparent',
+                                  color: '#8A797A',
+                                  border: '1px solid #E8C5C8',
+                                  borderRadius: '18px',
+                                  padding: '8px 15px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.84rem',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSavingAccount}
+                                onClick={() => handleSaveAccountSection('shipping')}
+                                style={{
+                                  backgroundColor: '#B38B8F',
+                                  color: '#FFFFFF',
+                                  border: 'none',
+                                  borderRadius: '18px',
+                                  padding: '9px 18px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.86rem',
+                                  fontWeight: 'bold',
+                                  cursor: isSavingAccount ? 'wait' : 'pointer',
+                                  boxShadow: '0 4px 12px rgba(179, 139, 143, 0.28)'
+                                }}
+                              >
+                                {savingSection === 'shipping' ? '⏳ Saving...' : '💾 Save Shipping Address'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px', marginTop: '20px' }}>
                         <div style={{ gridColumn: '1 / -1' }}>
                           <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
                             Street Address
@@ -14176,6 +14702,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.address_1}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14183,7 +14711,7 @@ function App() {
                               }))
                             }
                             placeholder="123 Rosewater Boulevard"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14194,6 +14722,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.address_2}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14201,7 +14731,7 @@ function App() {
                               }))
                             }
                             placeholder="Suite 4B"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14212,6 +14742,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.city}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14219,7 +14751,7 @@ function App() {
                               }))
                             }
                             placeholder="Beverly Hills"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14230,6 +14762,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.state}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14237,7 +14771,7 @@ function App() {
                               }))
                             }
                             placeholder="CA"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14248,6 +14782,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.postcode}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14255,7 +14791,7 @@ function App() {
                               }))
                             }
                             placeholder="90210"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14266,6 +14802,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.shippingAddress.country}
+                            readOnly={!isEditingShipping}
+                            onClick={() => { if (!isEditingShipping) setIsEditingShipping(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14273,27 +14811,159 @@ function App() {
                               }))
                             }
                             placeholder="US"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingShipping ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingShipping ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #F5E6E8' }}>
+                        {!isEditingShipping && (
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingShipping(true)}
+                            style={{
+                              backgroundColor: '#FFF0F2',
+                              color: '#5C5454',
+                              border: '1px solid #B38B8F',
+                              borderRadius: '18px',
+                              padding: '9px 18px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.86rem',
+                              fontWeight: 'bold',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            ✏️ Update Shipping Address
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isSavingAccount}
+                          onClick={() => handleSaveAccountSection('shipping')}
+                          style={{
+                            backgroundColor: '#B38B8F',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '18px',
+                            padding: '9px 20px',
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.86rem',
+                            fontWeight: 'bold',
+                            cursor: isSavingAccount ? 'wait' : 'pointer',
+                            boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                          }}
+                        >
+                          {savingSection === 'shipping' ? '⏳ Saving Shipping Address...' : '💾 Save Shipping Address'}
+                        </button>
                       </div>
                     </div>
 
                     {/* Section 3: Billing Information */}
-                    <div style={{ backgroundColor: '#FFFFFF', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '30px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '6px' }}>
-                        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
-                          3. Billing Information
-                        </h3>
-                        <span style={{ fontSize: '0.78rem', fontFamily: 'sans-serif', color: '#8A797A', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '4px 10px' }}>
-                          🔒 Encrypted Stripe Billing Record
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
-                        Keep your preferred payment method summary and billing address on file for Sanctuary memberships and orders.
-                      </p>
+                    <div
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: '18px',
+                        border: isEditingBilling ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+                        padding: '30px',
+                        boxShadow: '0 6px 20px rgba(232, 197, 200, 0.12)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '6px' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+                              3. Billing Information
+                            </h3>
+                            <span style={{ fontSize: '0.76rem', fontFamily: 'sans-serif', color: '#8A797A', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '3px 10px' }}>
+                              🔒 Encrypted Stripe Billing Record
+                            </span>
+                          </div>
+                          <p style={{ margin: '4px 0 0 0', fontSize: '0.9rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
+                            Update and save your preferred payment card summary & billing address, or launch the live Stripe Customer Billing Portal.
+                          </p>
+                        </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            disabled={isOpeningBillingPortal}
+                            onClick={handleOpenStripeBillingPortal}
+                            style={{
+                              backgroundColor: '#F4F0FF',
+                              color: '#5E35B1',
+                              border: '1px solid #D1C4E9',
+                              borderRadius: '18px',
+                              padding: '9px 16px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.84rem',
+                              fontWeight: 'bold',
+                              cursor: isOpeningBillingPortal ? 'wait' : 'pointer'
+                            }}
+                          >
+                            {isOpeningBillingPortal ? '⏳ Connecting to Stripe...' : '💳 Open Live Stripe Billing Portal ↗'}
+                          </button>
+
+                          {!isEditingBilling ? (
+                            <button
+                              type="button"
+                              onClick={() => setIsEditingBilling(true)}
+                              style={{
+                                backgroundColor: '#FFF0F2',
+                                color: '#5C5454',
+                                border: '1px solid #B38B8F',
+                                borderRadius: '18px',
+                                padding: '9px 18px',
+                                fontFamily: 'sans-serif',
+                                fontSize: '0.86rem',
+                                fontWeight: 'bold',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              ✏️ Update Billing Info
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelAccountSection('billing')}
+                                style={{
+                                  backgroundColor: 'transparent',
+                                  color: '#8A797A',
+                                  border: '1px solid #E8C5C8',
+                                  borderRadius: '18px',
+                                  padding: '8px 15px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.84rem',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSavingAccount}
+                                onClick={() => handleSaveAccountSection('billing')}
+                                style={{
+                                  backgroundColor: '#B38B8F',
+                                  color: '#FFFFFF',
+                                  border: 'none',
+                                  borderRadius: '18px',
+                                  padding: '9px 18px',
+                                  fontFamily: 'sans-serif',
+                                  fontSize: '0.86rem',
+                                  fontWeight: 'bold',
+                                  cursor: isSavingAccount ? 'wait' : 'pointer',
+                                  boxShadow: '0 4px 12px rgba(179, 139, 143, 0.28)'
+                                }}
+                              >
+                                {savingSection === 'billing' ? '⏳ Saving...' : '💾 Save Billing Info'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '18px', marginTop: '20px' }}>
                         <div style={{ gridColumn: 'span 2' }}>
                           <label style={{ display: 'block', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold', marginBottom: '6px' }}>
                             Cardholder Name
@@ -14301,6 +14971,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.billingInfo.billingName}
+                            readOnly={!isEditingBilling}
+                            onClick={() => { if (!isEditingBilling) setIsEditingBilling(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14308,7 +14980,7 @@ function App() {
                               }))
                             }
                             placeholder="Jane Doe"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14318,13 +14990,14 @@ function App() {
                           </label>
                           <select
                             value={accountForm.billingInfo.cardBrand || 'Visa'}
+                            disabled={!isEditingBilling}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
                                 billingInfo: { ...prev.billingInfo, cardBrand: e.target.value }
                               }))
                             }
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           >
                             <option value="Visa">Visa</option>
                             <option value="Mastercard">Mastercard</option>
@@ -14341,6 +15014,8 @@ function App() {
                             type="text"
                             maxLength={4}
                             value={accountForm.billingInfo.cardLast4}
+                            readOnly={!isEditingBilling}
+                            onClick={() => { if (!isEditingBilling) setIsEditingBilling(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14348,7 +15023,7 @@ function App() {
                               }))
                             }
                             placeholder="4242"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14360,6 +15035,8 @@ function App() {
                             type="text"
                             maxLength={2}
                             value={accountForm.billingInfo.expMonth}
+                            readOnly={!isEditingBilling}
+                            onClick={() => { if (!isEditingBilling) setIsEditingBilling(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14367,7 +15044,7 @@ function App() {
                               }))
                             }
                             placeholder="08"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14379,6 +15056,8 @@ function App() {
                             type="text"
                             maxLength={4}
                             value={accountForm.billingInfo.expYear}
+                            readOnly={!isEditingBilling}
+                            onClick={() => { if (!isEditingBilling) setIsEditingBilling(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14386,7 +15065,7 @@ function App() {
                               }))
                             }
                             placeholder="2028"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
 
@@ -14397,6 +15076,8 @@ function App() {
                           <input
                             type="text"
                             value={accountForm.billingInfo.billingAddress}
+                            readOnly={!isEditingBilling}
+                            onClick={() => { if (!isEditingBilling) setIsEditingBilling(true); }}
                             onChange={(e) =>
                               setAccountForm(prev => ({
                                 ...prev,
@@ -14404,32 +15085,99 @@ function App() {
                               }))
                             }
                             placeholder="123 Rosewater Boulevard, Beverly Hills, CA 90210"
-                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
+                            style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: isEditingBilling ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', backgroundColor: isEditingBilling ? '#FFFFFF' : '#FFF9F9', fontFamily: 'sans-serif', fontSize: '0.95rem', boxSizing: 'border-box' }}
                           />
                         </div>
                       </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #F5E6E8' }}>
+                        {!isEditingBilling && (
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingBilling(true)}
+                            style={{
+                              backgroundColor: '#FFF0F2',
+                              color: '#5C5454',
+                              border: '1px solid #B38B8F',
+                              borderRadius: '18px',
+                              padding: '9px 18px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.86rem',
+                              fontWeight: 'bold',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            ✏️ Update Billing Info
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isSavingAccount}
+                          onClick={() => handleSaveAccountSection('billing')}
+                          style={{
+                            backgroundColor: '#B38B8F',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '18px',
+                            padding: '9px 20px',
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.86rem',
+                            fontWeight: 'bold',
+                            cursor: isSavingAccount ? 'wait' : 'pointer',
+                            boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)'
+                          }}
+                        >
+                          {savingSection === 'billing' ? '⏳ Saving Billing Info...' : '💾 Save Billing Info'}
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Save Button Row */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px' }}>
-                      <button
-                        type="submit"
-                        disabled={isSavingAccount}
-                        style={{
-                          background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
-                          color: '#FFFFFF',
-                          border: 'none',
-                          borderRadius: '25px',
-                          padding: '15px 36px',
-                          fontFamily: "'Cormorant Garamond', serif",
-                          fontSize: '1.3rem',
-                          fontWeight: 'bold',
-                          cursor: isSavingAccount ? 'wait' : 'pointer',
-                          boxShadow: '0 8px 22px rgba(179, 139, 143, 0.35)'
-                        }}
-                      >
-                        {isSavingAccount ? 'Saving Your Sanctuary Profile...' : '💾 Save Account & Billing Info ✧'}
-                      </button>
+                    {/* Master Save All Footer Row */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', backgroundColor: '#FFF9F9', padding: '20px 26px', borderRadius: '18px', border: '1px solid #E8C5C8' }}>
+                      <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#736A6A', fontStyle: 'italic' }}>
+                        All changes sync immediately with your Sanctuary profile and Boutique checkout defaults.
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingPersonal(true);
+                            setIsEditingShipping(true);
+                            setIsEditingBilling(true);
+                          }}
+                          style={{
+                            backgroundColor: '#FFFFFF',
+                            color: '#5C5454',
+                            border: '1px solid #B38B8F',
+                            borderRadius: '25px',
+                            padding: '13px 24px',
+                            fontFamily: "'Cormorant Garamond', serif",
+                            fontSize: '1.15rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          ✏️ Update All Fields
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSavingAccount}
+                          style={{
+                            background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '25px',
+                            padding: '14px 34px',
+                            fontFamily: "'Cormorant Garamond', serif",
+                            fontSize: '1.25rem',
+                            fontWeight: 'bold',
+                            cursor: isSavingAccount ? 'wait' : 'pointer',
+                            boxShadow: '0 8px 22px rgba(179, 139, 143, 0.35)'
+                          }}
+                        >
+                          {savingSection === 'all' ? '⏳ Saving All Account Changes...' : '💾 Save All Account Changes ✧'}
+                        </button>
+                      </div>
                     </div>
                   </form>
                 </div>
