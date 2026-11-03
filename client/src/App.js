@@ -3895,11 +3895,14 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
   const [isBulkUpdatingShipping, setIsBulkUpdatingShipping] = useState(false);
   const [isSyncingAndSanitizing, setIsSyncingAndSanitizing] = useState(false);
   const [isSanitizingOnly, setIsSanitizingOnly] = useState(false);
+  const [selectedMaxCatalogCap, setSelectedMaxCatalogCap] = useState(300);
   const [syncStatusTelemetry, setSyncStatusTelemetry] = useState({
     lastSyncAt: null,
     lastSanitizedAt: null,
     lastDuplicatesPurgedCount: 0,
     lastNonBeautyPurgedCount: 0,
+    lastExcessCapPrunedCount: 0,
+    maxCatalogCap: 300,
     activeCatalogTotal: 0,
     nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
   });
@@ -3937,6 +3940,9 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       if (res.ok) {
         const data = await res.json();
         setSyncStatusTelemetry(prev => ({ ...prev, ...data }));
+        if (data.maxCatalogCap) {
+          setSelectedMaxCatalogCap(Number(data.maxCatalogCap) || 300);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch catalog sync status:', err);
@@ -3956,7 +3962,10 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ sanitizeOnly: Boolean(sanitizeOnly) })
+        body: JSON.stringify({
+          sanitizeOnly: Boolean(sanitizeOnly),
+          maxCatalogCap: Number(selectedMaxCatalogCap) || 300
+        })
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -4372,31 +4381,47 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
-      {/* Full Skincare & Beauty Catalog Sync & Sanitization Command Bar */}
+      {/* Strict Skincare & Beauty Catalog Sync, Perfume Purge & Cap Command Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '22px 26px', borderRadius: '20px', border: '2px solid #B38B8F', boxShadow: '0 8px 25px rgba(179, 139, 143, 0.18)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '14px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.95rem', color: '#5C5454', margin: 0 }}>
-                ✨ Full Skincare & Beauty Catalog Sync & MongoDB Sanitization
+                ✨ Strict Skincare & Beauty Catalog Sync & Inventory Cap Control
               </h2>
               <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '4px 12px', borderRadius: '14px', fontSize: '0.78rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
-                ⏰ Next Scheduled Sync: Daily at 3:00 AM CST
+                🚫 Perfume, Hair, Nail & Oral Blocked • ⏰ 3:00 AM CST Sync
               </span>
             </div>
             <p style={{ margin: '5px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
-              Pulls all Skincare, Cosmetics & Beauty products from CJ Dropshipping, matches existing items by canonical <strong>CJ PID / SKU / Normalized Title</strong>, preserves locked boutique titles, and automatically sanitizes MongoDB so zero duplicate products ever remain.
+              Strictly pulls only <strong>Skincare & Facial/Cosmetic Beauty</strong> from CJ Dropshipping (blocking perfumes, fragrances, hair/wig items, nail drills/gels, and oral care), collapses multi-size seller clones into one canonical item, and enforces your <strong>Max Catalog Cap</strong> so inventory never grows endlessly.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '6px 14px' }}>
+              <label style={{ fontSize: '0.8rem', fontFamily: 'sans-serif', color: '#5C5454', fontWeight: 'bold' }}>
+                Max Catalog Cap:
+              </label>
+              <select
+                value={selectedMaxCatalogCap}
+                onChange={(e) => setSelectedMaxCatalogCap(Number(e.target.value) || 300)}
+                style={{ border: '1px solid #B38B8F', borderRadius: '12px', padding: '5px 10px', fontFamily: 'sans-serif', fontSize: '0.84rem', fontWeight: 'bold', color: '#5C5454', backgroundColor: '#FFFFFF', cursor: 'pointer' }}
+              >
+                <option value={150}>150 Products</option>
+                <option value={250}>250 Products</option>
+                <option value={300}>300 Products (Recommended)</option>
+                <option value={500}>500 Products</option>
+              </select>
+            </div>
+
             <button
               type="button"
               disabled={isSyncingAndSanitizing || isSanitizingOnly}
               onClick={() => handleFullSyncAndSanitize(false)}
               style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer', boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)' }}
             >
-              {isSyncingAndSanitizing ? '⏳ Pulling All Beauty & Sanitizing...' : '✨ Full Beauty Sync & Sanitize Catalog'}
+              {isSyncingAndSanitizing ? '⏳ Syncing Skincare & Beauty...' : '✨ Sync Skincare & Beauty (Up to Cap)'}
             </button>
             <button
               type="button"
@@ -4404,7 +4429,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
               onClick={() => handleFullSyncAndSanitize(true)}
               style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer' }}
             >
-              {isSanitizingOnly ? '⏳ Sanitizing MongoDB...' : '🧹 Sanitize & Deduplicate MongoDB Now'}
+              {isSanitizingOnly ? '⏳ Purging & Enforcing Cap...' : '🧹 Purge Perfume & Non-Skincare + Enforce Cap'}
             </button>
           </div>
         </div>
@@ -4412,7 +4437,16 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
         {/* Live Telemetry Status Bar */}
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', backgroundColor: '#FFF9F9', padding: '10px 14px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454' }}>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px', fontWeight: 'bold' }}>
-            📦 Catalog Total: <strong style={{ color: '#B38B8F' }}>{inventory.length} products</strong>
+            📦 Active Skincare & Beauty: <strong style={{ color: '#B38B8F' }}>{inventory.length} / {syncStatusTelemetry.maxCatalogCap || selectedMaxCatalogCap} Cap</strong>
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            🚫 Perfume / Non-Skincare Purged: <strong style={{ color: '#C62828' }}>{syncStatusTelemetry.lastNonBeautyPurgedCount || 0}</strong>
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            ♻️ Duplicates Merged: <strong style={{ color: '#2E7D32' }}>{syncStatusTelemetry.lastDuplicatesPurgedCount || 0}</strong>
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            ✂️ Over-Cap Pruned: <strong style={{ color: '#5E35B1' }}>{syncStatusTelemetry.lastExcessCapPrunedCount || 0}</strong>
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
             🧹 Last Sanitized:{' '}
@@ -4421,12 +4455,6 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                 ? new Date(syncStatusTelemetry.lastSanitizedAt).toLocaleString()
                 : 'Verified on Startup'}
             </strong>
-          </span>
-          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
-            ♻️ Duplicates Purged: <strong style={{ color: '#2E7D32' }}>{syncStatusTelemetry.lastDuplicatesPurgedCount || 0}</strong>
-          </span>
-          <span style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', color: '#2E7D32', borderRadius: '10px', padding: '4px 10px', fontWeight: 'bold' }}>
-            ✓ Auto-Schedule: Daily at 3:00 AM CST (America/Chicago)
           </span>
         </div>
       </div>
@@ -5224,6 +5252,7 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
 
   const [isSyncingCj, setIsSyncingCj] = useState(false);
   const [isCleaningCj, setIsCleaningCj] = useState(false);
+  const [testLabCatalogCap, setTestLabCatalogCap] = useState(300);
   const [isTestingWebhooks, setIsTestingWebhooks] = useState(false);
   const [isTestingSmtp, setIsTestingSmtp] = useState(false);
 
@@ -5278,7 +5307,7 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ purgeOnly })
+        body: JSON.stringify({ purgeOnly, maxCatalogCap: Number(testLabCatalogCap) || 300 })
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -5508,23 +5537,35 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <select
+              value={testLabCatalogCap}
+              onChange={(e) => setTestLabCatalogCap(Number(e.target.value) || 300)}
+              title="Maximum Skincare & Beauty Catalog Cap"
+              style={{ border: '1px solid #B38B8F', borderRadius: '18px', padding: '9px 12px', fontFamily: 'sans-serif', fontSize: '0.84rem', fontWeight: 'bold', color: '#5C5454', backgroundColor: '#FFF9F9', cursor: 'pointer' }}
+            >
+              <option value={150}>Cap: 150 Items</option>
+              <option value={250}>Cap: 250 Items</option>
+              <option value={300}>Cap: 300 Items</option>
+              <option value={500}>Cap: 500 Items</option>
+            </select>
+
             <button
               type="button"
               disabled={isSyncingCj || isCleaningCj}
               onClick={() => handleCjSyncOrClean(false)}
               style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
             >
-              {isSyncingCj ? '⏳ Syncing Beauty & Skincare...' : '🔄 Sync Beauty & Skincare'}
+              {isSyncingCj ? '⏳ Syncing Skincare & Beauty...' : '🔄 Sync Skincare & Beauty (Capped)'}
             </button>
 
             <button
               type="button"
               disabled={isSyncingCj || isCleaningCj}
               onClick={() => handleCjSyncOrClean(true)}
-              style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
+              style={{ backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: (isSyncingCj || isCleaningCj) ? 'not-allowed' : 'pointer' }}
             >
-              {isCleaningCj ? '⏳ Cleaning...' : '🧹 Clean Non-Beauty Items'}
+              {isCleaningCj ? '⏳ Purging & Capping...' : '🧹 Purge Perfume & Non-Skincare + Enforce Cap'}
             </button>
 
             <button
