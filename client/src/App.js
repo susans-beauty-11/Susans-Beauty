@@ -3895,6 +3895,13 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
   const [isBulkUpdatingShipping, setIsBulkUpdatingShipping] = useState(false);
   const [isSyncingAndSanitizing, setIsSyncingAndSanitizing] = useState(false);
   const [isSanitizingOnly, setIsSanitizingOnly] = useState(false);
+  const [isSyncingAllCjShipping, setIsSyncingAllCjShipping] = useState(false);
+  const [inventorySearchQuery, setInventorySearchQuery] = useState('');
+  const [inventoryStepFilter, setInventoryStepFilter] = useState('ALL');
+  const [inventoryMarginFilter, setInventoryMarginFilter] = useState('ALL');
+  const [inventorySortBy, setInventorySortBy] = useState('DEFAULT');
+  const [inlineDraftMap, setInlineDraftMap] = useState({});
+  const [savingInlineProductId, setSavingInlineProductId] = useState(null);
   const [selectedMaxCatalogCap, setSelectedMaxCatalogCap] = useState(300);
   const [syncStatusTelemetry, setSyncStatusTelemetry] = useState({
     lastSyncAt: null,
@@ -4090,6 +4097,16 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.product) {
+        const updatedBd = computeClientProductPriceBreakdown(data.product);
+        setInlineDraftMap(prev => ({
+          ...prev,
+          [productId]: {
+            price: String(updatedBd.retailPrice.toFixed(2)),
+            wholesalePriceUsd: String(updatedBd.wholesalePriceUsd.toFixed(2)),
+            shippingCostUsd: String(updatedBd.shippingCostUsd.toFixed(2)),
+            selectedLogisticName: updatedBd.selectedLogisticName
+          }
+        }));
         setInventory(prev => {
           const next = prev.map(p => (p._id === productId ? data.product : p));
           if (onCatalogUpdated) onCatalogUpdated(next);
@@ -4123,6 +4140,144 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       setOpsBanner({ type: 'error', text: 'Network error while fetching CJ shipping quote.' });
     }
     setQuotingProductId(null);
+  };
+
+  const handleSyncAllLiveCjShipping = async (recalculatePrices = false) => {
+    const token = localStorage.getItem('token');
+    setIsSyncingAllCjShipping(true);
+    setOpsBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/sync-all-cj-shipping`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          limit: 60,
+          recalculatePrices: Boolean(recalculatePrices),
+          preferredLogisticName: globalShippingControl.selectedLogisticName || 'CJPacket Sensitive'
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (Array.isArray(data.products)) {
+          setInventory(data.products);
+          if (onCatalogUpdated) onCatalogUpdated(data.products);
+        } else {
+          await fetchInventory();
+        }
+        setInlineDraftMap({});
+        setOpsBanner({
+          type: 'success',
+          text: data.message || '✈️ Synced live CJ Variant IDs, weights & carrier shipping rates across the catalog! ✧'
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: data.error || 'Failed to batch-sync live CJ shipping rates.'
+        });
+      }
+    } catch (err) {
+      console.error('Batch sync CJ shipping error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while batch-syncing live CJ shipping rates.' });
+    }
+    setIsSyncingAllCjShipping(false);
+  };
+
+  const handleInlineDraftChange = (prod, field, value) => {
+    const bd = computeClientProductPriceBreakdown(prod);
+    setInlineDraftMap(prev => {
+      const current = prev[prod._id] || {
+        price: String(bd.retailPrice.toFixed(2)),
+        wholesalePriceUsd: String(bd.wholesalePriceUsd.toFixed(2)),
+        shippingCostUsd: String(bd.shippingCostUsd.toFixed(2)),
+        selectedLogisticName: bd.selectedLogisticName
+      };
+      return {
+        ...prev,
+        [prod._id]: {
+          ...current,
+          [field]: value
+        }
+      };
+    });
+  };
+
+  const handleSaveInlineProductPricing = async (prod, { recalculateFromFormula = false } = {}) => {
+    const token = localStorage.getItem('token');
+    const bd = computeClientProductPriceBreakdown(prod);
+    const draft = inlineDraftMap[prod._id] || {
+      price: String(bd.retailPrice.toFixed(2)),
+      wholesalePriceUsd: String(bd.wholesalePriceUsd.toFixed(2)),
+      shippingCostUsd: String(bd.shippingCostUsd.toFixed(2)),
+      selectedLogisticName: bd.selectedLogisticName
+    };
+
+    const parsedRetail = parseFloat(draft.price);
+    const parsedWholesale = parseFloat(draft.wholesalePriceUsd);
+    const parsedShipping = parseFloat(draft.shippingCostUsd);
+
+    if (!recalculateFromFormula && (isNaN(parsedRetail) || parsedRetail <= 0)) {
+      alert('Please enter a valid Retail Price ($).');
+      return;
+    }
+
+    setSavingInlineProductId(prod._id);
+    setOpsBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/${prod._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          title: prod.title,
+          price: !isNaN(parsedRetail) ? Number(parsedRetail.toFixed(2)) : bd.retailPrice,
+          wholesalePriceUsd: !isNaN(parsedWholesale) ? Number(parsedWholesale.toFixed(2)) : bd.wholesalePriceUsd,
+          shippingCostUsd: !isNaN(parsedShipping) ? Number(parsedShipping.toFixed(2)) : bd.shippingCostUsd,
+          selectedLogisticName: draft.selectedLogisticName || bd.selectedLogisticName || 'CJPacket Sensitive',
+          markupMultiplier: bd.markupMultiplier || 6.5,
+          shippingIncludedInPrice: bd.shippingIncludedInPrice,
+          recalculateFromWholesale: Boolean(recalculateFromFormula)
+        })
+      });
+      const updatedProd = await res.json().catch(() => null);
+      if (res.ok && updatedProd && updatedProd._id) {
+        const nextBd = computeClientProductPriceBreakdown(updatedProd);
+        setInlineDraftMap(prev => ({
+          ...prev,
+          [prod._id]: {
+            price: String(nextBd.retailPrice.toFixed(2)),
+            wholesalePriceUsd: String(nextBd.wholesalePriceUsd.toFixed(2)),
+            shippingCostUsd: String(nextBd.shippingCostUsd.toFixed(2)),
+            selectedLogisticName: nextBd.selectedLogisticName
+          }
+        }));
+        setInventory(prev => {
+          const next = prev.map(p => (p._id === prod._id ? updatedProd : p));
+          if (onCatalogUpdated) onCatalogUpdated(next);
+          return next;
+        });
+        const netProfit = Number((nextBd.retailPrice - nextBd.wholesalePriceUsd - nextBd.shippingCostUsd - (nextBd.customLabelEnabled ? nextBd.customLabelCostUsd : 0)).toFixed(2));
+        setOpsBanner({
+          type: netProfit > 0 ? 'success' : 'error',
+          text: `💾 Saved "${updatedProd.title}" → Retail: $${nextBd.retailPrice.toFixed(2)} • Wholesale: $${nextBd.wholesalePriceUsd.toFixed(2)} • CJ Ship (${nextBd.selectedLogisticName}): $${nextBd.shippingCostUsd.toFixed(2)} • Net Profit: ${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)} ✧`
+        });
+      } else {
+        setOpsBanner({
+          type: 'error',
+          text: updatedProd?.error || 'Failed to save product price and shipping.'
+        });
+      }
+    } catch (err) {
+      console.error('Inline save pricing error:', err);
+      setOpsBanner({ type: 'error', text: 'Network error while saving product price and shipping.' });
+    }
+    setSavingInlineProductId(null);
   };
 
   const handleToggleProductCustomLabel = async (prod, nextEnabled, packagingNameOverride = null) => {
@@ -4368,7 +4523,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       customLabelName: bd.customLabelName,
       customLabelCostUsd: bd.customLabelCostUsd || 0.65,
       customBrandText: prod.customLabelConfig?.customBrandText || "Susan's Beauty Consulting ✧",
-      recalculateFromWholesale: true,
+      recalculateFromWholesale: false,
       availableLogistics: Array.isArray(prod.availableLogistics) ? prod.availableLogistics : [],
       imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
       description: cleanDesc,
@@ -4589,21 +4744,43 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
               Adjust wholesale cost, live CJ shipping carrier, custom packaging, and Blueprint skin-condition labels.
             </p>
 
-            {/* Live All-In Price Breakdown Banner inside Modal */}
+            {/* Live All-In Price & Net Profit After Shipping Banner inside Modal */}
             {(() => {
               const w = parseFloat(editModalData.wholesalePriceUsd) || 0;
               const m = parseFloat(editModalData.markupMultiplier) || 6.5;
-              const s = editModalData.shippingIncludedInPrice ? (parseFloat(editModalData.shippingCostUsd) || 0) : 0;
+              const shipRaw = parseFloat(editModalData.shippingCostUsd) || 0;
+              const s = editModalData.shippingIncludedInPrice ? shipRaw : 0;
               const l = editModalData.customLabelEnabled ? (parseFloat(editModalData.customLabelCostUsd) || 0.65) : 0;
               const calcTotal = Number(((w * m) + s + l).toFixed(2));
+              const activeRetail = editModalData.recalculateFromWholesale
+                ? calcTotal
+                : (parseFloat(editModalData.price) || calcTotal);
+              const totalCjCost = Number((w + shipRaw + l).toFixed(2));
+              const netProfit = Number((activeRetail - totalCjCost).toFixed(2));
 
               return (
-                <div style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '14px', padding: '12px 16px', marginBottom: '16px', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454' }}>
+                <div style={{ backgroundColor: netProfit <= 0 ? '#FFF5F5' : '#FFF0F2', border: `1.5px solid ${netProfit <= 0 ? '#C62828' : '#B38B8F'}`, borderRadius: '14px', padding: '12px 16px', marginBottom: '16px', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                    <strong>All-In Price Breakdown:</strong>
-                    <span style={{ color: '#2E7D32', fontWeight: 'bold', fontSize: '0.95rem' }}>
-                      Wholesale: ${w.toFixed(2)} × {m} + CJ Shipping ({editModalData.selectedLogisticName}): ${s.toFixed(2)} + Custom Label: ${l.toFixed(2)} = Retail: ${calcTotal.toFixed(2)}
+                    <strong>All-In CJ Unit Cost vs. Retail Price:</strong>
+                    <span style={{ color: netProfit <= 0 ? '#C62828' : '#2E7D32', fontWeight: 'bold', fontSize: '0.92rem' }}>
+                      CJ Wholesale (${w.toFixed(2)}) + CJ Shipping (${shipRaw.toFixed(2)}) + Label (${l.toFixed(2)}) = ${totalCjCost.toFixed(2)} Cost → Retail: ${activeRetail.toFixed(2)} ({netProfit >= 0 ? `+$${netProfit.toFixed(2)} Net Profit` : `🚨 -$${Math.abs(netProfit).toFixed(2)} LOSS`})
                     </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.78rem', color: '#736A6A' }}>
+                    <span>
+                      Mode: <strong>{editModalData.recalculateFromWholesale ? `🧮 Formula (${m}x Markup = $${calcTotal.toFixed(2)})` : `🔒 Custom Retail Price ($${activeRetail.toFixed(2)})`}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setEditModalData(prev => ({
+                        ...prev,
+                        price: calcTotal,
+                        recalculateFromWholesale: false
+                      }))}
+                      style={{ backgroundColor: '#FFFFFF', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '10px', padding: '3px 10px', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer' }}
+                    >
+                      🧮 Apply {m}x Formula (${calcTotal.toFixed(2)}) to Retail Box
+                    </button>
                   </div>
                 </div>
               );
@@ -4655,7 +4832,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                     type="number"
                     step="0.01"
                     value={editModalData.wholesalePriceUsd}
-                    onChange={e => setEditModalData({ ...editModalData, wholesalePriceUsd: e.target.value, recalculateFromWholesale: true })}
+                    onChange={e => setEditModalData({ ...editModalData, wholesalePriceUsd: e.target.value })}
                     style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontFamily: 'sans-serif', fontSize: '0.9rem', boxSizing: 'border-box' }}
                   />
                 </div>
@@ -4665,7 +4842,18 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                     type="number"
                     step="0.1"
                     value={editModalData.markupMultiplier}
-                    onChange={e => setEditModalData({ ...editModalData, markupMultiplier: e.target.value, recalculateFromWholesale: true })}
+                    onChange={e => {
+                      const nextM = parseFloat(e.target.value) || 6.5;
+                      const w = parseFloat(editModalData.wholesalePriceUsd) || 0;
+                      const s = editModalData.shippingIncludedInPrice ? (parseFloat(editModalData.shippingCostUsd) || 0) : 0;
+                      const l = editModalData.customLabelEnabled ? (parseFloat(editModalData.customLabelCostUsd) || 0.65) : 0;
+                      setEditModalData({
+                        ...editModalData,
+                        markupMultiplier: e.target.value,
+                        price: Number(((w * nextM) + s + l).toFixed(2)),
+                        recalculateFromWholesale: false
+                      });
+                    }}
                     style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontFamily: 'sans-serif', fontSize: '0.9rem', boxSizing: 'border-box' }}
                   />
                 </div>
@@ -4675,19 +4863,19 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                     type="number"
                     step="0.01"
                     value={editModalData.shippingCostUsd}
-                    onChange={e => setEditModalData({ ...editModalData, shippingCostUsd: e.target.value, recalculateFromWholesale: true })}
+                    onChange={e => setEditModalData({ ...editModalData, shippingCostUsd: e.target.value })}
                     style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontFamily: 'sans-serif', fontSize: '0.9rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', color: '#5C5454', marginBottom: '4px', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Retail Price ($)</label>
+                  <label style={{ display: 'block', fontSize: '0.8rem', color: '#2E7D32', marginBottom: '4px', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Retail Price ($ Custom)</label>
                   <input
                     required
                     type="number"
                     step="0.01"
                     value={editModalData.price}
                     onChange={e => setEditModalData({ ...editModalData, price: e.target.value, recalculateFromWholesale: false })}
-                    style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontFamily: 'sans-serif', fontSize: '0.9rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '2px solid #2E7D32', backgroundColor: '#F6FBF7', fontFamily: 'sans-serif', fontSize: '0.95rem', fontWeight: 'bold', boxSizing: 'border-box' }}
                   />
                 </div>
               </div>
@@ -5057,9 +5245,18 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
         </div>
 
         <div style={{ flex: 1, minWidth: '280px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
             <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', margin: 0, fontSize: '2.2rem' }}>Boutique Inventory</h2>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                disabled={isSyncingAllCjShipping}
+                onClick={() => handleSyncAllLiveCjShipping(false)}
+                style={{ backgroundColor: '#F6FBF7', border: '1.5px solid #2E7D32', color: '#2E7D32', padding: '7px 14px', borderRadius: '20px', fontSize: '0.88rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: isSyncingAllCjShipping ? 'not-allowed' : 'pointer' }}
+                title="Resolves real CJ Variant IDs (vid), product weights, and live CJ shipping rates across your catalog without overwriting your custom retail prices"
+              >
+                {isSyncingAllCjShipping ? '⏳ Pulling Live CJ Shipping Rates...' : '✈️ Sync Live CJ Shipping Rates & VIDs'}
+              </button>
               <button
                 type="button"
                 disabled={isAutoLabeling}
@@ -5083,143 +5280,437 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(265px, 1fr))', gap: '20px' }}>
-            {inventory.map(prod => {
-              const displayImage = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
+          {/* Search, Filter & Profit-Protection Sort Bar for Susan's Boutique Inventory */}
+          {(() => {
+            const enrichedList = inventory.map(prod => {
               const meta = deriveProductBlueprintMeta(prod);
               const bd = computeClientProductPriceBreakdown(prod);
+              const draft = inlineDraftMap[prod._id] || {
+                price: String(bd.retailPrice.toFixed(2)),
+                wholesalePriceUsd: String(bd.wholesalePriceUsd.toFixed(2)),
+                shippingCostUsd: String(bd.shippingCostUsd.toFixed(2)),
+                selectedLogisticName: bd.selectedLogisticName
+              };
+              const retailVal = parseFloat(draft.price);
+              const wholesaleVal = parseFloat(draft.wholesalePriceUsd);
+              const shippingVal = parseFloat(draft.shippingCostUsd);
+              const effectiveRetail = !isNaN(retailVal) ? retailVal : bd.retailPrice;
+              const effectiveWholesale = !isNaN(wholesaleVal) ? wholesaleVal : bd.wholesalePriceUsd;
+              const effectiveShipping = !isNaN(shippingVal) ? shippingVal : bd.shippingCostUsd;
+              const labelCost = bd.customLabelEnabled ? bd.customLabelCostUsd : 0;
+              const allInCost = Number((effectiveWholesale + effectiveShipping + labelCost).toFixed(2));
+              const netProfit = Number((effectiveRetail - allInCost).toFixed(2));
+              return {
+                prod,
+                meta,
+                bd,
+                draft,
+                effectiveRetail,
+                effectiveWholesale,
+                effectiveShipping,
+                labelCost,
+                allInCost,
+                netProfit
+              };
+            });
 
-              return (
-                <div key={prod._id} style={{ backgroundColor: '#FFFFFF', border: bd.customLabelEnabled ? '1.5px solid #B38B8F' : '1px solid #E8C5C8', borderRadius: '15px', padding: '15px', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.12)' }}>
-                  <div style={{ width: '100%', height: '140px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '10px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                    <span style={{ position: 'absolute', top: '6px', left: '6px', backgroundColor: 'rgba(92, 84, 84, 0.85)', color: '#FFFFFF', padding: '3px 8px', borderRadius: '10px', fontSize: '0.68rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold' }}>
-                      {meta.ritualStep}
+            const lossOrLowMarginCount = enrichedList.filter(item => item.netProfit < 4.0).length;
+            const highShippingCount = enrichedList.filter(item => item.effectiveShipping >= 6.0).length;
+
+            const cleanQ = inventorySearchQuery.trim().toLowerCase();
+            const filteredList = enrichedList.filter(({ prod, meta, effectiveShipping, netProfit }) => {
+              if (inventoryStepFilter !== 'ALL' && meta.ritualStep !== inventoryStepFilter) {
+                return false;
+              }
+              if (inventoryMarginFilter === 'LOSS_OR_LOW_MARGIN' && netProfit >= 4.0) {
+                return false;
+              }
+              if (inventoryMarginFilter === 'HIGH_SHIPPING' && effectiveShipping < 6.0) {
+                return false;
+              }
+              if (!cleanQ) return true;
+              const pidStr = String(prod.cjPid || prod.rawCjData?.pid || '');
+              const skuStr = String(prod.cjSku || prod.rawCjData?.productSku || prod.variants?.[0]?.sku || '');
+              const vidStr = String(prod.variants?.[0]?.vid || prod.rawCjData?.vid || '');
+              const tagsStr = Array.isArray(prod.tags) ? prod.tags.join(' ') : String(prod.tags || '');
+              const hay = `${prod.title || ''} ${pidStr} ${skuStr} ${vidStr} ${meta.ritualStep || ''} ${(meta.skinTypes || []).join(' ')} ${(meta.skinConcerns || []).join(' ')} ${tagsStr}`.toLowerCase();
+              return hay.includes(cleanQ);
+            });
+
+            const sortedList = [...filteredList].sort((a, b) => {
+              if (inventorySortBy === 'SHIPPING_DESC') return b.effectiveShipping - a.effectiveShipping;
+              if (inventorySortBy === 'PROFIT_ASC') return a.netProfit - b.netProfit;
+              if (inventorySortBy === 'PRICE_ASC') return a.effectiveRetail - b.effectiveRetail;
+              if (inventorySortBy === 'PRICE_DESC') return b.effectiveRetail - a.effectiveRetail;
+              if (inventorySortBy === 'TITLE_ASC') return String(a.prod.title || '').localeCompare(String(b.prod.title || ''));
+              return 0;
+            });
+
+            return (
+              <>
+                <div style={{ backgroundColor: '#FFFFFF', border: '1.5px solid #B38B8F', borderRadius: '16px', padding: '14px 16px', marginBottom: '18px', boxShadow: '0 4px 14px rgba(179, 139, 143, 0.12)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: '10px', alignItems: 'center' }}>
+                    <div style={{ position: 'relative', gridColumn: 'span 2', minWidth: '240px' }}>
+                      <input
+                        type="text"
+                        value={inventorySearchQuery}
+                        onChange={(e) => setInventorySearchQuery(e.target.value)}
+                        placeholder="🔍 Search inventory by product name, SKU, CJ PID, variant VID, or skin goal..."
+                        style={{ width: '100%', padding: '10px 34px 10px 12px', borderRadius: '10px', border: '1px solid #B38B8F', backgroundColor: '#FFF9F9', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.88rem', outline: 'none', boxSizing: 'border-box' }}
+                      />
+                      {inventorySearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setInventorySearchQuery('')}
+                          style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#8A797A', cursor: 'pointer', fontSize: '0.95rem', fontWeight: 'bold' }}
+                          title="Clear search"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <select
+                      value={inventoryStepFilter}
+                      onChange={(e) => setInventoryStepFilter(e.target.value)}
+                      style={{ padding: '10px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.84rem' }}
+                    >
+                      <option value="ALL">All Ritual Steps ({inventory.length})</option>
+                      {BLUEPRINT_RITUAL_STEP_OPTIONS.map(stepOpt => (
+                        <option key={stepOpt} value={stepOpt}>{stepOpt}</option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={inventoryMarginFilter}
+                      onChange={(e) => setInventoryMarginFilter(e.target.value)}
+                      style={{ padding: '10px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.84rem' }}
+                    >
+                      <option value="ALL">All Margin & Shipping Levels</option>
+                      <option value="LOSS_OR_LOW_MARGIN">⚠️ Low Margin / Loss Alert (&lt; $4 Profit) [{lossOrLowMarginCount}]</option>
+                      <option value="HIGH_SHIPPING">✈️ High CJ Shipping (&ge; $6.00) [{highShippingCount}]</option>
+                    </select>
+
+                    <select
+                      value={inventorySortBy}
+                      onChange={(e) => setInventorySortBy(e.target.value)}
+                      style={{ padding: '10px', borderRadius: '10px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', color: '#5C5454', fontFamily: 'sans-serif', fontSize: '0.84rem' }}
+                    >
+                      <option value="DEFAULT">Sort: Default Order</option>
+                      <option value="SHIPPING_DESC">✈️ Sort: Highest CJ Shipping First</option>
+                      <option value="PROFIT_ASC">⚠️ Sort: Lowest Net Profit First</option>
+                      <option value="PRICE_ASC">💲 Sort: Retail Price (Low → High)</option>
+                      <option value="PRICE_DESC">💲 Sort: Retail Price (High → Low)</option>
+                      <option value="TITLE_ASC">🔤 Sort: Product Title (A → Z)</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.78rem', fontFamily: 'sans-serif', color: '#736A6A' }}>
+                    <span>
+                      Showing <strong>{sortedList.length}</strong> of <strong>{inventory.length}</strong> products • Edit <strong>Retail Price ($)</strong> or <strong>CJ Ship ($)</strong> directly on any card and click <strong>💾 Save Price</strong>
                     </span>
-                    {bd.customLabelEnabled && (
-                      <span style={{ position: 'absolute', bottom: '6px', left: '6px', backgroundColor: '#B38B8F', color: '#FFFFFF', padding: '2px 8px', borderRadius: '8px', fontSize: '0.66rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
-                        🏷️ Custom Labeled (+${bd.customLabelCostUsd.toFixed(2)})
-                      </span>
-                    )}
-                    {displayImage ? (
-                      <img src={displayImage} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    ) : (
-                      <span style={{ color: '#B38B8F', fontStyle: 'italic', fontSize: '0.9rem' }}>No Image</span>
-                    )}
-                  </div>
-
-                  <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.12rem', color: '#5C5454', margin: '0 0 4px 0', minHeight: '36px' }}>{prod.title}</h4>
-
-                  {/* CJ PID, SKU & Custom Title Lock Fingerprint Badges */}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
-                    {(prod.cjPid || prod.rawCjData?.pid) && (
-                      <span style={{ backgroundColor: '#FFF9F9', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 6px', fontSize: '0.64rem', fontFamily: 'sans-serif' }}>
-                        CJ PID: {String(prod.cjPid || prod.rawCjData?.pid).slice(0, 14)}
-                      </span>
-                    )}
-                    {(prod.cjSku || prod.rawCjData?.productSku || prod.variants?.[0]?.sku) && (
-                      <span style={{ backgroundColor: '#FFF9F9', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 6px', fontSize: '0.64rem', fontFamily: 'sans-serif' }}>
-                        SKU: {String(prod.cjSku || prod.rawCjData?.productSku || prod.variants?.[0]?.sku).slice(0, 16)}
-                      </span>
-                    )}
-                    {prod.customTitleLocked && (
-                      <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '6px', padding: '1px 6px', fontSize: '0.64rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
-                        🔒 Title Locked
-                      </span>
-                    )}
-                  </div>
-
-                  {/* All-In Price Breakdown Box on Card */}
-                  <div style={{ backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '8px 10px', marginBottom: '10px', fontFamily: 'sans-serif', fontSize: '0.73rem', color: '#5C5454' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
-                      <span style={{ color: '#8A797A' }}>Retail ({bd.shippingIncludedInPrice ? 'Ship Incl.' : 'Excl. Ship'}):</span>
-                      <strong style={{ fontSize: '1.05rem', color: '#B38B8F' }}>${bd.retailPrice.toFixed(2)}</strong>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      {lossOrLowMarginCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInventoryMarginFilter(prev => (prev === 'LOSS_OR_LOW_MARGIN' ? 'ALL' : 'LOSS_OR_LOW_MARGIN'));
+                            setInventorySortBy('PROFIT_ASC');
+                          }}
+                          style={{ backgroundColor: '#FFF5F5', color: '#C62828', border: '1px solid #FFCDD2', borderRadius: '12px', padding: '3px 10px', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer' }}
+                        >
+                          🚨 {lossOrLowMarginCount} Low-Margin / High-Shipping Item(s) — Click to Inspect
+                        </button>
+                      )}
+                      {(inventorySearchQuery || inventoryStepFilter !== 'ALL' || inventoryMarginFilter !== 'ALL' || inventorySortBy !== 'DEFAULT') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInventorySearchQuery('');
+                            setInventoryStepFilter('ALL');
+                            setInventoryMarginFilter('ALL');
+                            setInventorySortBy('DEFAULT');
+                          }}
+                          style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '12px', padding: '3px 10px', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer' }}
+                        >
+                          ↻ Reset Filters
+                        </button>
+                      )}
                     </div>
-                    <div style={{ color: '#736A6A', lineHeight: '1.4' }}>
-                      Wholesale: <strong>${bd.wholesalePriceUsd.toFixed(2)}</strong> + CJ Shipping ({bd.selectedLogisticName}): <strong>${bd.shippingCostUsd.toFixed(2)}</strong>
-                      {bd.customLabelEnabled ? ` + Custom Label: $${bd.customLabelCostUsd.toFixed(2)}` : ''} = <strong>${bd.retailPrice.toFixed(2)}</strong>
-                    </div>
-                  </div>
-
-                  {/* Per-Card CJ Shipping Carrier Dropdown & Custom Label Toggle */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px', backgroundColor: '#FFF9F9', padding: '8px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
-                    <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
-                      <select
-                        value={bd.selectedLogisticName}
-                        disabled={quotingProductId === prod._id}
-                        onChange={(e) => handleFetchProductShippingQuote(prod._id, e.target.value)}
-                        style={{ flex: 1, padding: '5px 6px', borderRadius: '6px', border: '1px solid #E8C5C8', fontSize: '0.72rem', fontFamily: 'sans-serif', color: '#5C5454', backgroundColor: '#FFFFFF' }}
-                      >
-                        {CJ_CARRIER_OPTIONS.map(c => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        title="Fetch live CJ freight quote & recalculate retail price"
-                        disabled={quotingProductId === prod._id}
-                        onClick={() => handleFetchProductShippingQuote(prod._id, bd.selectedLogisticName)}
-                        style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '6px', padding: '5px 8px', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer' }}
-                      >
-                        {quotingProductId === prod._id ? '⏳' : '✈️ Quote'}
-                      </button>
-                    </div>
-
-                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.73rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <input
-                          type="checkbox"
-                          disabled={togglingLabelProductId === prod._id}
-                          checked={bd.customLabelEnabled}
-                          onChange={(e) => handleToggleProductCustomLabel(prod, e.target.checked)}
-                        />
-                        🏷️ Custom Label / Packaging
-                      </span>
-                      <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>
-                        {bd.customLabelEnabled ? `+$${bd.customLabelCostUsd.toFixed(2)}` : 'Off'}
-                      </span>
-                    </label>
-                  </div>
-
-                  {/* Skin Type & Skin Condition Badges */}
-                  <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '7px 8px', marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Skin:</span>
-                      {meta.skinTypes.slice(0, 3).map((st, idx) => (
-                        <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
-                          {st}
-                        </span>
-                      ))}
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Targets:</span>
-                      {meta.skinConcerns.slice(0, 3).map((sc, idx) => (
-                        <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
-                          {sc}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  
-                  <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
-                    <button
-                      type="button"
-                      onClick={() => handleEditClick(prod)}
-                      style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}
-                    >
-                      ✎ Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(prod._id)}
-                      style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}
-                    >
-                      Delete
-                    </button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {sortedList.length === 0 ? (
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px dashed #B38B8F', borderRadius: '16px', padding: '32px', textAlign: 'center', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                    No inventory products matched your search or filter criteria.
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(285px, 1fr))', gap: '20px' }}>
+                    {sortedList.map(({ prod, meta, bd, draft, effectiveRetail, effectiveWholesale, effectiveShipping, labelCost, allInCost, netProfit }) => {
+                      const displayImage = prod.imageUrl && prod.imageUrl.startsWith('//') ? `https:${prod.imageUrl}` : prod.imageUrl;
+                      const isLoss = netProfit <= 0;
+                      const isLowMargin = !isLoss && netProfit < 4.0;
+                      const availableRates = Array.isArray(prod.availableLogistics) ? prod.availableLogistics : [];
+
+                      return (
+                        <div key={prod._id} style={{ backgroundColor: '#FFFFFF', border: isLoss ? '2px solid #C62828' : (bd.customLabelEnabled ? '1.5px solid #B38B8F' : '1px solid #E8C5C8'), borderRadius: '15px', padding: '15px', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.12)' }}>
+                          <div style={{ width: '100%', height: '140px', backgroundColor: '#FFF0F2', borderRadius: '10px', marginBottom: '10px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                            <span style={{ position: 'absolute', top: '6px', left: '6px', backgroundColor: 'rgba(92, 84, 84, 0.85)', color: '#FFFFFF', padding: '3px 8px', borderRadius: '10px', fontSize: '0.68rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold' }}>
+                              {meta.ritualStep}
+                            </span>
+                            <span style={{ position: 'absolute', top: '6px', right: '6px', backgroundColor: 'rgba(255, 255, 255, 0.92)', color: '#5C5454', border: '1px solid #E8C5C8', padding: '2px 7px', borderRadius: '8px', fontSize: '0.65rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                              ⚖️ {Number(prod.estimatedWeightGrams || 120)}g
+                            </span>
+                            {bd.customLabelEnabled && (
+                              <span style={{ position: 'absolute', bottom: '6px', left: '6px', backgroundColor: '#B38B8F', color: '#FFFFFF', padding: '2px 8px', borderRadius: '8px', fontSize: '0.66rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                                🏷️ Custom Labeled (+${bd.customLabelCostUsd.toFixed(2)})
+                              </span>
+                            )}
+                            {displayImage ? (
+                              <img src={displayImage} alt={prod.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            ) : (
+                              <span style={{ color: '#B38B8F', fontStyle: 'italic', fontSize: '0.9rem' }}>No Image</span>
+                            )}
+                          </div>
+
+                          <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.12rem', color: '#5C5454', margin: '0 0 4px 0', minHeight: '36px' }}>{prod.title}</h4>
+
+                          {/* CJ PID, Variant VID/SKU & Custom Title Lock Fingerprint Badges */}
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                            {(prod.cjPid || prod.rawCjData?.pid) && (
+                              <span style={{ backgroundColor: '#FFF9F9', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 6px', fontSize: '0.63rem', fontFamily: 'sans-serif' }}>
+                                PID: {String(prod.cjPid || prod.rawCjData?.pid).slice(0, 14)}
+                              </span>
+                            )}
+                            {(prod.variants?.[0]?.sku || prod.cjSku || prod.rawCjData?.productSku) && (
+                              <span style={{ backgroundColor: '#FFF9F9', color: '#736A6A', border: '1px solid #E8C5C8', borderRadius: '6px', padding: '1px 6px', fontSize: '0.63rem', fontFamily: 'sans-serif' }}>
+                                SKU/VID: {String(prod.variants?.[0]?.sku || prod.cjSku || prod.rawCjData?.productSku).slice(0, 16)}
+                              </span>
+                            )}
+                            {prod.customTitleLocked && (
+                              <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '6px', padding: '1px 6px', fontSize: '0.63rem', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                                🔒 Title Locked
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Net Profit After Shipping Guardrail Box */}
+                          <div style={{
+                            backgroundColor: isLoss ? '#FFF5F5' : (isLowMargin ? '#FFF8E7' : '#F6FBF7'),
+                            border: `1px solid ${isLoss ? '#FFCDD2' : (isLowMargin ? '#FFE082' : '#A5D6A7')}`,
+                            borderRadius: '10px',
+                            padding: '8px 10px',
+                            marginBottom: '8px',
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.73rem',
+                            color: '#5C5454'
+                          }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                              <strong style={{ color: isLoss ? '#C62828' : (isLowMargin ? '#B26A00' : '#2E7D32'), fontSize: '0.78rem' }}>
+                                {isLoss
+                                  ? `🚨 LOSS ALERT (${netProfit.toFixed(2)})`
+                                  : isLowMargin
+                                  ? `⚠️ Low Margin (+$${netProfit.toFixed(2)} Profit)`
+                                  : `✓ Net Profit: +$${netProfit.toFixed(2)}`}
+                              </strong>
+                              <span style={{ fontWeight: 'bold', color: '#5C5454' }}>
+                                Cost: ${allInCost.toFixed(2)}
+                              </span>
+                            </div>
+                            <div style={{ color: '#736A6A', fontSize: '0.7rem', lineHeight: '1.35' }}>
+                              CJ Item: <strong>${effectiveWholesale.toFixed(2)}</strong> + CJ Ship ({draft.selectedLogisticName || bd.selectedLogisticName}): <strong>${effectiveShipping.toFixed(2)}</strong>
+                              {labelCost > 0 ? ` + Label: $${labelCost.toFixed(2)}` : ''} → Retail: <strong>${effectiveRetail.toFixed(2)}</strong>
+                            </div>
+                          </div>
+
+                          {/* Direct Inline Price, Wholesale & Shipping Editor on Card */}
+                          <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '8px', marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '5px' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '0.63rem', fontWeight: 'bold', color: '#2E7D32', fontFamily: 'sans-serif', marginBottom: '2px' }}>
+                                  Retail ($)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={draft.price}
+                                  onChange={(e) => handleInlineDraftChange(prod, 'price', e.target.value)}
+                                  style={{ width: '100%', padding: '5px', borderRadius: '6px', border: '1.5px solid #2E7D32', backgroundColor: '#FFFFFF', fontSize: '0.78rem', fontWeight: 'bold', color: '#5C5454', boxSizing: 'border-box' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '0.63rem', fontWeight: 'bold', color: '#736A6A', fontFamily: 'sans-serif', marginBottom: '2px' }}>
+                                  CJ Cost ($)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={draft.wholesalePriceUsd}
+                                  onChange={(e) => handleInlineDraftChange(prod, 'wholesalePriceUsd', e.target.value)}
+                                  style={{ width: '100%', padding: '5px', borderRadius: '6px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontSize: '0.76rem', color: '#5C5454', boxSizing: 'border-box' }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '0.63rem', fontWeight: 'bold', color: '#B38B8F', fontFamily: 'sans-serif', marginBottom: '2px' }}>
+                                  CJ Ship ($)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={draft.shippingCostUsd}
+                                  onChange={(e) => handleInlineDraftChange(prod, 'shippingCostUsd', e.target.value)}
+                                  style={{ width: '100%', padding: '5px', borderRadius: '6px', border: '1px solid #B38B8F', backgroundColor: '#FFFFFF', fontSize: '0.76rem', fontWeight: 'bold', color: '#5C5454', boxSizing: 'border-box' }}
+                                />
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '5px' }}>
+                              <button
+                                type="button"
+                                disabled={savingInlineProductId === prod._id}
+                                onClick={() => handleSaveInlineProductPricing(prod, { recalculateFromFormula: false })}
+                                style={{ flex: 1, backgroundColor: '#2E7D32', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '6px 8px', fontSize: '0.73rem', fontWeight: 'bold', fontFamily: 'sans-serif', cursor: savingInlineProductId === prod._id ? 'not-allowed' : 'pointer' }}
+                                title="Saves your exact custom Retail Price ($), CJ Wholesale ($), and CJ Shipping ($) without formula overwrite"
+                              >
+                                {savingInlineProductId === prod._id ? '⏳ Saving...' : '💾 Save Price & Ship'}
+                              </button>
+                              {isLoss && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleInlineDraftChange(prod, 'price', String((allInCost + 6.0).toFixed(2)))}
+                                  style={{ backgroundColor: '#FFF0F2', color: '#C62828', border: '1px solid #C62828', borderRadius: '6px', padding: '6px 7px', fontSize: '0.68rem', fontWeight: 'bold', fontFamily: 'sans-serif', cursor: 'pointer' }}
+                                  title="Set retail price to cover all-in cost + $6.00 profit"
+                                >
+                                  Fix (${(allInCost + 6.0).toFixed(2)})
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Per-Card CJ Shipping Carrier Dropdown, Live CJ Quote Button & Carrier Pills */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px', backgroundColor: '#FFF9F9', padding: '8px', borderRadius: '8px', border: '1px solid #E8C5C8' }}>
+                            <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                              <select
+                                value={draft.selectedLogisticName || bd.selectedLogisticName}
+                                disabled={quotingProductId === prod._id}
+                                onChange={(e) => {
+                                  const chosenName = e.target.value;
+                                  handleInlineDraftChange(prod, 'selectedLogisticName', chosenName);
+                                  const matchedRate = availableRates.find(r => r.logisticName === chosenName);
+                                  if (matchedRate && matchedRate.shippingCostUsd > 0) {
+                                    handleInlineDraftChange(prod, 'shippingCostUsd', String(Number(matchedRate.shippingCostUsd).toFixed(2)));
+                                  } else {
+                                    handleFetchProductShippingQuote(prod._id, chosenName, { preserveRetailPrice: true });
+                                  }
+                                }}
+                                style={{ flex: 1, padding: '5px 6px', borderRadius: '6px', border: '1px solid #E8C5C8', fontSize: '0.72rem', fontFamily: 'sans-serif', color: '#5C5454', backgroundColor: '#FFFFFF' }}
+                              >
+                                {CJ_CARRIER_OPTIONS.map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                title="Pull live CJ shipping rates & resolve true CJ Variant ID (vid) without overwriting your custom price"
+                                disabled={quotingProductId === prod._id}
+                                onClick={() => handleFetchProductShippingQuote(prod._id, draft.selectedLogisticName || bd.selectedLogisticName, { preserveRetailPrice: true })}
+                                style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '6px', padding: '5px 8px', fontSize: '0.71rem', fontWeight: 'bold', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                              >
+                                {quotingProductId === prod._id ? '⏳ Pulling...' : '✈️ Pull CJ Rates'}
+                              </button>
+                            </div>
+
+                            {availableRates.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                {availableRates.slice(0, 4).map((rate, rIdx) => {
+                                  const isSelectedCarrier = (draft.selectedLogisticName || bd.selectedLogisticName) === rate.logisticName;
+                                  return (
+                                    <button
+                                      key={rIdx}
+                                      type="button"
+                                      onClick={() => {
+                                        handleInlineDraftChange(prod, 'selectedLogisticName', rate.logisticName);
+                                        handleInlineDraftChange(prod, 'shippingCostUsd', String(Number(rate.shippingCostUsd || 0).toFixed(2)));
+                                      }}
+                                      style={{
+                                        fontSize: '0.62rem',
+                                        padding: '2px 6px',
+                                        borderRadius: '6px',
+                                        border: isSelectedCarrier ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                                        backgroundColor: isSelectedCarrier ? '#FFF0F2' : '#FFFFFF',
+                                        color: '#5C5454',
+                                        fontFamily: 'sans-serif',
+                                        cursor: 'pointer'
+                                      }}
+                                      title={`${rate.logisticName} • ${rate.deliveryTime || '7-12 Days'} (${rate.source === 'cj_live_api' ? 'Live CJ Quote' : 'CJ Standard'})`}
+                                    >
+                                      {rate.logisticName.replace('CJPacket ', 'CJ ')}: <strong>${Number(rate.shippingCostUsd || 0).toFixed(2)}</strong>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.73rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer' }}>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                <input
+                                  type="checkbox"
+                                  disabled={togglingLabelProductId === prod._id}
+                                  checked={bd.customLabelEnabled}
+                                  onChange={(e) => handleToggleProductCustomLabel(prod, e.target.checked)}
+                                />
+                                🏷️ Custom Label / Packaging
+                              </span>
+                              <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>
+                                {bd.customLabelEnabled ? `+$${bd.customLabelCostUsd.toFixed(2)}` : 'Off'}
+                              </span>
+                            </label>
+                          </div>
+
+                          {/* Skin Type & Skin Condition Badges */}
+                          <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '7px 8px', marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Skin:</span>
+                              {meta.skinTypes.slice(0, 3).map((st, idx) => (
+                                <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
+                                  {st}
+                                </span>
+                              ))}
+                            </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#8A797A', fontWeight: 'bold', fontFamily: 'sans-serif' }}>Targets:</span>
+                              {meta.skinConcerns.slice(0, 3).map((sc, idx) => (
+                                <span key={idx} style={{ fontSize: '0.66rem', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '7px', padding: '1px 5px', fontFamily: 'sans-serif' }}>
+                                  {sc}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '10px', marginTop: 'auto' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleEditClick(prod)}
+                              style={{ flex: 1, backgroundColor: '#FFF9F9', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold' }}
+                            >
+                              ✎ Full Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(prod._id)}
+                              style={{ flex: 1, backgroundColor: '#FFF0F2', border: '1px solid #E8C5C8', color: '#A89999', padding: '8px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem' }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -6442,17 +6933,54 @@ const AdminFinancesAndOrders = ({
   const futureProj = telemetry?.futureProjections || { scheduledMemberBoxes: [] };
   const recentTransfers = telemetry?.recentTransfers || [];
 
-  // Live Money Dump & CJ Wholesale Reserve Math
+  const [isClearingTestLedger, setIsClearingTestLedger] = useState(false);
+
+  const handleClearTestLedger = async () => {
+    const token = localStorage.getItem('token');
+    setIsClearingTestLedger(true);
+    setStatusBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/finances/clear-test-ledger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ clearAllCardReserves: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (data.telemetry) {
+          setTelemetry(data.telemetry);
+        } else {
+          await fetchFinancesAndOrders(false);
+        }
+        setStatusBanner({
+          type: 'success',
+          text: data.message || '🧹 Cleared old test/simulated reserve entries! Showing 100% live CJ.com Wallet balance ✧'
+        });
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Failed to clear test ledger entries.'
+        });
+      }
+    } catch {
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while clearing test ledger entries.'
+      });
+    }
+    setIsClearingTestLedger(false);
+  };
+
+  // Live Money Dump & CJ Wholesale Reserve Math (Strictly 100% Real CJ.com Wallet Balance)
   const availableStripeUsd = Number(stripeBal.availableUsd || 0);
   const activeUnshippedCostUsd = Number(cjBal.activeUnshippedCostUsd || 0);
   const cjWalletAvailableUsd = Number(cjBal.availableUsd || 0);
   const cjCardReserveUsd = Number(cjBal.cjCardReserveBalanceUsd || 0);
-  const effectiveCjPurchasingPowerUsd = Number(
-    (cjBal.effectivePurchasingPowerUsd !== undefined
-      ? Number(cjBal.effectivePurchasingPowerUsd)
-      : cjWalletAvailableUsd + cjCardReserveUsd
-    ).toFixed(2)
-  );
+  const simulatedTestReserveUsd = Number(cjBal.simulatedTestReserveUsd || 0);
+  const effectiveCjPurchasingPowerUsd = Number(cjWalletAvailableUsd.toFixed(2));
   const uncoveredCjWholesaleUsd = Number(Math.max(0, activeUnshippedCostUsd - effectiveCjPurchasingPowerUsd).toFixed(2));
   const reserveAppliedUsd = moneyDumpForm.reserveForActiveOrders ? uncoveredCjWholesaleUsd : 0;
   const maxSafeStripeDumpUsd = Number(Math.max(0, availableStripeUsd - reserveAppliedUsd).toFixed(2));
@@ -6604,7 +7132,7 @@ const AdminFinancesAndOrders = ({
           </div>
         </div>
 
-        {/* 2. CJ Dropshipping Wallet Balance Card */}
+        {/* 2. CJ Dropshipping Wallet Balance Card (Strictly 100% Real CJ.com Live Balance) */}
         <div style={{ backgroundColor: '#FFFFFF', padding: '25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
@@ -6621,21 +7149,35 @@ const AdminFinancesAndOrders = ({
                 color: cjBal.connected ? '#2E7D32' : '#B26A00',
                 border: `1px solid ${cjBal.connected ? '#A5D6A7' : '#FFE082'}`
               }}>
-                {cjBal.connected ? '✓ CJ API LIVE' : '⚠️ CHECK TOKEN'}
+                {cjBal.connected ? '✓ LIVE CJ.COM API' : '⚠️ CHECK TOKEN'}
               </span>
             </div>
 
             <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '16px', marginBottom: '12px' }}>
               <p style={{ margin: '0 0 4px 0', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-                Total Effective CJ Purchasing Power (USD)
+                Live CJ.com Wallet Balance (GET /shopping/pay/getBalance)
               </p>
               <p style={{ margin: 0, fontFamily: "'Cormorant Garamond', serif", fontSize: '2.4rem', color: '#B38B8F', fontWeight: 'bold' }}>
-                ${effectiveCjPurchasingPowerUsd.toFixed(2)}
+                ${cjWalletAvailableUsd.toFixed(2)}
               </p>
-              <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
-                <span>CJ Remote Wallet: <strong>${cjWalletAvailableUsd.toFixed(2)}</strong></span>
-                <span>Dashboard Card Reserve: <strong style={{ color: '#2E7D32' }}>${cjCardReserveUsd.toFixed(2)}</strong></span>
+              <div style={{ marginTop: '6px', fontSize: '0.75rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.35' }}>
+                Matches your exact balance on <strong>app.cjdropshipping.com</strong>. Stripe payouts deposit to your bank card first; top up on CJ.com to add funds here.
               </div>
+              {(cjCardReserveUsd > 0 || simulatedTestReserveUsd > 0) && (
+                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #E8C5C8', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', fontSize: '0.74rem' }}>
+                  <span style={{ color: '#B26A00' }}>
+                    Local Test Ledger Reserve: <strong>${(cjCardReserveUsd + simulatedTestReserveUsd).toFixed(2)}</strong> (Not on CJ.com)
+                  </span>
+                  <button
+                    type="button"
+                    disabled={isClearingTestLedger}
+                    onClick={handleClearTestLedger}
+                    style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '10px', padding: '3px 9px', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    {isClearingTestLedger ? '⏳ Clearing...' : '🧹 Clear Test Reserve'}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px', fontFamily: 'sans-serif', fontSize: '0.88rem' }}>
@@ -6643,18 +7185,23 @@ const AdminFinancesAndOrders = ({
                 <span style={{ color: '#8A797A', display: 'block', fontSize: '0.78rem' }}>Active Unshipped Cost</span>
                 <strong style={{ color: '#5C5454', fontSize: '1.05rem' }}>${Number(cjBal.activeUnshippedCostUsd || 0).toFixed(2)}</strong>
               </div>
-              <div style={{ backgroundColor: '#FFF0F2', padding: '10px', borderRadius: '10px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ backgroundColor: '#FFF0F2', padding: '10px', borderRadius: '10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '3px' }}>
                 <a
                   href={cjBal.cjRechargePortalUrl || 'https://app.cjdropshipping.com/myCJ.html#/myCJWallet'}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ color: '#B38B8F', fontWeight: 'bold', fontSize: '0.8rem', textDecoration: 'none' }}
+                  style={{ color: '#B38B8F', fontWeight: 'bold', fontSize: '0.78rem', textDecoration: 'none' }}
                 >
-                  ⚡ Open CJ Wallet Portal ↗
+                  💳 1. Top Up CJ.com Wallet ↗
                 </a>
-                <span style={{ color: '#8A797A', fontSize: '0.72rem', marginTop: '2px' }}>
-                  Direct Card / Payoneer
-                </span>
+                <a
+                  href="https://app.cjdropshipping.com/myCJ.html#/dropshippingOrders"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#5C5454', fontWeight: 'bold', fontSize: '0.74rem', textDecoration: 'none' }}
+                >
+                  📦 2. Pay Orders on CJ.com ↗
+                </a>
               </div>
             </div>
 
@@ -6665,16 +7212,25 @@ const AdminFinancesAndOrders = ({
             )}
           </div>
 
-          <div style={{ borderTop: '1px solid #E8C5C8', paddingTop: '10px', fontSize: '0.82rem', fontFamily: 'sans-serif' }}>
-            {cjBal.walletCoversActiveOrders !== false ? (
+          <div style={{ borderTop: '1px solid #E8C5C8', paddingTop: '10px', fontSize: '0.8rem', fontFamily: 'sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+            {cjWalletAvailableUsd >= activeUnshippedCostUsd && activeUnshippedCostUsd > 0 ? (
               <span style={{ color: '#2E7D32', fontWeight: 'bold' }}>
-                ✓ Wallet balance covers all active unshipped orders
+                ✓ Live CJ.com Wallet covers all active unshipped orders
               </span>
             ) : (
               <span style={{ color: '#C62828', fontWeight: 'bold' }}>
-                ⚠️ Top up CJ Wallet to fulfill active unshipped orders
+                ⚠️ Live CJ.com Wallet is ${cjWalletAvailableUsd.toFixed(2)} — Top up on CJ.com or pay invoice in MyCJ
               </span>
             )}
+            <button
+              type="button"
+              disabled={isClearingTestLedger}
+              onClick={handleClearTestLedger}
+              style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#736A6A', borderRadius: '10px', padding: '3px 8px', fontSize: '0.72rem', cursor: 'pointer' }}
+              title="Purge any old simulated/test reserve entries from the local ledger"
+            >
+              🧹 Purge Test Ledger
+            </button>
           </div>
         </div>
 
@@ -7039,8 +7595,8 @@ const AdminFinancesAndOrders = ({
                 CJ Wallet & Order Pay
               </span>
             </div>
-            <p style={{ margin: '0 0 16px 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
-              Allocate wholesale funds from Stripe (`CJ DROPSHIP` payout earmark) and automatically pay open CJ Dropshipping orders directly from your CJ Wallet (`POST /shopping/pay/payBalance`).
+            <p style={{ margin: '0 0 12px 0', fontSize: '0.86rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+              <strong>How Stripe → CJ Works:</strong> Because CJ Dropshipping does not allow Stripe to wire money directly into CJ's proprietary wallet via API, <strong>Stage A</strong> sends a dedicated <code>CJ DROPSHIP</code> payout from Stripe to your linked bank card, and <strong>Stage B</strong> submits your orders to CJ (`createOrderV2`) and pays them from your live <a href="https://app.cjdropshipping.com/myCJ.html#/myCJWallet" target="_blank" rel="noopener noreferrer" style={{ color: '#B38B8F', fontWeight: 'bold' }}>CJ.com Wallet ↗</a> (`payBalance`).
             </p>
 
             {/* Live CJ Wholesale Needed vs CJ Wallet Box */}
