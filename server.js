@@ -5568,7 +5568,7 @@ app.get('/api/admin/finances/transfers', authenticateToken, requireAdmin, async 
 
 app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { status, tracking_code, logisticName, notes, notifyCustomer } = req.body || {};
+    const { status, tracking_code, logisticName, notes, shipping_address, cjOrderId, notifyCustomer } = req.body || {};
     const orderId = req.params.id;
 
     if (!mongoose.Types.ObjectId.isValid(String(orderId))) {
@@ -5588,9 +5588,30 @@ app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (
     }
     if (logisticName !== undefined) {
       order.logisticName = String(logisticName || '').trim();
+      order.selectedLogisticName = String(logisticName || '').trim();
+    }
+    if (cjOrderId !== undefined) {
+      order.cjOrderId = String(cjOrderId || '').trim();
     }
     if (notes !== undefined) {
       order.notes = String(notes || '').trim();
+    }
+    if (shipping_address && typeof shipping_address === 'object') {
+      const existingAddr = order.shipping_address && typeof order.shipping_address === 'object'
+        ? order.shipping_address
+        : {};
+      order.shipping_address = {
+        ...existingAddr,
+        ...(shipping_address.name !== undefined ? { name: String(shipping_address.name).trim() } : {}),
+        ...(shipping_address.address_1 !== undefined ? { address_1: String(shipping_address.address_1).trim() } : {}),
+        ...(shipping_address.address_2 !== undefined ? { address_2: String(shipping_address.address_2).trim() } : {}),
+        ...(shipping_address.city !== undefined ? { city: String(shipping_address.city).trim() } : {}),
+        ...(shipping_address.state !== undefined ? { state: String(shipping_address.state).trim() } : {}),
+        ...(shipping_address.postcode !== undefined ? { postcode: String(shipping_address.postcode).trim() } : {}),
+        ...(shipping_address.country !== undefined ? { country: String(shipping_address.country).trim().toUpperCase() || 'US' } : {}),
+        ...(shipping_address.phone !== undefined ? { phone: String(shipping_address.phone).trim() } : {})
+      };
+      order.markModified('shipping_address');
     }
     order.updatedAt = new Date();
     await order.save();
@@ -5627,6 +5648,100 @@ app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (
   } catch (error) {
     console.error('Update Order Status Error:', error);
     res.status(500).json({ error: error.message || 'Failed to update order status.' });
+  }
+});
+
+// POST /api/admin/orders/:id/fulfill-cj — Manually fulfills or retries a specific order on CJ Dropshipping (createOrderV2 + optional CJ Wallet payBalance)
+app.post('/api/admin/orders/:id/fulfill-cj', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const {
+      payWithWallet = true,
+      forceRecreate = false,
+      logisticName,
+      shipping_address,
+      notifyCustomer = false
+    } = req.body || {};
+
+    const result = await fulfillSingleOrderOnCj(orderId, {
+      payWithWallet: Boolean(payWithWallet),
+      forceRecreate: Boolean(forceRecreate),
+      logisticNameOverride: logisticName || '',
+      shippingAddressOverride: shipping_address || null,
+      notifyCustomer: Boolean(notifyCustomer)
+    });
+
+    const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+
+    res.status(result.ok ? 200 : 400).json({
+      ...result,
+      telemetry
+    });
+  } catch (error) {
+    console.error('Manual CJ Order Fulfillment Error:', error);
+    res.status(400).json({
+      error: error.message || 'Failed to manually fulfill order on CJ Dropshipping.'
+    });
+  }
+});
+
+// POST /api/admin/orders/fulfill-all-pending — Batch-fulfills all unshipped/unforwarded orders on CJ Dropshipping
+app.post('/api/admin/orders/fulfill-all-pending', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { payWithWallet = true, includePendingCheckout = false } = req.body || {};
+    const statusList = includePendingCheckout ? ['PAID_PROCESSING', 'Pending'] : ['PAID_PROCESSING'];
+
+    const candidateOrders = await Order.find({
+      status: { $in: statusList },
+      $or: [
+        { cjOrderId: { $exists: false } },
+        { cjOrderId: '' },
+        { cjOrderStatus: { $ne: 'PAID_WALLET' } }
+      ]
+    }).sort({ createdAt: -1 });
+
+    const results = [];
+    let succeededCount = 0;
+    let failedCount = 0;
+
+    for (const ord of candidateOrders) {
+      try {
+        const resItem = await fulfillSingleOrderOnCj(ord._id, {
+          payWithWallet: Boolean(payWithWallet),
+          forceRecreate: false
+        });
+        results.push(resItem);
+        if (resItem.ok) succeededCount++;
+        else failedCount++;
+      } catch (err) {
+        failedCount++;
+        results.push({
+          ok: false,
+          orderId: String(ord._id),
+          shortId: String(ord._id).slice(-6).toUpperCase(),
+          message: err.message
+        });
+      }
+    }
+
+    const telemetry = await buildFinancialAndOrderTelemetry({ syncCjOrders: false });
+
+    res.status(200).json({
+      message:
+        candidateOrders.length === 0
+          ? 'All active paid orders are already fulfilled on CJ Dropshipping! ✧'
+          : `🚀 Processed ${candidateOrders.length} order(s) on CJ Dropshipping: ${succeededCount} succeeded, ${failedCount} need review ✧`,
+      totalProcessed: candidateOrders.length,
+      succeededCount,
+      failedCount,
+      results,
+      telemetry
+    });
+  } catch (error) {
+    console.error('Batch CJ Fulfillment Error:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to batch-fulfill pending orders on CJ Dropshipping.'
+    });
   }
 });
 
@@ -13344,9 +13459,41 @@ const buildCjOrderPayload = (order) => {
   };
 };
 
-// Enriches order items with real CJ variant VIDs / SKUs from MongoDB Product records before calling createOrderV2
+// Enriches order items with real CJ variant VIDs / SKUs from MongoDB Product records (and CJ /product/query if needed)
+// and hydrates missing shipping address fields from the customer's User profile before calling createOrderV2.
 const buildHydratedCjOrderPayload = async (order) => {
   const plainOrder = order && typeof order.toObject === 'function' ? order.toObject() : { ...(order || {}) };
+  const headers = getCjHeaders();
+
+  // Hydrate shipping_address from the customer's User profile if missing or 'Pending'
+  const currentAddr = plainOrder.shipping_address || {};
+  if (!currentAddr.address_1 || currentAddr.address_1 === 'Pending' || currentAddr.address_1 === 'Address Pending') {
+    const userLookupOr = [];
+    if (plainOrder.userId && mongoose.Types.ObjectId.isValid(String(plainOrder.userId))) {
+      userLookupOr.push({ _id: String(plainOrder.userId) });
+    }
+    if (plainOrder.customerEmail && plainOrder.customerEmail !== 'Customer') {
+      userLookupOr.push({ email: new RegExp(`^${escapeRegex(normalizeEmail(plainOrder.customerEmail))}$`, 'i') });
+    }
+    if (userLookupOr.length > 0) {
+      const customerUser = await User.findOne({ $or: userLookupOr })
+        .select('name phone shippingAddress')
+        .lean()
+        .catch(() => null);
+      if (customerUser && customerUser.shippingAddress?.address_1) {
+        plainOrder.shipping_address = {
+          name: currentAddr.name || customerUser.name || 'Valued Customer',
+          address_1: [customerUser.shippingAddress.address_1, customerUser.shippingAddress.address_2].filter(Boolean).join(', '),
+          city: customerUser.shippingAddress.city || currentAddr.city || 'Wichita',
+          state: customerUser.shippingAddress.state || currentAddr.state || 'KS',
+          postcode: customerUser.shippingAddress.postcode || currentAddr.postcode || '67202',
+          country: customerUser.shippingAddress.country || currentAddr.country || 'US',
+          phone: currentAddr.phone || customerUser.phone || '3165550199'
+        };
+      }
+    }
+  }
+
   const rawItems = Array.isArray(plainOrder.items) ? plainOrder.items : [];
   const hydratedItems = [];
 
@@ -13354,7 +13501,6 @@ const buildHydratedCjOrderPayload = async (order) => {
     let resolvedVid = String(item.vid || '').trim();
     let resolvedSku = String(item.sku || '').trim();
 
-    // Look up the Product in MongoDB to extract its canonical CJ variant VID & SKU if needed
     const orLookup = [];
     if (item.productId && mongoose.Types.ObjectId.isValid(String(item.productId))) {
       orLookup.push({ _id: String(item.productId) });
@@ -13371,18 +13517,39 @@ const buildHydratedCjOrderPayload = async (order) => {
 
     if (orLookup.length > 0) {
       const dbProd = await Product.findOne({ $or: orLookup })
-        .select('cjPid cjSku variants rawCjData')
+        .select('_id cjPid cjSku variants rawCjData')
         .lean()
         .catch(() => null);
       if (dbProd) {
-        const cjRawVariant = Array.isArray(dbProd.rawCjData?.variants) ? dbProd.rawCjData.variants[0] : null;
+        let cjRawVariant = Array.isArray(dbProd.rawCjData?.variants) ? dbProd.rawCjData.variants[0] : null;
         const dbVariant = Array.isArray(dbProd.variants) ? dbProd.variants[0] : null;
+        const candidatePid = String(dbProd.cjPid || dbProd.rawCjData?.pid || '').trim();
+
+        // If rawCjData.variants was empty when synced from /product/list, query CJ /product/query?pid=... once to get the exact variant vid
+        if (!cjRawVariant?.vid && headers && candidatePid) {
+          try {
+            const detailRes = await axios.get(
+              `${CJ_BASE_URL}/product/query?pid=${encodeURIComponent(candidatePid)}`,
+              { headers, timeout: 10000 }
+            );
+            const liveVariants = detailRes.data?.data?.variants || [];
+            if (Array.isArray(liveVariants) && liveVariants.length > 0) {
+              cjRawVariant = liveVariants[0];
+              await Product.findByIdAndUpdate(dbProd._id, {
+                $set: { 'rawCjData.variants': liveVariants }
+              }).catch(() => {});
+            }
+          } catch {
+            // Ignore optional CJ variant lookup error
+          }
+        }
+
         if (!resolvedVid) {
           resolvedVid = String(
             cjRawVariant?.vid ||
-            dbVariant?.sku ||
             dbProd.rawCjData?.vid ||
-            dbProd.cjPid ||
+            dbVariant?.sku ||
+            candidatePid ||
             resolvedSku ||
             ''
           ).trim();
@@ -13409,6 +13576,182 @@ const buildHydratedCjOrderPayload = async (order) => {
 
   plainOrder.items = hydratedItems;
   return buildCjOrderPayload(plainOrder);
+};
+
+// Reusable Single-Order Manual & Automated CJ Fulfillment Engine
+// 1. Resolves order by _id, shortId, or cjOrderId
+// 2. Optionally updates shipping_address or logisticName
+// 3. Calls POST /shopping/order/createOrderV2 if order has no cjOrderId (or forceRecreate === true)
+// 4. Calls POST /shopping/pay/payBalance if payWithWallet !== false
+// 5. Syncs tracking_code if available and optionally notifies the customer
+const fulfillSingleOrderOnCj = async (
+  orderIdentifier,
+  {
+    payWithWallet = true,
+    forceRecreate = false,
+    logisticNameOverride = '',
+    shippingAddressOverride = null,
+    notifyCustomer = false
+  } = {}
+) => {
+  const cleanId = String(orderIdentifier || '').trim();
+  if (!cleanId) {
+    throw new Error('Order ID is required.');
+  }
+
+  let order = null;
+  if (mongoose.Types.ObjectId.isValid(cleanId)) {
+    order = await Order.findById(cleanId);
+  }
+  if (!order) {
+    order = await Order.findOne({ cjOrderId: cleanId });
+  }
+  if (!order && cleanId.length >= 4) {
+    const allRecent = await Order.find({}).sort({ createdAt: -1 }).limit(200);
+    order = allRecent.find(
+      o => String(o._id).toLowerCase().endsWith(cleanId.replace(/^#/, '').toLowerCase())
+    ) || null;
+  }
+
+  if (!order) {
+    throw new Error(`Order "${cleanId}" was not found in MongoDB.`);
+  }
+
+  if (shippingAddressOverride && typeof shippingAddressOverride === 'object') {
+    order.shipping_address = {
+      ...(order.shipping_address && typeof order.shipping_address === 'object' ? order.shipping_address : {}),
+      ...shippingAddressOverride
+    };
+    order.markModified('shipping_address');
+  }
+
+  if (logisticNameOverride && String(logisticNameOverride).trim()) {
+    order.selectedLogisticName = String(logisticNameOverride).trim();
+    order.logisticName = String(logisticNameOverride).trim();
+  }
+
+  const headers = getCjHeaders();
+  if (!headers) {
+    throw new Error('CJ_ACCESS_TOKEN is not configured in .env. Please configure your CJ Dropshipping API token.');
+  }
+
+  const cjPayload = await buildHydratedCjOrderPayload(order);
+  if (!Array.isArray(cjPayload.products) || cjPayload.products.length === 0) {
+    throw new Error('This order has no valid CJ product variant IDs (vid/sku) to send to CJ Dropshipping.');
+  }
+
+  let createdOnCj = false;
+  let paidViaWallet = order.cjOrderStatus === 'PAID_WALLET';
+  let cjCreateError = '';
+  let cjPayError = '';
+
+  // Step 1: Create order on CJ Dropshipping via createOrderV2 if not yet created (or if forceRecreate is requested)
+  if (!order.cjOrderId || forceRecreate) {
+    try {
+      const createRes = await axios.post(
+        `${CJ_BASE_URL}/shopping/order/createOrderV2`,
+        JSON.stringify(cjPayload),
+        {
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          timeout: 15000
+        }
+      );
+
+      const returnedCjId =
+        createRes?.data?.data?.orderId ||
+        (typeof createRes?.data?.data === 'string' ? createRes.data.data : '');
+
+      if (returnedCjId) {
+        order.cjOrderId = String(returnedCjId).trim();
+        order.cjOrderStatus = 'CREATED';
+        if (order.status === 'Pending') {
+          order.status = 'PAID_PROCESSING';
+        }
+        createdOnCj = true;
+      } else {
+        cjCreateError =
+          createRes?.data?.message ||
+          'CJ createOrderV2 did not return an orderId. Verify product variant VIDs and shipping address fields.';
+      }
+    } catch (createErr) {
+      cjCreateError = createErr?.response?.data?.message || createErr.message || 'CJ createOrderV2 request failed.';
+    }
+  }
+
+  // Step 2: Pay for the CJ order from Susan's CJ Wallet via /shopping/pay/payBalance
+  if (payWithWallet && order.cjOrderId && order.cjOrderStatus !== 'PAID_WALLET') {
+    try {
+      const payRes = await axios.post(
+        `${CJ_BASE_URL}/shopping/pay/payBalance`,
+        JSON.stringify({ orderId: String(order.cjOrderId).trim() }),
+        {
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          timeout: 15000
+        }
+      );
+      if (payRes.data?.result) {
+        order.cjOrderStatus = 'PAID_WALLET';
+        if (order.status === 'Pending') {
+          order.status = 'PAID_PROCESSING';
+        }
+        paidViaWallet = true;
+      } else {
+        cjPayError = payRes.data?.message || 'CJ Wallet balance payment was not completed (check CJ Wallet balance).';
+      }
+    } catch (payErr) {
+      cjPayError = payErr?.response?.data?.message || payErr.message || 'CJ payBalance request failed.';
+    }
+  }
+
+  order.updatedAt = new Date();
+  await order.save();
+
+  if (notifyCustomer && order.customerEmail && order.customerEmail !== 'Customer') {
+    const shortOrderRef = String(order._id).slice(-6).toUpperCase();
+    const subj = `✧ Your Ritual Order #${shortOrderRef} is Being Prepared`;
+    const html = `
+      <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
+        <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your Ritual Essentials Are in Fulfillment ✧</h2>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Hello,</p>
+        <p style="font-size: 1.05rem; line-height: 1.6;">Your order <strong>#${shortOrderRef}</strong> has been dispatched to our fulfillment studio (${escapeHtml(order.logisticName || 'CJPacket Sensitive')}). You will receive your live tracking number as soon as your parcel ships.</p>
+        <p style="font-size: 0.95rem; color: #8A797A; margin-top: 25px; text-align: center;">Warmly,<br>Susan's Beauty Consulting</p>
+      </div>
+    `;
+    const text = `Your Susan's Beauty Consulting order #${shortOrderRef} has been dispatched to fulfillment (${order.logisticName || 'CJPacket Sensitive'}).`;
+    await sendEmail(order.customerEmail, subj, html, text).catch(() => {});
+  }
+
+  const shortRef = String(order._id).slice(-6).toUpperCase();
+  const ok = Boolean(order.cjOrderId) && !cjCreateError;
+
+  let statusMessage = '';
+  if (createdOnCj && paidViaWallet) {
+    statusMessage = `🚀 Order #${shortRef} created on CJ Dropshipping (CJ ID: ${order.cjOrderId}) and paid via CJ Wallet! ✧`;
+  } else if (createdOnCj && cjPayError) {
+    statusMessage = `📦 Order #${shortRef} created on CJ Dropshipping (CJ ID: ${order.cjOrderId}), but CJ Wallet payment noted: ${cjPayError}`;
+  } else if (createdOnCj) {
+    statusMessage = `📦 Order #${shortRef} created on CJ Dropshipping (CJ ID: ${order.cjOrderId})! ✧`;
+  } else if (paidViaWallet) {
+    statusMessage = `💳 Order #${shortRef} (CJ ID: ${order.cjOrderId}) paid via CJ Wallet! ✧`;
+  } else {
+    statusMessage = `⚠️ Order #${shortRef} CJ fulfillment note: ${cjCreateError || cjPayError || 'Could not complete CJ fulfillment.'}`;
+  }
+
+  return {
+    ok,
+    message: statusMessage,
+    orderId: String(order._id),
+    shortId: shortRef,
+    cjOrderId: order.cjOrderId || '',
+    cjOrderStatus: order.cjOrderStatus || 'UNSENT',
+    status: order.status,
+    createdOnCj,
+    paidViaWallet,
+    cjCreateError,
+    cjPayError,
+    cjPayloadSent: cjPayload,
+    order
+  };
 };
 
 // Parses both CJ v2 nested (`req.body.params`) and flat webhook payloads safely
