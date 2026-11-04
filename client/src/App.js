@@ -5843,17 +5843,28 @@ const AdminTestLab = ({ onCatalogUpdated, onAskOdieToTest }) => {
   );
 };
 
-const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie }) => {
+const AdminFinancesAndOrders = ({
+  onEmailCustomer,
+  onOrdersUpdated,
+  onAskOdie,
+  viewMode = 'FINANCES', // 'FINANCES' | 'ORDERS'
+  onOpenOrdersTab,
+  onOpenFinancesTab
+}) => {
   const [telemetry, setTelemetry] = useState(null);
   const [isLoadingFinances, setIsLoadingFinances] = useState(false);
   const [isSyncingCjOrders, setIsSyncingCjOrders] = useState(false);
-  const [pipelineFilter, setPipelineFilter] = useState('ALL'); // 'ALL' | 'PRESENT' | 'FUTURE' | 'PAST'
+  const [pipelineFilter, setPipelineFilter] = useState('ALL'); // 'ALL' | 'NEEDS_CJ' | 'PRESENT' | 'FUTURE' | 'PAST'
   const [searchQuery, setSearchQuery] = useState('');
   const [statusBanner, setStatusBanner] = useState({ type: '', text: '' });
   const [editingOrderMap, setEditingOrderMap] = useState({});
   const [savingOrderId, setSavingOrderId] = useState(null);
   const [updatingCjLogisticsId, setUpdatingCjLogisticsId] = useState(null);
   const [orderCjCarrierOptionsMap, setOrderCjCarrierOptionsMap] = useState({});
+  const [fulfillingOrderId, setFulfillingOrderId] = useState(null);
+  const [isBatchFulfilling, setIsBatchFulfilling] = useState(false);
+  const [editingShippingOrderId, setEditingShippingOrderId] = useState(null);
+  const [shippingDraftMap, setShippingDraftMap] = useState({});
 
   // Phase 3: Stripe "Money Dump" (Bank Payout) State
   const [isDumpingStripe, setIsDumpingStripe] = useState(false);
@@ -6264,6 +6275,166 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie })
     setUpdatingCjLogisticsId(null);
   };
 
+  const handleManualFulfillSingleOrder = async (
+    order,
+    { payWithWallet = true, forceRecreate = false } = {}
+  ) => {
+    const token = localStorage.getItem('token');
+    setFulfillingOrderId(order._id);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const draft = editingOrderMap[order._id] || {};
+      const shippingOverride = shippingDraftMap[order._id] || undefined;
+
+      const res = await fetch(`${API_BASE_URL}/api/admin/orders/${order._id}/fulfill-cj`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          payWithWallet: Boolean(payWithWallet),
+          forceRecreate: Boolean(forceRecreate),
+          logisticName: draft.logisticName || order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive',
+          shipping_address: shippingOverride,
+          notifyCustomer: Boolean(draft.notifyCustomer)
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.telemetry) {
+        setTelemetry(data.telemetry);
+      } else {
+        await fetchFinancesAndOrders(false);
+      }
+      if (onOrdersUpdated) onOrdersUpdated();
+
+      if (res.ok && data.ok) {
+        setStatusBanner({
+          type: 'success',
+          text: data.message || `Order #${order.shortId} fulfilled on CJ Dropshipping! ✧`
+        });
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.message || data.error || 'CJ fulfillment returned a warning. Check shipping address or CJ Wallet balance.'
+        });
+      }
+    } catch (err) {
+      console.error('Manual CJ fulfill error:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while fulfilling order on CJ Dropshipping.'
+      });
+    }
+    setFulfillingOrderId(null);
+  };
+
+  const handleBatchFulfillAllPending = async () => {
+    const token = localStorage.getItem('token');
+    setIsBatchFulfilling(true);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/orders/fulfill-all-pending`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          payWithWallet: true,
+          includePendingCheckout: true
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.telemetry) {
+        setTelemetry(data.telemetry);
+      } else {
+        await fetchFinancesAndOrders(false);
+      }
+      if (onOrdersUpdated) onOrdersUpdated();
+
+      if (res.ok) {
+        setStatusBanner({
+          type: 'success',
+          text: data.message || 'Batch CJ fulfillment complete! ✧'
+        });
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Could not complete batch CJ fulfillment.'
+        });
+      }
+    } catch (err) {
+      console.error('Batch CJ fulfill error:', err);
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while running batch CJ fulfillment.'
+      });
+    }
+    setIsBatchFulfilling(false);
+  };
+
+  const handleOpenEditShipping = (order) => {
+    const addr = order.shipping_address || {};
+    setShippingDraftMap(prev => ({
+      ...prev,
+      [order._id]: {
+        name: addr.name || order.customerName || '',
+        address_1: addr.address_1 || '',
+        city: addr.city || '',
+        state: addr.state || '',
+        postcode: addr.postcode || '',
+        country: addr.country || 'US',
+        phone: addr.phone || ''
+      }
+    }));
+    setEditingShippingOrderId(prev => (prev === order._id ? null : order._id));
+  };
+
+  const handleSaveOrderShippingAddress = async (order) => {
+    const token = localStorage.getItem('token');
+    const addrDraft = shippingDraftMap[order._id];
+    if (!addrDraft) return;
+    setSavingOrderId(order._id);
+    setStatusBanner({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/orders/${order._id}/status`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          shipping_address: addrDraft
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setEditingShippingOrderId(null);
+        setStatusBanner({
+          type: 'success',
+          text: `Saved shipping address for Order #${order.shortId}! You can now click "🚀 Fulfill on CJ Now". ✧`
+        });
+        await fetchFinancesAndOrders(false);
+        if (onOrdersUpdated) onOrdersUpdated();
+      } else {
+        setStatusBanner({
+          type: 'error',
+          text: data.error || 'Failed to save shipping address.'
+        });
+      }
+    } catch {
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while saving shipping address.'
+      });
+    }
+    setSavingOrderId(null);
+  };
+
   const stripeBal = telemetry?.stripeBalance || {};
   const cjBal = telemetry?.cjBalance || {};
   const counts = telemetry?.orderPipeline?.counts || { total: 0, past: 0, present: 0, future: 0, scheduledMemberBoxes: 0 };
@@ -6286,19 +6457,31 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie })
   const reserveAppliedUsd = moneyDumpForm.reserveForActiveOrders ? uncoveredCjWholesaleUsd : 0;
   const maxSafeStripeDumpUsd = Number(Math.max(0, availableStripeUsd - reserveAppliedUsd).toFixed(2));
 
+  const allPipelineOrders = telemetry?.orderPipeline?.all || [];
+  const needsCjOrders = allPipelineOrders.filter(
+    o =>
+      o.status !== 'SHIPPED' &&
+      o.status !== 'DELIVERED' &&
+      o.status !== 'CANCELLED' &&
+      o.status !== 'REFUNDED' &&
+      (!o.cjOrderId || o.cjOrderStatus !== 'PAID_WALLET')
+  );
+
   const rawOrders =
-    pipelineFilter === 'PAST'
+    pipelineFilter === 'NEEDS_CJ'
+      ? needsCjOrders
+      : pipelineFilter === 'PAST'
       ? (telemetry?.orderPipeline?.past || [])
       : pipelineFilter === 'PRESENT'
       ? (telemetry?.orderPipeline?.present || [])
       : pipelineFilter === 'FUTURE'
       ? (telemetry?.orderPipeline?.future || [])
-      : (telemetry?.orderPipeline?.all || []);
+      : allPipelineOrders;
 
   const cleanSearch = searchQuery.trim().toLowerCase();
   const filteredOrders = rawOrders.filter(ord => {
     if (!cleanSearch) return true;
-    const haystack = `${ord.shortId || ''} ${ord._id || ''} ${ord.customerName || ''} ${ord.customerEmail || ''} ${ord.status || ''} ${ord.tracking_code || ''} ${(ord.items || []).map(i => i.title).join(' ')}`.toLowerCase();
+    const haystack = `${ord.shortId || ''} ${ord._id || ''} ${ord.cjOrderId || ''} ${ord.customerName || ''} ${ord.customerEmail || ''} ${ord.status || ''} ${ord.tracking_code || ''} ${(ord.items || []).map(i => i.title).join(' ')}`.toLowerCase();
     return haystack.includes(cleanSearch);
   });
 
@@ -6314,6 +6497,8 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
+      {viewMode !== 'ORDERS' && (
+        <>
       {/* Top Action Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '20px 25px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
         <div>
@@ -7022,246 +7207,571 @@ const AdminFinancesAndOrders = ({ onEmailCustomer, onOrdersUpdated, onAskOdie })
         </div>
       )}
 
-      {/* Row 2: Past, Present & Future Order Pipeline Monitor */}
-      <div style={{ backgroundColor: '#FFFFFF', padding: '28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '20px' }}>
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            {[
-              { id: 'ALL', label: `All Orders (${counts.total || 0})` },
-              { id: 'PRESENT', label: `🟢 Present — Active & In-Transit (${counts.present || 0})` },
-              { id: 'FUTURE', label: `🔮 Future — Pending & Ritual Boxes (${(counts.future || 0) + (counts.scheduledMemberBoxes || 0)})` },
-              { id: 'PAST', label: `🏛️ Past — Completed & Delivered (${counts.past || 0})` }
-            ].map(tabBtn => (
+          {/* Consolidated Orders Tab Link Card inside Finances */}
+          <div style={{ backgroundColor: '#FFFFFF', padding: '24px 28px', borderRadius: '20px', border: '1.5px solid #B38B8F', boxShadow: '0 8px 25px rgba(232, 197, 200, 0.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.75rem', color: '#5C5454', margin: '0 0 4px 0' }}>
+                📦 Consolidated Order Fulfillment & Tracking Command Center
+              </h3>
+              <p style={{ margin: 0, fontSize: '0.9rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                All customer orders ({counts.total || 0} total • {needsCjOrders.length} awaiting CJ fulfillment) are now consolidated in your dedicated <strong>📦 Orders</strong> tab with 1-click manual CJ fulfillment.
+              </p>
+            </div>
+            {onOpenOrdersTab && (
               <button
-                key={tabBtn.id}
                 type="button"
-                onClick={() => setPipelineFilter(tabBtn.id)}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: '20px',
-                  border: pipelineFilter === tabBtn.id ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
-                  backgroundColor: pipelineFilter === tabBtn.id ? '#F2D4D7' : '#FFF9F9',
-                  color: '#5C5454',
-                  fontFamily: "'Cormorant Garamond', serif",
-                  fontSize: '1.05rem',
-                  fontWeight: pipelineFilter === tabBtn.id ? 'bold' : 'normal',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease'
-                }}
+                onClick={onOpenOrdersTab}
+                style={{ background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)', border: 'none', color: '#FFFFFF', padding: '12px 24px', borderRadius: '24px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 6px 18px rgba(179, 139, 143, 0.3)' }}
               >
-                {tabBtn.label}
+                📦 Open Orders & Manual CJ Fulfillment ({counts.total || 0}) →
               </button>
-            ))}
+            )}
           </div>
+        </>
+      )}
 
-          <input
-            type="text"
-            placeholder="Search by customer, email, #OrderID, or tracking..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ minWidth: '260px', flex: '1 1 260px', maxWidth: '360px', padding: '10px 16px', borderRadius: '20px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.9rem' }}
-          />
-        </div>
-
-        {/* Future Recurring Member Ritual Box Schedule (shown in FUTURE or ALL view) */}
-        {(pipelineFilter === 'FUTURE' || pipelineFilter === 'ALL') && Array.isArray(futureProj.scheduledMemberBoxes) && futureProj.scheduledMemberBoxes.length > 0 && (
-          <div style={{ marginBottom: '24px', padding: '18px 20px', borderRadius: '15px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+      {viewMode === 'ORDERS' && (
+        <>
+          {/* Orders Top Command & Manual CJ Fulfillment Bar */}
+          <div style={{ backgroundColor: '#FFFFFF', padding: '24px 28px', borderRadius: '20px', border: '2px solid #B38B8F', boxShadow: '0 8px 25px rgba(179, 139, 143, 0.18)', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
               <div>
-                <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454' }}>
-                  🔮 Upcoming Monthly Member Ritual Box Dispatches & Subscription Renewals
-                </strong>
-                <p style={{ margin: '2px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-                  Projected Monthly Recurring Subscription Revenue: <strong>${Number(futureProj.projectedMonthlySubscriptionRevenue || 0).toFixed(2)}/mo</strong>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.1rem', color: '#5C5454', margin: 0 }}>
+                    📦 Consolidated Orders & Manual CJ Fulfillment Center ✧
+                  </h2>
+                  {needsCjOrders.length > 0 && (
+                    <span style={{ backgroundColor: '#FFF8E1', color: '#B26A00', border: '1px solid #FFE082', padding: '4px 12px', borderRadius: '14px', fontSize: '0.8rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                      ⚠️ {needsCjOrders.length} Order(s) Awaiting CJ Fulfillment
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: '6px 0 0 0', fontSize: '0.92rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                  Manually push or retry any order to CJ Dropshipping (<code>createOrderV2</code> + CJ Wallet payment), edit shipping addresses, switch CJ carriers, and manage live tracking numbers in one place.
                 </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  disabled={isBatchFulfilling || isLoadingFinances}
+                  onClick={handleBatchFulfillAllPending}
+                  style={{ background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)', border: 'none', color: '#FFFFFF', padding: '11px 20px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: isBatchFulfilling ? 'wait' : 'pointer', boxShadow: '0 4px 14px rgba(179, 139, 143, 0.3)' }}
+                >
+                  {isBatchFulfilling ? '⏳ Fulfilling All on CJ...' : `🚀 Fulfill & Pay All Unprocessed Orders (${needsCjOrders.length})`}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isLoadingFinances || isSyncingCjOrders}
+                  onClick={() => fetchFinancesAndOrders(true)}
+                  style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', fontWeight: 'bold', cursor: (isLoadingFinances || isSyncingCjOrders) ? 'not-allowed' : 'pointer' }}
+                >
+                  {isSyncingCjOrders ? '⏳ Syncing CJ Tracking...' : '🔄 Sync CJ Tracking & Statuses'}
+                </button>
+
+                {onOpenFinancesTab && (
+                  <button
+                    type="button"
+                    onClick={onOpenFinancesTab}
+                    style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    💸 Finances & CJ Wallet (${effectiveCjPurchasingPowerUsd.toFixed(2)}) →
+                  </button>
+                )}
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
-              {futureProj.scheduledMemberBoxes.map((box, idx) => (
-                <div key={box.memberId || idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '8px' }}>
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <strong style={{ color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>{box.memberName}</strong>
-                      <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '2px 8px', borderRadius: '10px', fontSize: '0.75rem', fontWeight: 'bold' }}>
-                        ${box.monthlyRateUsd}/mo
-                      </span>
-                    </div>
-                    <p style={{ margin: '2px 0', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>{box.memberEmail}</p>
-                    <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif' }}>
-                      🎁 {box.tierLabel}
-                    </p>
-                    <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: '#B38B8F', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
-                      Next Box Dispatch: {new Date(box.nextDispatchDate).toLocaleDateString()}
-                    </p>
-                  </div>
-                  {onEmailCustomer && box.memberEmail && (
-                    <button
-                      type="button"
-                      onClick={() => onEmailCustomer(box.memberEmail, `✧ Your Upcoming ${box.tier === 'radiance' ? 'Radiance Elite' : 'Luminary Circle'} Ritual Box`)}
-                      style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '15px', padding: '6px 12px', fontSize: '0.85rem', color: '#5C5454', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold' }}
-                    >
-                      ✉ Email Member
-                    </button>
-                  )}
-                </div>
-              ))}
+            {/* Live Order Pipeline KPI Pills */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '12px' }}>
+              <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase' }}>Total Orders</div>
+                <div style={{ fontSize: '1.55rem', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontWeight: 'bold' }}>{counts.total || 0}</div>
+              </div>
+              <div style={{ backgroundColor: needsCjOrders.length > 0 ? '#FFF8E1' : '#F6FBF7', border: `1px solid ${needsCjOrders.length > 0 ? '#FFE082' : '#A5D6A7'}`, borderRadius: '12px', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: needsCjOrders.length > 0 ? '#B26A00' : '#2E7D32', textTransform: 'uppercase', fontWeight: 'bold' }}>Needs CJ Fulfillment</div>
+                <div style={{ fontSize: '1.55rem', fontFamily: "'Cormorant Garamond', serif", color: needsCjOrders.length > 0 ? '#B26A00' : '#2E7D32', fontWeight: 'bold' }}>{needsCjOrders.length}</div>
+              </div>
+              <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase' }}>Active / In-Transit</div>
+                <div style={{ fontSize: '1.55rem', fontFamily: "'Cormorant Garamond', serif", color: '#2E7D32', fontWeight: 'bold' }}>{counts.present || 0}</div>
+              </div>
+              <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#8A797A', textTransform: 'uppercase' }}>Completed / Delivered</div>
+                <div style={{ fontSize: '1.55rem', fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', fontWeight: 'bold' }}>{counts.past || 0}</div>
+              </div>
+              <div style={{ backgroundColor: '#F4F0FF', border: '1px solid #D1C4E9', borderRadius: '12px', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', color: '#5E35B1', textTransform: 'uppercase', fontWeight: 'bold' }}>CJ Purchasing Power</div>
+                <div style={{ fontSize: '1.55rem', fontFamily: "'Cormorant Garamond', serif", color: '#5E35B1', fontWeight: 'bold' }}>${effectiveCjPurchasingPowerUsd.toFixed(2)}</div>
+              </div>
             </div>
           </div>
-        )}
 
-        {/* Order Cards List */}
-        {filteredOrders.length === 0 ? (
-          <div style={{ padding: '40px', textAlign: 'center', backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px dashed #E8C5C8' }}>
-            <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#8A797A', fontStyle: 'italic', margin: 0 }}>
-              No orders match the current filter ({pipelineFilter}).
-            </p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {filteredOrders.map(order => {
-              const badge = stageBadgeStyle(order.pipelineStage);
-              const draft = editingOrderMap[order._id] || {
-                status: order.status || 'Pending',
-                tracking_code: order.tracking_code || '',
-                logisticName: order.logisticName || '',
-                notifyCustomer: true
-              };
-              const addr = order.shipping_address || {};
-              const formattedAddress = [addr.address_1, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean).join(', ');
+          {statusBanner.text && (
+            <div style={{
+              padding: '14px 18px',
+              borderRadius: '12px',
+              fontFamily: 'sans-serif',
+              fontSize: '0.95rem',
+              fontWeight: 'bold',
+              backgroundColor: statusBanner.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+              color: statusBanner.type === 'success' ? '#2E7D32' : '#C62828',
+              border: `1px solid ${statusBanner.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <span>{statusBanner.text}</span>
+              <button
+                type="button"
+                onClick={() => setStatusBanner({ type: '', text: '' })}
+                style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1.1rem', fontWeight: 'bold' }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
-              return (
-                <div key={order._id} style={{ padding: '20px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '12px' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                        <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#5C5454' }}>
-                          Order #{order.shortId} — {order.customerName}
-                        </strong>
-                        <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 'bold', fontFamily: 'sans-serif', backgroundColor: badge.backgroundColor, color: badge.color, border: badge.border }}>
-                          {badge.label}
-                        </span>
-                        <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #E8C5C8', fontWeight: 'bold' }}>
-                          Status: {order.status}
-                        </span>
-                      </div>
-                      <p style={{ margin: '4px 0 0 0', fontSize: '0.88rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
-                        📧 {order.customerEmail} • Placed {new Date(order.createdAt).toLocaleString()}
-                        {formattedAddress ? ` • ✈️ Ship To: ${formattedAddress}` : ''}
-                      </p>
-                    </div>
+          {/* Consolidated Order Pipeline List */}
+          <div style={{ backgroundColor: '#FFFFFF', padding: '28px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {[
+                  { id: 'ALL', label: `All Orders (${counts.total || 0})` },
+                  { id: 'NEEDS_CJ', label: `⚠️ Needs CJ Fulfillment (${needsCjOrders.length})` },
+                  { id: 'PRESENT', label: `🟢 Active & In-Transit (${counts.present || 0})` },
+                  { id: 'FUTURE', label: `🔮 Pending & Ritual Boxes (${(counts.future || 0) + (counts.scheduledMemberBoxes || 0)})` },
+                  { id: 'PAST', label: `🏛️ Completed & Delivered (${counts.past || 0})` }
+                ].map(tabBtn => (
+                  <button
+                    key={tabBtn.id}
+                    type="button"
+                    onClick={() => setPipelineFilter(tabBtn.id)}
+                    style={{
+                      padding: '9px 15px',
+                      borderRadius: '20px',
+                      border: pipelineFilter === tabBtn.id ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                      backgroundColor: pipelineFilter === tabBtn.id ? '#F2D4D7' : '#FFF9F9',
+                      color: '#5C5454',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.02rem',
+                      fontWeight: pipelineFilter === tabBtn.id ? 'bold' : 'normal',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    {tabBtn.label}
+                  </button>
+                ))}
+              </div>
 
-                    <div style={{ display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', fontFamily: 'sans-serif' }}>
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A' }}>Retail Total</span>
-                        <strong style={{ fontSize: '1.2rem', color: '#5C5454' }}>${Number(order.totalAmount || 0).toFixed(2)}</strong>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A' }}>Est. CJ Cost</span>
-                        <strong style={{ fontSize: '1.05rem', color: '#8A797A' }}>${Number(order.estimatedWholesaleCost || 0).toFixed(2)}</strong>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: '#2E7D32' }}>Est. Net Profit</span>
-                        <strong style={{ fontSize: '1.2rem', color: '#2E7D32' }}>+${Number(order.estimatedProfit || 0).toFixed(2)}</strong>
-                      </div>
-                    </div>
-                  </div>
+              <input
+                type="text"
+                placeholder="Search full Order ID (6aeae0...), #ShortID, email, or tracking..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ minWidth: '280px', flex: '1 1 280px', maxWidth: '400px', padding: '10px 16px', borderRadius: '20px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', outline: 'none', fontFamily: 'sans-serif', fontSize: '0.9rem' }}
+              />
+            </div>
 
-                  {/* Order Line Items */}
-                  {Array.isArray(order.items) && order.items.length > 0 && (
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      {order.items.map((item, idx) => (
-                        <span key={idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '5px 10px', fontSize: '0.83rem', color: '#5C5454', fontFamily: 'sans-serif' }}>
-                          {item.quantity}x <strong>{item.title}</strong> (${Number(item.price || 0).toFixed(2)})
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Inline Status, Tracking & Customer Notification Controls */}
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
-                    <select
-                      value={draft.status}
-                      onChange={(e) => handleOrderEditChange(order, 'status', e.target.value)}
-                      style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#5C5454', backgroundColor: '#FFF9F9' }}
-                    >
-                      <option value="Pending">Pending (Future / Unpaid)</option>
-                      <option value="PAID_PROCESSING">PAID_PROCESSING (Present)</option>
-                      <option value="SHIPPED">SHIPPED (Present / In-Transit)</option>
-                      <option value="DELIVERED">DELIVERED (Past / Completed)</option>
-                      <option value="COMPLETED">COMPLETED (Past)</option>
-                      <option value="CANCELLED">CANCELLED (Past)</option>
-                      <option value="REFUNDED">REFUNDED (Past)</option>
-                    </select>
-
-                    <input
-                      type="text"
-                      placeholder="Tracking Number (optional)"
-                      value={draft.tracking_code}
-                      onChange={(e) => handleOrderEditChange(order, 'tracking_code', e.target.value)}
-                      style={{ flex: '1 1 180px', padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
-                    />
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <select
-                        title="Switch CJ Dropshipping Shipping Method (POST /api/admin/orders/:id/cj-logistics)"
-                        disabled={updatingCjLogisticsId === order._id}
-                        value={draft.logisticName || order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive'}
-                        onChange={(e) => handleSwitchOrderCjLogistics(order, e.target.value, false)}
-                        style={{ padding: '8px 10px', borderRadius: '8px', border: '1.5px solid #B38B8F', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454', backgroundColor: '#FFF0F2', fontWeight: 'bold', cursor: 'pointer' }}
-                      >
-                        {(orderCjCarrierOptionsMap[order._id]
-                          ? orderCjCarrierOptionsMap[order._id].map(o => o.logisticName)
-                          : CJ_CARRIER_OPTIONS
-                        ).map(cName => (
-                          <option key={cName} value={cName}>✈️ CJ: {cName}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        title="Query CJ getOrderOptionalLogistics for this order"
-                        disabled={updatingCjLogisticsId === order._id}
-                        onClick={() => handleSwitchOrderCjLogistics(order, draft.logisticName || order.selectedLogisticName || 'CJPacket Sensitive', true)}
-                        style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '8px 10px', fontSize: '0.78rem', color: '#5C5454', cursor: 'pointer', fontFamily: 'sans-serif' }}
-                      >
-                        {updatingCjLogisticsId === order._id ? '⏳' : '↻ Rates'}
-                      </button>
-                    </div>
-
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(draft.notifyCustomer)}
-                        onChange={(e) => handleOrderEditChange(order, 'notifyCustomer', e.target.checked)}
-                      />
-                      Email update to client
-                    </label>
-
-                    <button
-                      type="button"
-                      disabled={savingOrderId === order._id}
-                      onClick={() => handleSaveOrderStatus(order)}
-                      style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px 16px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: savingOrderId === order._id ? 'not-allowed' : 'pointer' }}
-                    >
-                      {savingOrderId === order._id ? 'Saving...' : 'Save & Update ✧'}
-                    </button>
-
-                    {onEmailCustomer && order.customerEmail && order.customerEmail !== 'Anonymous Checkout' && (
-                      <button
-                        type="button"
-                        onClick={() => onEmailCustomer(order.customerEmail, `Update regarding your order #${order.shortId}`)}
-                        style={{ backgroundColor: 'transparent', border: '1px solid #E8C5C8', color: '#736A6A', padding: '8px 14px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.95rem', cursor: 'pointer' }}
-                      >
-                        ✉ Custom Email
-                      </button>
-                    )}
+            {/* Future Recurring Member Ritual Box Schedule (shown in FUTURE view) */}
+            {pipelineFilter === 'FUTURE' && Array.isArray(futureProj.scheduledMemberBoxes) && futureProj.scheduledMemberBoxes.length > 0 && (
+              <div style={{ marginBottom: '24px', padding: '18px 20px', borderRadius: '15px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+                  <div>
+                    <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454' }}>
+                      🔮 Upcoming Monthly Member Ritual Box Dispatches & Subscription Renewals
+                    </strong>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '0.85rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
+                      Projected Monthly Recurring Subscription Revenue: <strong>${Number(futureProj.projectedMonthlySubscriptionRevenue || 0).toFixed(2)}/mo</strong>
+                    </p>
                   </div>
                 </div>
-              );
-            })}
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
+                  {futureProj.scheduledMemberBoxes.map((box, idx) => (
+                    <div key={box.memberId || idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '8px' }}>
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <strong style={{ color: '#5C5454', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem' }}>{box.memberName}</strong>
+                          <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '2px 8px', borderRadius: '10px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                            ${box.monthlyRateUsd}/mo
+                          </span>
+                        </div>
+                        <p style={{ margin: '2px 0', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>{box.memberEmail}</p>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif' }}>
+                          🎁 {box.tierLabel}
+                        </p>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: '#B38B8F', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                          Next Box Dispatch: {new Date(box.nextDispatchDate).toLocaleDateString()}
+                        </p>
+                      </div>
+                      {onEmailCustomer && box.memberEmail && (
+                        <button
+                          type="button"
+                          onClick={() => onEmailCustomer(box.memberEmail, `✧ Your Upcoming ${box.tier === 'radiance' ? 'Radiance Elite' : 'Luminary Circle'} Ritual Box`)}
+                          style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '15px', padding: '6px 12px', fontSize: '0.85rem', color: '#5C5454', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold' }}
+                        >
+                          ✉ Email Member
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Order Cards List */}
+            {filteredOrders.length === 0 ? (
+              <div style={{ padding: '40px', textAlign: 'center', backgroundColor: '#FFF9F9', borderRadius: '15px', border: '1px dashed #E8C5C8' }}>
+                <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', color: '#8A797A', fontStyle: 'italic', margin: 0 }}>
+                  No orders match the current filter ({pipelineFilter}).
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                {filteredOrders.map(order => {
+                  const badge = stageBadgeStyle(order.pipelineStage);
+                  const draft = editingOrderMap[order._id] || {
+                    status: order.status || 'Pending',
+                    tracking_code: order.tracking_code || '',
+                    logisticName: order.logisticName || '',
+                    notifyCustomer: true
+                  };
+                  const addr = order.shipping_address || {};
+                  const formattedAddress = [addr.address_1, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean).join(', ');
+                  const hasCjOrder = Boolean(order.cjOrderId);
+                  const isCjWalletPaid = order.cjOrderStatus === 'PAID_WALLET';
+                  const isFulfillingThis = fulfillingOrderId === order._id;
+                  const isEditingThisAddr = editingShippingOrderId === order._id;
+                  const addrDraft = shippingDraftMap[order._id] || {
+                    name: addr.name || order.customerName || '',
+                    address_1: addr.address_1 || '',
+                    city: addr.city || '',
+                    state: addr.state || '',
+                    postcode: addr.postcode || '',
+                    country: addr.country || 'US',
+                    phone: addr.phone || ''
+                  };
+
+                  return (
+                    <div key={order._id} style={{ padding: '22px', backgroundColor: '#FFF9F9', border: !hasCjOrder ? '2px solid #FFB74D' : '1px solid #E8C5C8', borderRadius: '16px', display: 'flex', flexDirection: 'column', gap: '14px', boxShadow: '0 4px 14px rgba(232, 197, 200, 0.12)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid rgba(232, 197, 200, 0.4)', paddingBottom: '12px' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454' }}>
+                              Order #{order.shortId} — {order.customerName}
+                            </strong>
+                            <span
+                              onClick={() => {
+                                if (navigator.clipboard && order._id) {
+                                  navigator.clipboard.writeText(String(order._id));
+                                }
+                              }}
+                              title="Click to copy full MongoDB Order ID"
+                              style={{ padding: '3px 9px', borderRadius: '10px', fontSize: '0.73rem', fontFamily: 'monospace', backgroundColor: '#FFFFFF', color: '#736A6A', border: '1px solid #E8C5C8', cursor: 'pointer' }}
+                            >
+                              ID: {order._id} 📋
+                            </span>
+                            <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 'bold', fontFamily: 'sans-serif', backgroundColor: badge.backgroundColor, color: badge.color, border: badge.border }}>
+                              {badge.label}
+                            </span>
+                            <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFFFFF', color: '#B38B8F', border: '1px solid #E8C5C8', fontWeight: 'bold' }}>
+                              Status: {order.status}
+                            </span>
+                            <span
+                              style={{
+                                padding: '3px 10px',
+                                borderRadius: '12px',
+                                fontSize: '0.75rem',
+                                fontFamily: 'sans-serif',
+                                fontWeight: 'bold',
+                                backgroundColor: isCjWalletPaid ? '#E8F5E9' : hasCjOrder ? '#F4F0FF' : '#FFF8E1',
+                                color: isCjWalletPaid ? '#2E7D32' : hasCjOrder ? '#5E35B1' : '#B26A00',
+                                border: `1px solid ${isCjWalletPaid ? '#A5D6A7' : hasCjOrder ? '#D1C4E9' : '#FFE082'}`
+                              }}
+                            >
+                              {isCjWalletPaid
+                                ? `✅ CJ Wallet Paid (CJ ID: ${order.cjOrderId})`
+                                : hasCjOrder
+                                ? `📦 CJ Order Created (${order.cjOrderId}) • Unpaid`
+                                : '⚠️ Not Yet Sent to CJ Dropshipping'}
+                            </span>
+                          </div>
+                          <p style={{ margin: '6px 0 0 0', fontSize: '0.88rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
+                            📧 {order.customerEmail} • Placed {new Date(order.createdAt).toLocaleString()}
+                            {formattedAddress ? ` • ✈️ Ship To: ${formattedAddress}` : ' • ⚠️ Shipping address pending'}
+                          </p>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', fontFamily: 'sans-serif' }}>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A' }}>Retail Total</span>
+                            <strong style={{ fontSize: '1.2rem', color: '#5C5454' }}>${Number(order.totalAmount || 0).toFixed(2)}</strong>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'block', fontSize: '0.75rem', color: '#8A797A' }}>Est. CJ Cost</span>
+                            <strong style={{ fontSize: '1.05rem', color: '#8A797A' }}>${Number(order.estimatedWholesaleCost || 0).toFixed(2)}</strong>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'block', fontSize: '0.75rem', color: '#2E7D32' }}>Est. Net Profit</span>
+                            <strong style={{ fontSize: '1.2rem', color: '#2E7D32' }}>+${Number(order.estimatedProfit || 0).toFixed(2)}</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Order Line Items */}
+                      {Array.isArray(order.items) && order.items.length > 0 && (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {order.items.map((item, idx) => (
+                            <span key={idx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '5px 10px', fontSize: '0.83rem', color: '#5C5454', fontFamily: 'sans-serif' }}>
+                              {item.quantity}x <strong>{item.title}</strong> (${Number(item.price || 0).toFixed(2)})
+                              {item.sku ? <code style={{ marginLeft: '6px', fontSize: '0.74rem', color: '#8A797A' }}>[{item.sku}]</code> : null}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Dedicated Manual CJ Fulfillment Action Bar */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', backgroundColor: '#FFFDFD', padding: '12px 16px', borderRadius: '12px', border: '1.5px solid #F2D4D7' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454' }}>
+                          <strong>⚡ Manual CJ Fulfillment Actions:</strong>
+                          <span style={{ color: '#8A797A' }}>
+                            {isCjWalletPaid
+                              ? 'Order is created & paid on CJ.'
+                              : hasCjOrder
+                              ? 'Order is created on CJ — click to pay via CJ Wallet or re-send.'
+                              : 'Click to push this order to CJ Dropshipping now.'}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            disabled={isFulfillingThis}
+                            onClick={() => handleManualFulfillSingleOrder(order, { payWithWallet: true, forceRecreate: false })}
+                            style={{
+                              background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              borderRadius: '18px',
+                              padding: '8px 16px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.84rem',
+                              fontWeight: 'bold',
+                              cursor: isFulfillingThis ? 'wait' : 'pointer',
+                              boxShadow: '0 4px 10px rgba(179, 139, 143, 0.25)'
+                            }}
+                          >
+                            {isFulfillingThis
+                              ? '⏳ Processing on CJ...'
+                              : hasCjOrder && !isCjWalletPaid
+                              ? '💳 Pay CJ Wallet Balance Now'
+                              : '🚀 Fulfill on CJ Now (Create + Pay Wallet)'}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isFulfillingThis}
+                            onClick={() => handleManualFulfillSingleOrder(order, { payWithWallet: false, forceRecreate: true })}
+                            style={{
+                              backgroundColor: '#FFF0F2',
+                              color: '#5C5454',
+                              border: '1px solid #B38B8F',
+                              borderRadius: '18px',
+                              padding: '8px 14px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.82rem',
+                              fontWeight: 'bold',
+                              cursor: isFulfillingThis ? 'wait' : 'pointer'
+                            }}
+                          >
+                            {hasCjOrder ? '↻ Re-Send createOrderV2 to CJ' : '📦 Create on CJ Only (Unpaid)'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditShipping(order)}
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              color: '#5C5454',
+                              border: '1px solid #E8C5C8',
+                              borderRadius: '18px',
+                              padding: '8px 14px',
+                              fontFamily: 'sans-serif',
+                              fontSize: '0.82rem',
+                              fontWeight: 'bold',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {isEditingThisAddr ? '✕ Close Address Editor' : '✏️ Edit Shipping Address'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Collapsible Inline Shipping Address Editor */}
+                      {isEditingThisAddr && (
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '16px', borderRadius: '12px', border: '1.5px solid #B38B8F', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454' }}>
+                            📍 Edit Customer Shipping Address for Order #{order.shortId}
+                          </strong>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+                            <input
+                              type="text"
+                              placeholder="Recipient Full Name"
+                              value={addrDraft.name}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, name: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="Street Address"
+                              value={addrDraft.address_1}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, address_1: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem', gridColumn: 'span 2' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="City"
+                              value={addrDraft.city}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, city: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="State (e.g. KS)"
+                              value={addrDraft.state}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, state: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="ZIP / Postal Code"
+                              value={addrDraft.postcode}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, postcode: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="Country (US)"
+                              value={addrDraft.country}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, country: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="Phone Number"
+                              value={addrDraft.phone}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, phone: e.target.value } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                            <button
+                              type="button"
+                              onClick={() => setEditingShippingOrderId(null)}
+                              style={{ backgroundColor: 'transparent', border: '1px solid #E8C5C8', borderRadius: '16px', padding: '7px 14px', fontSize: '0.82rem', color: '#8A797A', cursor: 'pointer' }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              disabled={savingOrderId === order._id}
+                              onClick={() => handleSaveOrderShippingAddress(order)}
+                              style={{ backgroundColor: '#B38B8F', border: 'none', borderRadius: '16px', padding: '8px 18px', fontSize: '0.84rem', color: '#FFFFFF', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              {savingOrderId === order._id ? '⏳ Saving...' : '💾 Save Shipping Address'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Inline Status, Tracking & Customer Notification Controls */}
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
+                        <select
+                          value={draft.status}
+                          onChange={(e) => handleOrderEditChange(order, 'status', e.target.value)}
+                          style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#5C5454', backgroundColor: '#FFF9F9' }}
+                        >
+                          <option value="Pending">Pending (Future / Unpaid)</option>
+                          <option value="PAID_PROCESSING">PAID_PROCESSING (Present)</option>
+                          <option value="SHIPPED">SHIPPED (Present / In-Transit)</option>
+                          <option value="DELIVERED">DELIVERED (Past / Completed)</option>
+                          <option value="COMPLETED">COMPLETED (Past)</option>
+                          <option value="CANCELLED">CANCELLED (Past)</option>
+                          <option value="REFUNDED">REFUNDED (Past)</option>
+                        </select>
+
+                        <input
+                          type="text"
+                          placeholder="Tracking Number (optional)"
+                          value={draft.tracking_code}
+                          onChange={(e) => handleOrderEditChange(order, 'tracking_code', e.target.value)}
+                          style={{ flex: '1 1 180px', padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.88rem' }}
+                        />
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <select
+                            title="Switch CJ Dropshipping Shipping Method (POST /api/admin/orders/:id/cj-logistics)"
+                            disabled={updatingCjLogisticsId === order._id}
+                            value={draft.logisticName || order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive'}
+                            onChange={(e) => handleSwitchOrderCjLogistics(order, e.target.value, false)}
+                            style={{ padding: '8px 10px', borderRadius: '8px', border: '1.5px solid #B38B8F', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454', backgroundColor: '#FFF0F2', fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            {(orderCjCarrierOptionsMap[order._id]
+                              ? orderCjCarrierOptionsMap[order._id].map(o => o.logisticName)
+                              : CJ_CARRIER_OPTIONS
+                            ).map(cName => (
+                              <option key={cName} value={cName}>✈️ CJ: {cName}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            title="Query CJ getOrderOptionalLogistics for this order"
+                            disabled={updatingCjLogisticsId === order._id}
+                            onClick={() => handleSwitchOrderCjLogistics(order, draft.logisticName || order.selectedLogisticName || 'CJPacket Sensitive', true)}
+                            style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '8px 10px', fontSize: '0.78rem', color: '#5C5454', cursor: 'pointer', fontFamily: 'sans-serif' }}
+                          >
+                            {updatingCjLogisticsId === order._id ? '⏳' : '↻ Rates'}
+                          </button>
+                        </div>
+
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.84rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(draft.notifyCustomer)}
+                            onChange={(e) => handleOrderEditChange(order, 'notifyCustomer', e.target.checked)}
+                          />
+                          Email update to client
+                        </label>
+
+                        <button
+                          type="button"
+                          disabled={savingOrderId === order._id}
+                          onClick={() => handleSaveOrderStatus(order)}
+                          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '8px 16px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: savingOrderId === order._id ? 'not-allowed' : 'pointer' }}
+                        >
+                          {savingOrderId === order._id ? 'Saving...' : '💾 Save Status & Tracking ✧'}
+                        </button>
+
+                        {onEmailCustomer && order.customerEmail && order.customerEmail !== 'Anonymous Checkout' && (
+                          <button
+                            type="button"
+                            onClick={() => onEmailCustomer(order.customerEmail, `Update regarding your order #${order.shortId}`)}
+                            style={{ backgroundColor: 'transparent', border: '1px solid #E8C5C8', color: '#736A6A', padding: '8px 14px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '0.95rem', cursor: 'pointer' }}
+                          >
+                            ✉ Custom Email
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 };
@@ -10292,7 +10802,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
     }
   }, [activeTab]);
 
-  const tabs = ['Inbox', 'Finances', 'Boxes', 'Analytics', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Tests', 'Video', 'Odie'];
+  const tabs = ['Orders', 'Inbox', 'Finances', 'Boxes', 'Analytics', 'Outbox', 'Curation', 'Calendar', 'Inventory', 'Tests', 'Video', 'Odie'];
   const [pendingOdiePrompt, setPendingOdiePrompt] = useState('');
 
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '', inReplyToId: '' });
@@ -10428,6 +10938,7 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
                 boxShadow: activeTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none'
               }}
             >
+              {tab === 'Orders' && '📦 '}
               {tab === 'Inbox' && '✉️ '}
               {tab === 'Finances' && '💸 '}
               {tab === 'Boxes' && '🎁 '}
@@ -10550,70 +11061,30 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
               </form>
             </div>
 
-            {/* Right Column: Global Order Feed */}
-            <div style={{ backgroundColor: '#FFFFFF', padding: '30px', borderRadius: '20px', border: '1px solid #E8C5C8', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.15)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
-                <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#B38B8F', margin: 0, fontSize: '2.2rem' }}>Global Orders</h2>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
-                    Total: {adminData.orders?.length || 0}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('Boxes')}
-                    style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '5px 12px', borderRadius: '20px', fontSize: '0.85rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', cursor: 'pointer' }}
-                  >
-                    🎁 Monthly Boxes →
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('Finances')}
-                    style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '5px 12px', borderRadius: '20px', fontSize: '0.85rem', fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', cursor: 'pointer' }}
-                  >
-                    💸 Balances & Pipeline →
-                  </button>
-                </div>
-              </div>
-
-              {(!adminData.orders || adminData.orders.length === 0) ? (
-                <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem' }}>No orders have been placed yet.</p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                  {adminData.orders.map(order => (
-                    <div key={order._id} style={{ padding: '20px', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '15px', transition: 'transform 0.2s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <strong style={{ color: '#5C5454', fontSize: '1.1rem' }}>{order.customerEmail || 'Anonymous Checkout'}</strong>
-                        <span style={{ color: '#B38B8F', fontWeight: 'bold', fontSize: '1.2rem' }}>${(order.totalAmount || 0).toFixed(2)}</span>
-                      </div>
-                      
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                         <p style={{ margin: 0, fontSize: '0.9rem', color: '#736A6A' }}>Status: <span style={{ fontWeight: 'bold', color: order.status === 'SHIPPED' ? '#B38B8F' : '#8A797A' }}>{order.status}</span></p>
-                         <p style={{ margin: 0, fontSize: '0.8rem', color: '#A89999' }}>{new Date(order.createdAt).toLocaleDateString()}</p>
-                      </div>
-
-                      <button 
-                        onClick={() => {
-                          setEmailForm({ ...emailForm, to: order.customerEmail || '', subject: `Update regarding order ${order._id.slice(-6)}` });
-                          emailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }}
-                        style={{ background: 'transparent', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 15px', fontSize: '0.95rem', color: '#5C5454', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", transition: 'all 0.3s ease', width: '100%' }}
-                        onMouseOver={(e) => { e.target.style.backgroundColor = '#F2D4D7'; }} 
-                        onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}
-                      >
-                        ✉ Email Customer
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            
           </div>
           </div>
         )}
 
+        {activeTab === 'Orders' && (
+          <AdminFinancesAndOrders
+            viewMode="ORDERS"
+            onOpenFinancesTab={() => setActiveTab('Finances')}
+            onEmailCustomer={(to, subject) => {
+              setEmailForm({ to, subject, body: '' });
+              setActiveTab('Inbox');
+            }}
+            onOrdersUpdated={onRefreshAdminData}
+            onAskOdie={(promptText) => {
+              setPendingOdiePrompt(promptText);
+              setActiveTab('Odie');
+            }}
+          />
+        )}
+
         {activeTab === 'Finances' && (
           <AdminFinancesAndOrders
+            viewMode="FINANCES"
+            onOpenOrdersTab={() => setActiveTab('Orders')}
             onEmailCustomer={(to, subject) => {
               setEmailForm({ to, subject, body: '' });
               setActiveTab('Inbox');
