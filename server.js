@@ -4336,15 +4336,15 @@ const dispatchMonthlyBoxToCj = async (boxId, {
   }).save();
 
   const headers = getCjHeaders();
-  const cjPayload = buildCjOrderPayload(localOrder);
+  const cjPayload = await buildHydratedCjOrderPayload(localOrder);
   let cjOrderId = box.cjOrderId || '';
   let cjWalletPaid = false;
   let cjDispatchNotice = '';
 
   if (headers) {
     try {
-      const createRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, {
-        headers,
+      const createRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, JSON.stringify(cjPayload), {
+        headers: { ...headers, 'Content-Type': 'application/json' },
         timeout: 15000
       });
       const returnedId =
@@ -5034,11 +5034,15 @@ const executeStripeToCjBridge = async ({
         try {
           const fullOrdDoc = await Order.findById(localOrd._id);
           if (fullOrdDoc) {
-            const cjPayload = buildCjOrderPayload(fullOrdDoc);
-            const createRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, {
-              headers,
-              timeout: 15000
-            });
+            const cjPayload = await buildHydratedCjOrderPayload(fullOrdDoc);
+            const createRes = await axios.post(
+              `${CJ_BASE_URL}/shopping/order/createOrderV2`,
+              JSON.stringify(cjPayload),
+              {
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                timeout: 15000
+              }
+            );
             const createdId =
               createRes?.data?.data?.orderId ||
               (typeof createRes?.data?.data === 'string' ? createRes.data.data : '');
@@ -5062,8 +5066,8 @@ const executeStripeToCjBridge = async ({
         try {
           const payRes = await axios.post(
             `${CJ_BASE_URL}/shopping/pay/payBalance`,
-            { orderId: targetCjOrderId },
-            { headers, timeout: 15000 }
+            JSON.stringify({ orderId: String(targetCjOrderId).trim() }),
+            { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 15000 }
           );
           if (payRes.data?.result) {
             await Order.findByIdAndUpdate(localOrd._id, {
@@ -5111,8 +5115,8 @@ const executeStripeToCjBridge = async ({
       try {
         const payRes = await axios.post(
           `${CJ_BASE_URL}/shopping/pay/payBalance`,
-          { orderId: remOrd.cjOrderId },
-          { headers, timeout: 15000 }
+          JSON.stringify({ orderId: String(remOrd.cjOrderId).trim() }),
+          { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 15000 }
         );
         if (payRes.data?.result) {
           cjOrdersPaid.push({
@@ -13246,84 +13250,165 @@ const extractStripeShippingAddress = (session = {}, fallbackAddress = {}) => {
   };
 };
 
-// Builds a validated CJ Dropshipping createOrderV2 payload from an Order document
-// Explicitly passes logisticName, fromCountryCode, and appends custom packaging vid or POD metadata when enabled.
+// Maps 2-letter ISO country code to full country name required by CJ createOrderV2 DTO
+const resolveCountryNameFromCode = (code = 'US') => {
+  const clean = String(code || 'US').toUpperCase().trim();
+  const map = {
+    US: 'United States',
+    CA: 'Canada',
+    GB: 'United Kingdom',
+    UK: 'United Kingdom',
+    AU: 'Australia'
+  };
+  return map[clean] || clean || 'United States';
+};
+
+// Builds a strictly typed CJ Dropshipping createOrderV2 payload matching CJ's Java DTO schema.
+// Avoids non-Array podProperties or custom objects inside products[] that trigger CJ's Jackson type error:
+// "Request body is required and must contain valid JSON with correctly typed fields".
 const buildCjOrderPayload = (order) => {
   const address = order.shipping_address || {};
-  const customerName = (
+  const customerName = String(
     address.name ||
     `${address.first_name || 'Valued'} ${address.last_name || 'Customer'}`
-  ).trim();
+  ).trim() || 'Valued Customer';
 
   const logisticName = String(
     order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive'
   ).trim() || 'CJPacket Sensitive';
   const fromCountryCode = String(order.fromCountryCode || 'CN').toUpperCase().trim() || 'CN';
+  const countryCode = String(address.country || 'US').toUpperCase().trim().slice(0, 2) || 'US';
+  const countryName = resolveCountryNameFromCode(countryCode);
+  const cleanPhone = String(address.phone || '3165550199').replace(/[^0-9+]/g, '') || '3165550199';
+
   const orderCustomLabel = order.customLabelConfig && typeof order.customLabelConfig === 'object'
     ? order.customLabelConfig
     : null;
 
-  const mappedProducts = (Array.isArray(order.items) ? order.items : []).map(item => {
-    const itemLabel = (item.customLabelConfig && typeof item.customLabelConfig === 'object')
-      ? item.customLabelConfig
-      : orderCustomLabel;
-    const baseProd = {
-      vid: String(item.vid || item.sku || ''),
-      sku: String(item.sku || ''),
-      quantity: Math.max(1, Number(item.quantity) || 1)
-    };
-    if (itemLabel?.enabled) {
-      baseProd.customLabelConfig = {
-        labelType: itemLabel.labelType || 'CJ_CUSTOM_PACKAGING',
-        packagingVid: itemLabel.packagingVid || '',
-        packagingName: itemLabel.packagingName || "Susan's Rose-Gold Custom Box & Seal",
-        customBrandText: itemLabel.customBrandText || "Susan's Beauty Consulting ✧",
-        logoUrl: itemLabel.logoUrl || ''
-      };
-      if (itemLabel.logoUrl || itemLabel.customBrandText) {
-        baseProd.podProperties = {
-          customText: itemLabel.customBrandText || "Susan's Beauty Consulting ✧",
-          logoUrl: itemLabel.logoUrl || ''
-        };
-      }
-    }
-    return baseProd;
-  });
+  const remarkNotes = [];
+  if (orderCustomLabel?.enabled) {
+    remarkNotes.push(
+      `Custom Label: ${orderCustomLabel.packagingName || "Susan's Rose-Gold Custom Box"} (${orderCustomLabel.customBrandText || "Susan's Beauty Consulting"})`
+    );
+  }
 
-  // If order-level CJ Custom Packaging is enabled with a packagingVid, append the packaging line item after product items
+  const mappedProducts = (Array.isArray(order.items) ? order.items : [])
+    .map((item, idx) => {
+      const itemLabel = (item.customLabelConfig && typeof item.customLabelConfig === 'object')
+        ? item.customLabelConfig
+        : orderCustomLabel;
+      if (itemLabel?.enabled && itemLabel?.customBrandText && remarkNotes.length === 0) {
+        remarkNotes.push(`Custom Brand: ${itemLabel.customBrandText}`);
+      }
+      const cleanVid = String(item.vid || item.sku || '').trim();
+      const cleanSku = String(item.sku || item.vid || '').trim();
+      const cleanQty = Math.max(1, Math.round(Number(item.quantity) || 1));
+      return {
+        vid: cleanVid,
+        sku: cleanSku,
+        quantity: cleanQty,
+        storeLineItemId: String(item._id || item.productId || `${order._id || 'ord'}-${idx + 1}`)
+      };
+    })
+    .filter(p => Boolean(p.vid || p.sku));
+
+  // If order-level CJ Custom Packaging is enabled with a real CJ UUID/VID (not a local placeholder prefix), append as a valid line item
   if (
     orderCustomLabel?.enabled &&
     orderCustomLabel?.packagingVid &&
+    !/^CJ-PKG-/i.test(String(orderCustomLabel.packagingVid)) &&
     !mappedProducts.some(p => p.vid === String(orderCustomLabel.packagingVid))
   ) {
     mappedProducts.push({
-      vid: String(orderCustomLabel.packagingVid),
-      sku: String(orderCustomLabel.packagingSku || orderCustomLabel.packagingVid),
-      quantity: 1,
-      isCustomPackaging: true,
-      packagingName: String(orderCustomLabel.packagingName || "Susan's Rose-Gold Custom Box & Seal")
+      vid: String(orderCustomLabel.packagingVid).trim(),
+      sku: String(orderCustomLabel.packagingSku || orderCustomLabel.packagingVid).trim(),
+      quantity: 1
     });
   }
 
   return {
-    orderNumber: String(order._id || 'TEST-ORDER'),
-    shippingZip: String(address.postcode || '00000'),
-    shippingCountryCode: String(address.country || 'US'),
-    shippingProvince: String(address.state || 'KS'),
-    shippingCity: String(address.city || 'Wichita'),
-    shippingAddress: String(address.address_1 || 'Pending'),
+    orderNumber: String(order._id || `SBC-${Date.now()}`),
+    shippingZip: String(address.postcode || '67202').trim(),
+    shippingCountryCode: countryCode,
+    shippingCountry: countryName,
+    shippingProvince: String(address.state || 'KS').trim(),
+    shippingCity: String(address.city || 'Wichita').trim(),
+    shippingAddress: String(address.address_1 || 'Pending Address').trim(),
     shippingCustomerName: customerName,
-    shippingPhone: String(address.phone || '0000000000'),
+    shippingPhone: cleanPhone,
     logisticName,
     fromCountryCode,
-    ...(orderCustomLabel?.enabled
-      ? {
-          remark: `Custom Label: ${orderCustomLabel.packagingName || "Susan's Rose-Gold Custom Box"} (${orderCustomLabel.customBrandText || "Susan's Beauty Consulting"})`,
-          customLabelConfig: orderCustomLabel
-        }
-      : {}),
+    payType: 3,
+    remark: remarkNotes.join(' | ') || "Susan's Beauty Consulting Sanctuary Order",
     products: mappedProducts
   };
+};
+
+// Enriches order items with real CJ variant VIDs / SKUs from MongoDB Product records before calling createOrderV2
+const buildHydratedCjOrderPayload = async (order) => {
+  const plainOrder = order && typeof order.toObject === 'function' ? order.toObject() : { ...(order || {}) };
+  const rawItems = Array.isArray(plainOrder.items) ? plainOrder.items : [];
+  const hydratedItems = [];
+
+  for (const item of rawItems) {
+    let resolvedVid = String(item.vid || '').trim();
+    let resolvedSku = String(item.sku || '').trim();
+
+    // Look up the Product in MongoDB to extract its canonical CJ variant VID & SKU if needed
+    const orLookup = [];
+    if (item.productId && mongoose.Types.ObjectId.isValid(String(item.productId))) {
+      orLookup.push({ _id: String(item.productId) });
+    }
+    if (item._id && mongoose.Types.ObjectId.isValid(String(item._id))) {
+      orLookup.push({ _id: String(item._id) });
+    }
+    if (resolvedSku) {
+      orLookup.push({ cjSku: resolvedSku }, { 'variants.sku': resolvedSku }, { cjPid: resolvedSku });
+    }
+    if (item.title) {
+      orLookup.push({ title: String(item.title).trim() });
+    }
+
+    if (orLookup.length > 0) {
+      const dbProd = await Product.findOne({ $or: orLookup })
+        .select('cjPid cjSku variants rawCjData')
+        .lean()
+        .catch(() => null);
+      if (dbProd) {
+        const cjRawVariant = Array.isArray(dbProd.rawCjData?.variants) ? dbProd.rawCjData.variants[0] : null;
+        const dbVariant = Array.isArray(dbProd.variants) ? dbProd.variants[0] : null;
+        if (!resolvedVid) {
+          resolvedVid = String(
+            cjRawVariant?.vid ||
+            dbVariant?.sku ||
+            dbProd.rawCjData?.vid ||
+            dbProd.cjPid ||
+            resolvedSku ||
+            ''
+          ).trim();
+        }
+        if (!resolvedSku) {
+          resolvedSku = String(
+            cjRawVariant?.variantSku ||
+            dbProd.cjSku ||
+            dbProd.rawCjData?.productSku ||
+            dbVariant?.sku ||
+            resolvedVid ||
+            ''
+          ).trim();
+        }
+      }
+    }
+
+    hydratedItems.push({
+      ...item,
+      vid: resolvedVid || resolvedSku,
+      sku: resolvedSku || resolvedVid
+    });
+  }
+
+  plainOrder.items = hydratedItems;
+  return buildCjOrderPayload(plainOrder);
 };
 
 // Parses both CJ v2 nested (`req.body.params`) and flat webhook payloads safely
@@ -13629,12 +13714,12 @@ app.post(
               }
 
               const headers = getCjHeaders();
-              const cjPayload = buildCjOrderPayload(order);
+              const cjPayload = await buildHydratedCjOrderPayload(order);
               let cjStatusNote = 'Routed to CJ Dropshipping';
 
               if (headers) {
                 try {
-                  const cjOrderRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, cjPayload, { headers, timeout: 15000 });
+                  const cjOrderRes = await axios.post(`${CJ_BASE_URL}/shopping/order/createOrderV2`, JSON.stringify(cjPayload), { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 15000 });
                   const returnedCjId = cjOrderRes?.data?.data?.orderId || (typeof cjOrderRes?.data?.data === 'string' ? cjOrderRes.data.data : '');
                   if (returnedCjId) {
                     order.cjOrderId = String(returnedCjId);
