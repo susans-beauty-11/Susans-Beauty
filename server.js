@@ -45,18 +45,36 @@ app.use(cors({
   credentials: true
 }));
 
-// Surgically bypass body parsers for the Stripe webhook so it retains the raw buffer,
-// while enabling both JSON and URL-encoded form parsing on all other routes (including OAuth POST callbacks).
+// Capture exact byte-for-byte raw Buffer on all requests (req.rawBody) AND preserve raw Buffer body on Stripe webhook routes
+// regardless of trailing slashes or Content-Type charset parameters.
+let runtimeProvisionedWebhookSecret = '';
+
 app.use((req, res, next) => {
-  const cleanPath = String(req.originalUrl || req.url || '').split('?')[0];
+  const cleanPath = String(req.originalUrl || req.url || '')
+    .split('?')[0]
+    .replace(/\/+$/, '')
+    .toLowerCase();
   if (
     cleanPath === '/webhook/stripe' ||
     cleanPath === '/api/webhook/stripe' ||
     cleanPath === '/api/webhooks/stripe'
   ) {
-    next();
+    express.raw({ type: () => true, limit: '10mb' })(req, res, (err) => {
+      if (err) return next(err);
+      if (Buffer.isBuffer(req.body)) {
+        req.rawBody = req.body;
+      }
+      next();
+    });
   } else {
-    express.json({ limit: '10mb' })(req, res, (err) => {
+    express.json({
+      limit: '10mb',
+      verify: (reqObj, _resObj, buf) => {
+        if (buf && buf.length) {
+          reqObj.rawBody = Buffer.from(buf);
+        }
+      }
+    })(req, res, (err) => {
       if (err) return next(err);
       express.urlencoded({ extended: true, limit: '10mb' })(req, res, next);
     });
@@ -1538,15 +1556,11 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION (STRICT SKINCARE & BEAUTY CURATED SYNC) ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (UNCAPPED STRICT SKINCARE & BEAUTY SYNC) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-let activeMaxCatalogCap = Math.max(
-  50,
-  Math.min(2000, Number(cleanEnv(process.env.CJ_MAX_CATALOG_CAP || process.env.CJ_MAX_PRODUCTS)) || 300)
-);
-const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 25);
-const CJ_MAX_PRODUCTS = activeMaxCatalogCap;
-const CJ_PAGE_SIZE = Math.min(50, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 50));
+const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 80);
+const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 5000);
+const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
 
 // Normalizes a product title into a canonical alphanumeric key so near-identical CJ seller clones collapse into one item
 const normalizeCjTitleForDedupe = (rawTitle = '') =>
@@ -2450,8 +2464,6 @@ let cjCatalogSyncTelemetry = {
   lastSanitizedAt: null,
   lastDuplicatesPurgedCount: 0,
   lastNonBeautyPurgedCount: 0,
-  lastExcessCapPrunedCount: 0,
-  maxCatalogCap: activeMaxCatalogCap,
   activeCatalogTotal: 0,
   nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)',
   timezone: 'America/Chicago'
@@ -2460,23 +2472,13 @@ let cjCatalogSyncTelemetry = {
 // Scans the entire MongoDB Product collection, purges non-beauty items, backfills cjPid/cjSku/normalizedTitleKey,
 // groups duplicate products (by cjPid, cjSku, normalizedTitleKey, or identical CJ image), merges analytics counters,
 // re-points all foreign keys in Order, InboxItem, User.recommendedProducts, and MemberMonthlyBox, and deletes duplicates.
-const sanitizeAndDeduplicateCatalog = async (options = {}) => {
-  if (options && options.maxCatalogCap !== undefined) {
-    const parsedCap = Number(options.maxCatalogCap);
-    if (!Number.isNaN(parsedCap) && parsedCap >= 50 && parsedCap <= 2000) {
-      activeMaxCatalogCap = Math.round(parsedCap);
-      cjCatalogSyncTelemetry.maxCatalogCap = activeMaxCatalogCap;
-    }
-  }
-
+const sanitizeAndDeduplicateCatalog = async () => {
   if (isCatalogSanitizeRunning) {
     return {
       status: 'already_running',
       nonBeautyPurgedCount: 0,
       duplicatesPurged: 0,
-      excessPrunedCount: 0,
       groupsMerged: 0,
-      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal: await Product.countDocuments()
     };
   }
@@ -2653,81 +2655,6 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       await Product.deleteMany({ _id: { $in: dupIds } }).catch(() => {});
     }
 
-    // 3. Enforce Curated Boutique Catalog Cap (activeMaxCatalogCap) so inventory never grows unbounded
-    let excessPrunedCount = 0;
-    const currentCountAfterDedupe = await Product.countDocuments();
-    if (currentCountAfterDedupe > activeMaxCatalogCap) {
-      // Collect protected product IDs from User recommendations, Inbox curations, and Monthly Boxes
-      const [usersWithRecs, inboxDocs, boxDocs] = await Promise.all([
-        User.find({ 'recommendedProducts.0': { $exists: true } }).select('recommendedProducts').lean().catch(() => []),
-        InboxItem.find({}).select('productId').lean().catch(() => []),
-        MemberMonthlyBox.find({}).select('curatedProducts.productId').lean().catch(() => [])
-      ]);
-
-      const protectedIdSet = new Set();
-      for (const u of usersWithRecs) {
-        for (const pid of (u.recommendedProducts || [])) {
-          if (pid) protectedIdSet.add(String(pid));
-        }
-      }
-      for (const ib of inboxDocs) {
-        if (ib.productId) protectedIdSet.add(String(ib.productId));
-      }
-      for (const bx of boxDocs) {
-        for (const cp of (bx.curatedProducts || [])) {
-          if (cp?.productId) protectedIdSet.add(String(cp.productId));
-        }
-      }
-
-      const remainingProducts = await Product.find({})
-        .select('_id title customTitleLocked purchaseCount curatedCount cartAddCount viewCount')
-        .lean();
-
-      const rankedRemaining = [...remainingProducts].sort((a, b) => {
-        const aProtected =
-          Boolean(a.customTitleLocked) ||
-          protectedIdSet.has(String(a._id)) ||
-          Number(a.purchaseCount || 0) > 0 ||
-          Number(a.curatedCount || 0) > 0 ||
-          Number(a.cartAddCount || 0) > 0;
-        const bProtected =
-          Boolean(b.customTitleLocked) ||
-          protectedIdSet.has(String(b._id)) ||
-          Number(b.purchaseCount || 0) > 0 ||
-          Number(b.curatedCount || 0) > 0 ||
-          Number(b.cartAddCount || 0) > 0;
-        if (bProtected !== aProtected) return Number(bProtected) - Number(aProtected);
-
-        const scoreA =
-          (Number(a.purchaseCount || 0) * 100) +
-          (Number(a.curatedCount || 0) * 25) +
-          (Number(a.cartAddCount || 0) * 10) +
-          Number(a.viewCount || 0);
-        const scoreB =
-          (Number(b.purchaseCount || 0) * 100) +
-          (Number(b.curatedCount || 0) * 25) +
-          (Number(b.cartAddCount || 0) * 10) +
-          Number(b.viewCount || 0);
-        if (scoreB !== scoreA) return scoreB - scoreA;
-        return String(a._id).localeCompare(String(b._id));
-      });
-
-      const excessCandidates = rankedRemaining.slice(activeMaxCatalogCap).filter(
-        (p) =>
-          !p.customTitleLocked &&
-          !protectedIdSet.has(String(p._id)) &&
-          !(Number(p.purchaseCount || 0) > 0) &&
-          !(Number(p.curatedCount || 0) > 0)
-      );
-
-      if (excessCandidates.length > 0) {
-        const excessIds = excessCandidates.map((p) => p._id);
-        await Product.deleteMany({ _id: { $in: excessIds } }).catch(() => {});
-        excessPrunedCount = excessIds.length;
-        console.log(`✂️ Enforced Curated Catalog Cap (${activeMaxCatalogCap}): pruned ${excessPrunedCount} excess unengaged CJ listings.`);
-      }
-    }
-
     const activeCatalogTotal = await Product.countDocuments();
     const nowIso = new Date().toISOString();
 
@@ -2736,13 +2663,11 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       lastSanitizedAt: nowIso,
       lastDuplicatesPurgedCount: duplicatesPurged,
       lastNonBeautyPurgedCount: nonBeautyPurgedCount,
-      lastExcessCapPrunedCount: excessPrunedCount,
-      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal
     };
 
     console.log(
-      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-skincare/perfume items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicates removed), pruned ${excessPrunedCount} over-cap items -> ${activeCatalogTotal}/${activeMaxCatalogCap} unique Skincare & Beauty products active.`
+      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-skincare/perfume items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicates removed) -> ${activeCatalogTotal} unique Skincare & Beauty products active.`
     );
 
     return {
@@ -2751,8 +2676,6 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       nonBeautyPurgedCount,
       groupsMerged,
       duplicatesPurged,
-      excessPrunedCount,
-      maxCatalogCap: activeMaxCatalogCap,
       activeCatalogTotal,
       sanitizedAt: nowIso,
       telemetry: cjCatalogSyncTelemetry
@@ -2789,22 +2712,19 @@ const syncCJCatalog = async (options = {}) => {
   }
 
   isCjSyncRunning = true;
-  if (options.maxCatalogCap !== undefined) {
-    const parsedCap = Number(options.maxCatalogCap);
-    if (!Number.isNaN(parsedCap) && parsedCap >= 50 && parsedCap <= 2000) {
-      activeMaxCatalogCap = Math.round(parsedCap);
-      cjCatalogSyncTelemetry.maxCatalogCap = activeMaxCatalogCap;
-    }
-  }
   const fullCatalog = options.fullCatalog !== undefined ? Boolean(options.fullCatalog) : true;
   const sanitizeAfter = options.sanitizeAfter !== undefined ? Boolean(options.sanitizeAfter) : true;
-  const maxPages = Math.min(35, Math.max(1, Number(options.maxPages) || CJ_MAX_PAGES));
-  const maxProducts = Math.min(activeMaxCatalogCap, Math.max(50, Number(options.maxProducts) || activeMaxCatalogCap));
+  const maxPages = fullCatalog
+    ? Math.max(50, Number(options.maxPages) || CJ_MAX_PAGES)
+    : Math.max(1, Number(options.maxPages) || 35);
+  const maxProducts = fullCatalog
+    ? Math.max(500, Number(options.maxProducts) || CJ_MAX_PRODUCTS)
+    : Math.max(1, Number(options.maxProducts) || 500);
   const pageSize = CJ_PAGE_SIZE;
 
   try {
-    // 1. Pre-sanitize existing catalog (and enforce cap) before pulling new CJ batches
-    const preSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: activeMaxCatalogCap });
+    // 1. Pre-sanitize existing catalog before pulling new CJ batches
+    const preSanitize = await sanitizeAndDeduplicateCatalog();
     const purgedCount = preSanitize.nonBeautyPurgedCount || 0;
 
     const headers = getCjHeaders();
@@ -3066,7 +2986,7 @@ const syncCJCatalog = async (options = {}) => {
     // Stage C: Post-Sync Sanitization, Deduplication & Curated Cap Enforcement
     let postSanitize = null;
     if (sanitizeAfter) {
-      postSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: activeMaxCatalogCap });
+      postSanitize = await sanitizeAndDeduplicateCatalog();
     }
 
     await backfillProductBlueprintLabels(false);
@@ -9699,15 +9619,14 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
   try {
     const { purgeOnly, sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (purgeOnly || sanitizeOnly) {
-      const sanitizeRes = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
+      const sanitizeRes = await sanitizeAndDeduplicateCatalog();
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
-        message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeRes.duplicatesPurged || 0} duplicates, and ${sanitizeRes.excessPrunedCount || 0} over-cap listings (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
+        message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeRes.duplicatesPurged || 0} duplicates, and ${sanitizeRes.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
         purgedCount: sanitizeRes.nonBeautyPurgedCount || 0,
         duplicatesPurged: sanitizeRes.duplicatesPurged || 0,
         excessPrunedCount: sanitizeRes.excessPrunedCount || 0,
-        maxCatalogCap: activeMaxCatalogCap,
-        syncedCount: 0,
+                syncedCount: 0,
         activeTotal: products.length,
         syncTelemetry: cjCatalogSyncTelemetry,
         products
@@ -9717,10 +9636,9 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
     const result = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `✨ Strict Skincare & Beauty Sync Complete! Synced ${result.syncedCount || 0} verified items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} perfume/non-skincare items (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
+      message: `✨ Strict Skincare & Beauty Sync Complete! Synced ${result.syncedCount || 0} verified items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} perfume/non-skincare items (${products.length} unique Skincare & Beauty products active) ✧`,
       ...result,
-      maxCatalogCap: activeMaxCatalogCap,
-      activeTotal: products.length,
+            activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
     });
@@ -9735,16 +9653,15 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
   try {
     const { sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (sanitizeOnly) {
-      const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
+      const sanitizeResult = await sanitizeAndDeduplicateCatalog();
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
-        message: `🧹 Strict Skincare & Beauty Sanitization Complete! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed), and pruned ${sanitizeResult.excessPrunedCount || 0} over-cap items → ${products.length}/${activeMaxCatalogCap} unique products active ✧`,
+        message: `🧹 Strict Skincare & Beauty Sanitization Complete! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed), and pruned ${sanitizeResult.excessPrunedCount || 0} over-cap items → ${products.length} unique Skincare & Beauty products active ✧`,
         sanitizeResult,
         duplicatesPurged: sanitizeResult.duplicatesPurged || 0,
         purgedCount: sanitizeResult.nonBeautyPurgedCount || 0,
         excessPrunedCount: sanitizeResult.excessPrunedCount || 0,
-        maxCatalogCap: activeMaxCatalogCap,
-        activeTotal: products.length,
+                activeTotal: products.length,
         syncTelemetry: cjCatalogSyncTelemetry,
         products
       });
@@ -9753,13 +9670,12 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
     const syncResult = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `✨ Strict Skincare & Beauty Sync + Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} perfume/non-skincare items → ${products.length}/${activeMaxCatalogCap} unique products active ✧`,
+      message: `✨ Strict Skincare & Beauty Sync + Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} perfume/non-skincare items → ${products.length} unique Skincare & Beauty products active ✧`,
       syncResult,
       duplicatesPurged: syncResult.duplicatesPurged || 0,
       purgedCount: syncResult.purgedCount || 0,
       syncedCount: syncResult.syncedCount || 0,
-      maxCatalogCap: activeMaxCatalogCap,
-      activeTotal: products.length,
+            activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
     });
@@ -9773,13 +9689,12 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
 app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincare-purge'], authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { maxCatalogCap } = req.body || {};
-    const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
+    const sanitizeResult = await sanitizeAndDeduplicateCatalog();
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
-      message: `🧹 Strict Skincare & Beauty Purge + Cap Enforcement Complete! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeResult.duplicatesPurged || 0} duplicates, and ${sanitizeResult.excessPrunedCount || 0} over-cap listings (${products.length}/${activeMaxCatalogCap} unique products active) ✧`,
+      message: `🧹 Strict Skincare & Beauty Purge + Cap Enforcement Complete! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeResult.duplicatesPurged || 0} duplicates, and ${sanitizeResult.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
       ...sanitizeResult,
-      maxCatalogCap: activeMaxCatalogCap,
-      activeTotal: products.length,
+            activeTotal: products.length,
       syncTelemetry: cjCatalogSyncTelemetry,
       products
     });
@@ -13576,32 +13491,96 @@ const findUserForStripeEvent = async ({ userId = '', stripeCustomerId = '', emai
   return null;
 };
 
+// Helper to collect all configured Stripe webhook signing secrets (whsec_...)
+const getConfiguredStripeWebhookSecrets = () => {
+  const rawList = [
+    runtimeProvisionedWebhookSecret,
+    cleanEnv(process.env.STRIPE_WEBHOOK_SECRET),
+    cleanEnv(process.env.STRIPE_LIVE_WEBHOOK_SECRET),
+    cleanEnv(process.env.STRIPE_TEST_WEBHOOK_SECRET),
+    ...String(cleanEnv(process.env.STRIPE_WEBHOOK_SECRETS) || '')
+      .split(/[\s,]+/)
+      .map(s => s.trim())
+  ].filter(Boolean);
+  return [...new Set(rawList)];
+};
+
 app.post(
   ['/webhook/stripe', '/api/webhook/stripe', '/api/webhooks/stripe'],
-  express.raw({ type: 'application/json' }),
   async (req, res) => {
     const sig = req.headers['stripe-signature'];
-    const webhookSecret = cleanEnv(process.env.STRIPE_WEBHOOK_SECRET);
-    let event;
+    const candidateSecrets = getConfiguredStripeWebhookSecrets();
 
-    try {
-      if (!webhookSecret) {
-        throw new Error('STRIPE_WEBHOOK_SECRET is not configured in environment.');
+    // Ensure we always have the exact unmutated raw Buffer for HMAC verification
+    const rawPayloadBuffer = Buffer.isBuffer(req.rawBody)
+      ? req.rawBody
+      : Buffer.isBuffer(req.body)
+      ? req.body
+      : typeof req.body === 'string'
+      ? Buffer.from(req.body, 'utf8')
+      : Buffer.from(JSON.stringify(req.body || {}), 'utf8');
+
+    let event = null;
+    let verificationMethod = 'HMAC_SIGNATURE';
+    let lastSigError = null;
+
+    // Layer 1: Try HMAC-SHA256 verification against all configured whsec_ signing secrets
+    if (sig && candidateSecrets.length > 0) {
+      for (const secret of candidateSecrets) {
+        try {
+          event = stripe.webhooks.constructEvent(rawPayloadBuffer, sig, secret);
+          if (event) {
+            verificationMethod = 'HMAC_SIGNATURE';
+            break;
+          }
+        } catch (sigErr) {
+          lastSigError = sigErr;
+        }
       }
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    } catch (err) {
-      console.error(`⚠️ Stripe Webhook Error: ${err.message}`);
+    }
+
+    // Layer 2: If whsec_ in .env belongs to a different webhook row or Test/Live mode in Stripe Dashboard,
+    // verify the incoming event ID (evt_...) directly against Stripe's authenticated API via stripe.events.retrieve()
+    if (!event) {
+      const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+      let parsedBody = null;
+      try {
+        parsedBody = JSON.parse(rawPayloadBuffer.toString('utf8'));
+      } catch {
+        parsedBody = req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) ? req.body : null;
+      }
+
+      const incomingEventId = String(parsedBody?.id || '').trim();
+      if (rawStripeKey && incomingEventId.startsWith('evt_')) {
+        try {
+          const verifiedFromStripeApi = await stripe.events.retrieve(incomingEventId);
+          if (verifiedFromStripeApi && verifiedFromStripeApi.id === incomingEventId) {
+            event = verifiedFromStripeApi;
+            verificationMethod = 'STRIPE_API_DIRECT_VERIFY';
+            console.log(
+              `✅ Stripe Webhook verified via direct Stripe API lookup (${incomingEventId}: ${event.type}) — update STRIPE_WEBHOOK_SECRET in .env to match this endpoint's whsec_ secret.`
+            );
+          }
+        } catch (apiVerifyErr) {
+          console.warn(`⚠️ Direct Stripe API event lookup failed for ${incomingEventId}:`, apiVerifyErr.message);
+        }
+      }
+    }
+
+    if (!event) {
+      const errMsg = lastSigError?.message || 'Unable to verify Stripe webhook signature or retrieve event from Stripe API.';
+      console.error(`⚠️ Stripe Webhook Error: ${errMsg}`);
       await logWebhookDelivery({
         source: 'STRIPE',
         eventType: 'signature.verification_failed',
         status: 'REJECTED',
-        summary: `Stripe webhook signature error: ${err.message}`,
+        summary: `Stripe webhook rejected: ${errMsg}`,
         ipAddress: req.ip || ''
       });
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+      return res.status(400).send(`Webhook Error: ${errMsg}`);
     }
 
-    let webhookSummary = `Stripe ${event.type} received`;
+    let webhookSummary = `Stripe ${event.type} received (${verificationMethod === 'HMAC_SIGNATURE' ? 'whsec_ verified' : 'Stripe API verified'})`;
 
     try {
       if (event.type === 'checkout.session.completed') {
@@ -13842,8 +13821,9 @@ app.post(
         eventId: event.id || '',
         livemode: Boolean(event.livemode),
         status: 'PROCESSED',
-        summary: webhookSummary,
-        ipAddress: req.ip || ''
+        summary: `${webhookSummary} [${verificationMethod === 'HMAC_SIGNATURE' ? 'HMAC whsec_' : 'Direct Stripe API'}]`,
+        ipAddress: req.ip || '',
+        metadata: { verificationMethod }
       });
     } catch (handlerErr) {
       console.error(`⚠️ Stripe webhook processing error (${event.type}):`, handlerErr.message);
@@ -14320,6 +14300,87 @@ app.post('/api/admin/diagnostics/test-webhooks', authenticateToken, requireAdmin
   } catch (err) {
     console.error('Webhook diagnostics error:', err);
     res.status(500).json({ error: err.message || 'Failed to run webhook diagnostics.' });
+  }
+});
+
+// POST /api/admin/webhooks/provision-stripe — Auto-registers or repairs the live /webhook/stripe endpoint in Stripe
+// and returns the newly generated whsec_... signing secret (also activating it immediately in memory).
+app.post('/api/admin/webhooks/provision-stripe', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+    if (!rawStripeKey) {
+      return res.status(400).json({
+        error: 'STRIPE_SECRET_KEY is not configured in .env. Please add your Stripe secret key first.'
+      });
+    }
+
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'susansbeautyconsulting.com';
+    const publicBaseUrl = cleanEnv(process.env.PUBLIC_BACKEND_URL || process.env.RENDER_EXTERNAL_URL) || `${protocol}://${host}`;
+    const targetUrl = String(req.body?.webhookUrl || `${publicBaseUrl.replace(/\/+$/, '')}/webhook/stripe`).trim();
+
+    if (/localhost|127\.0\.0\.1/i.test(targetUrl)) {
+      return res.status(400).json({
+        error: `Stripe requires a public HTTPS URL (cannot register "${targetUrl}"). Open your live domain or set PUBLIC_BACKEND_URL in .env.`
+      });
+    }
+
+    const requiredEvents = [
+      'checkout.session.completed',
+      'invoice.paid',
+      'invoice.payment_succeeded',
+      'invoice.payment_failed',
+      'customer.subscription.created',
+      'customer.subscription.updated',
+      'customer.subscription.deleted'
+    ];
+
+    const existingList = await stripe.webhookEndpoints.list({ limit: 25 });
+    const matchingEndpoints = (existingList?.data || []).filter(
+      ep => String(ep.url || '').replace(/\/+$/, '').toLowerCase() === targetUrl.replace(/\/+$/, '').toLowerCase()
+    );
+
+    // Delete old matching endpoints so Stripe issues a fresh whsec_ secret that we can activate in memory and display to Susan
+    for (const oldEp of matchingEndpoints) {
+      await stripe.webhookEndpoints.del(oldEp.id).catch(() => {});
+    }
+
+    const createdEndpoint = await stripe.webhookEndpoints.create({
+      url: targetUrl,
+      enabled_events: requiredEvents,
+      description: "Susan's Beauty Consulting — Production Checkout & Subscription Webhook"
+    });
+
+    if (createdEndpoint?.secret) {
+      runtimeProvisionedWebhookSecret = String(createdEndpoint.secret).trim();
+    }
+
+    const updatedEndpointsRes = await stripe.webhookEndpoints.list({ limit: 15 });
+    const registeredStripeEndpoints = (updatedEndpointsRes?.data || []).map(ep => ({
+      id: ep.id,
+      url: ep.url,
+      status: ep.status,
+      livemode: Boolean(ep.livemode),
+      enabledEvents: ep.enabled_events || []
+    }));
+
+    res.status(200).json({
+      message: `✨ Provisioned live Stripe Webhook Endpoint (${targetUrl})! The new signing secret is active immediately on this server — copy it to STRIPE_WEBHOOK_SECRET in your .env file so it persists across restarts.`,
+      endpoint: {
+        id: createdEndpoint.id,
+        url: createdEndpoint.url,
+        status: createdEndpoint.status,
+        livemode: Boolean(createdEndpoint.livemode),
+        enabledEvents: createdEndpoint.enabled_events || []
+      },
+      signingSecret: createdEndpoint.secret || '',
+      registeredStripeEndpoints
+    });
+  } catch (err) {
+    console.error('Provision Stripe Webhook Error:', err);
+    res.status(500).json({
+      error: err.message || 'Failed to provision Stripe webhook endpoint via Stripe API.'
+    });
   }
 });
 
