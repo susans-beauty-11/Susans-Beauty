@@ -6445,7 +6445,7 @@ app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (
         ...(shipping_address.city !== undefined ? { city: String(shipping_address.city).trim() } : {}),
         ...(shipping_address.state !== undefined ? { state: String(shipping_address.state).trim() } : {}),
         ...(shipping_address.postcode !== undefined ? { postcode: String(shipping_address.postcode).trim() } : {}),
-        ...(shipping_address.country !== undefined ? { country: String(shipping_address.country).trim().toUpperCase() || 'US' } : {}),
+        ...(shipping_address.country !== undefined ? { country: normalizeIsoCountryCode(shipping_address.country) } : {}),
         ...(shipping_address.phone !== undefined ? { phone: String(shipping_address.phone).trim() } : {})
       };
       order.markModified('shipping_address');
@@ -11274,7 +11274,7 @@ app.post('/api/admin/orders/:id/cj-logistics', authenticateToken, requireAdmin, 
 
     const { logisticName, fromCountryCode, shippingCostUsd, fetchOptionsOnly } = req.body || {};
     const headers = getCjHeaders();
-    const destCountry = String(order.shipping_address?.country || 'US').toUpperCase().trim() || 'US';
+    const destCountry = normalizeIsoCountryCode(order.shipping_address?.country || 'US');
     const originCountry = String(fromCountryCode || order.fromCountryCode || 'CN').toUpperCase().trim() || 'CN';
 
     let optionalLogistics = buildDeterministicCjBeautyCarriers({
@@ -13575,7 +13575,7 @@ app.put('/api/users/me/profile', authenticateToken, async (req, res) => {
         city: shippingAddress.city !== undefined ? String(shippingAddress.city).trim() : (existingAddr.city || ''),
         state: shippingAddress.state !== undefined ? String(shippingAddress.state).trim() : (existingAddr.state || ''),
         postcode: shippingAddress.postcode !== undefined ? String(shippingAddress.postcode).trim() : (existingAddr.postcode || ''),
-        country: shippingAddress.country !== undefined ? String(shippingAddress.country).trim() || 'US' : (existingAddr.country || 'US')
+        country: normalizeIsoCountryCode(shippingAddress.country !== undefined ? shippingAddress.country : (existingAddr.country || 'US'))
       };
       user.markModified('shippingAddress');
     }
@@ -14395,17 +14395,117 @@ const extractStripeShippingAddress = (session = {}, fallbackAddress = {}) => {
   };
 };
 
+// Strictly normalizes any country string (e.g., "United States", "USA", "U.S.", "America", or corrupted "UN")
+// into a valid 2-letter ISO-3166-1 alpha-2 country code required by CJ Dropshipping (`createOrderV2` & `freightCalculate`).
+// Prevents the `"United States".slice(0, 2) === "UN"` bug that caused CJ to reject shipping with "Check unavailable shipping methods and reasons".
+const normalizeIsoCountryCode = (rawCountry = 'US') => {
+  const clean = String(rawCountry || 'US').trim().toUpperCase().replace(/\./g, '');
+  if (!clean) return 'US';
+  if (
+    clean === 'US' ||
+    clean === 'UN' ||
+    clean === 'USA' ||
+    clean === 'UNITED STATES' ||
+    clean === 'UNITED STATES OF AMERICA' ||
+    clean === 'AMERICA' ||
+    clean.startsWith('UNITED STATE')
+  ) {
+    return 'US';
+  }
+  if (clean === 'CA' || clean === 'CAN' || clean.startsWith('CANADA')) return 'CA';
+  if (clean === 'GB' || clean === 'UK' || clean === 'GBR' || clean.startsWith('UNITED KINGDOM') || clean.startsWith('GREAT BRITAIN') || clean === 'ENGLAND') return 'GB';
+  if (clean === 'AU' || clean === 'AUS' || clean.startsWith('AUSTRALIA')) return 'AU';
+  if (clean === 'CN' || clean === 'CHN' || clean.startsWith('CHINA')) return 'CN';
+  if (/^[A-Z]{2}$/.test(clean) && clean !== 'UN') return clean;
+  return 'US';
+};
+
+const US_STATE_NAME_TO_CODE = {
+  ALABAMA: 'AL', ALASKA: 'AK', ARIZONA: 'AZ', ARKANSAS: 'AR', CALIFORNIA: 'CA',
+  COLORADO: 'CO', CONNECTICUT: 'CT', DELAWARE: 'DE', FLORIDA: 'FL', GEORGIA: 'GA',
+  HAWAII: 'HI', IDAHO: 'ID', ILLINOIS: 'IL', INDIANA: 'IN', IOWA: 'IA',
+  KANSAS: 'KS', KENTUCKY: 'KY', LOUISIANA: 'LA', MAINE: 'ME', MARYLAND: 'MD',
+  MASSACHUSETTS: 'MA', MICHIGAN: 'MI', MINNESOTA: 'MN', MISSISSIPPI: 'MS', MISSOURI: 'MO',
+  MONTANA: 'MT', NEBRASKA: 'NE', NEVADA: 'NV', 'NEW HAMPSHIRE': 'NH', 'NEW JERSEY': 'NJ',
+  'NEW MEXICO': 'NM', 'NEW YORK': 'NY', 'NORTH CAROLINA': 'NC', 'NORTH DAKOTA': 'ND', OHIO: 'OH',
+  OKLAHOMA: 'OK', OREGON: 'OR', PENNSYLVANIA: 'PA', 'RHODE ISLAND': 'RI', 'SOUTH CAROLINA': 'SC',
+  'SOUTH DAKOTA': 'SD', TENNESSEE: 'TN', TEXAS: 'TX', UTAH: 'UT', VERMONT: 'VT',
+  VIRGINIA: 'VA', WASHINGTON: 'WA', 'WEST VIRGINIA': 'WV', WISCONSIN: 'WI', WYOMING: 'WY',
+  'DISTRICT OF COLUMBIA': 'DC'
+};
+
+const normalizeStateProvinceCode = (rawState = 'KS', countryCode = 'US') => {
+  const clean = String(rawState || '').trim();
+  if (!clean || clean.toLowerCase() === 'pending') return 'KS';
+  const upper = clean.toUpperCase();
+  if (normalizeIsoCountryCode(countryCode) === 'US' && US_STATE_NAME_TO_CODE[upper]) {
+    return US_STATE_NAME_TO_CODE[upper];
+  }
+  return clean;
+};
+
 // Maps 2-letter ISO country code to full country name required by CJ createOrderV2 DTO
 const resolveCountryNameFromCode = (code = 'US') => {
-  const clean = String(code || 'US').toUpperCase().trim();
+  const iso = normalizeIsoCountryCode(code);
   const map = {
     US: 'United States',
     CA: 'Canada',
     GB: 'United Kingdom',
-    UK: 'United Kingdom',
-    AU: 'Australia'
+    AU: 'Australia',
+    CN: 'China'
   };
-  return map[clean] || clean || 'United States';
+  return map[iso] || 'United States';
+};
+
+// Startup & On-Demand MongoDB Shipping Address Sanitizer:
+// Repairs any User, Order (including 6ae1417aa99a062fd11cec41), or MemberMonthlyBox record where country was saved as "UN" or "United States".
+const sanitizeStoredShippingAddressesInMongo = async () => {
+  let repairedUsers = 0;
+  let repairedOrders = 0;
+  try {
+    const users = await User.find({ 'shippingAddress.country': { $exists: true } });
+    for (const u of users) {
+      const currCountry = String(u.shippingAddress?.country || '');
+      const currState = String(u.shippingAddress?.state || '');
+      const normCountry = normalizeIsoCountryCode(currCountry || 'US');
+      const normState = currState ? normalizeStateProvinceCode(currState, normCountry) : currState;
+      if (currCountry !== normCountry || (currState && currState !== normState)) {
+        u.shippingAddress = {
+          ...(u.shippingAddress && typeof u.shippingAddress === 'object' ? u.shippingAddress : {}),
+          country: normCountry,
+          ...(normState ? { state: normState } : {})
+        };
+        u.markModified('shippingAddress');
+        await u.save().catch(() => {});
+        repairedUsers++;
+      }
+    }
+
+    const orders = await Order.find({});
+    for (const ord of orders) {
+      const addr = ord.shipping_address && typeof ord.shipping_address === 'object' ? ord.shipping_address : {};
+      const currCountry = String(addr.country || '');
+      const currState = String(addr.state || '');
+      const normCountry = normalizeIsoCountryCode(currCountry || 'US');
+      const normState = currState ? normalizeStateProvinceCode(currState, normCountry) : 'KS';
+      if (currCountry !== normCountry || (currState && currState !== normState)) {
+        ord.shipping_address = {
+          ...addr,
+          country: normCountry,
+          state: normState
+        };
+        ord.markModified('shipping_address');
+        await ord.save().catch(() => {});
+        repairedOrders++;
+      }
+    }
+    if (repairedUsers > 0 || repairedOrders > 0) {
+      console.log(`🛡️ Normalized ISO country/state codes ("UN"/"United States" -> "US") on ${repairedUsers} user(s) and ${repairedOrders} order(s).`);
+    }
+  } catch (err) {
+    console.warn('⚠️ Address country sanitizer notice:', err.message);
+  }
+  return { repairedUsers, repairedOrders };
 };
 
 // Builds a strictly typed CJ Dropshipping createOrderV2 payload matching CJ's Java DTO schema.
@@ -14422,9 +14522,10 @@ const buildCjOrderPayload = (order) => {
     order.selectedLogisticName || order.logisticName || 'CJPacket Sensitive Pro'
   ).trim() || 'CJPacket Sensitive Pro';
   const logisticName = rawLogisticName === 'CJPacket Sensitive' ? 'CJPacket Sensitive Pro' : rawLogisticName;
-  const fromCountryCode = String(order.fromCountryCode || 'CN').toUpperCase().trim() || 'CN';
-  const countryCode = String(address.country || 'US').toUpperCase().trim().slice(0, 2) || 'US';
+  const fromCountryCode = normalizeIsoCountryCode(order.fromCountryCode || 'CN') === 'US' ? 'US' : 'CN';
+  const countryCode = normalizeIsoCountryCode(address.country || 'US');
   const countryName = resolveCountryNameFromCode(countryCode);
+  const provinceCode = normalizeStateProvinceCode(address.state || 'KS', countryCode);
   const cleanPhone = String(address.phone || '3165550199').replace(/[^0-9+]/g, '') || '3165550199';
 
   const orderCustomLabel = order.customLabelConfig && typeof order.customLabelConfig === 'object'
@@ -14552,7 +14653,7 @@ const buildCjOrderPayload = (order) => {
     shippingZip: String(address.postcode || '67202').trim(),
     shippingCountryCode: countryCode,
     shippingCountry: countryName,
-    shippingProvince: String(address.state || 'KS').trim(),
+    shippingProvince: provinceCode,
     shippingCity: String(address.city || 'Wichita').trim(),
     shippingAddress: String(address.address_1 || 'Pending Address').trim(),
     shippingCustomerName: customerName,
@@ -14656,22 +14757,38 @@ const buildHydratedCjOrderPayload = async (order, options = {}) => {
 
   plainOrder.items = hydratedItems;
 
-  // Query CJ's live freightCalculate for the hydrated variant VIDs so we lock in an exact valid CJ carrier
-  // (preferring the Least Expensive & Most Efficient carrier via selectOptimalCjCarrier, e.g. 'CJPacket Sensitive Pro')
+  // Normalize shipping_address.country ("UN" / "United States" -> "US") and state before quoting CJ freight or building createOrderV2 payload
+  if (plainOrder.shipping_address && typeof plainOrder.shipping_address === 'object') {
+    const normCountry = normalizeIsoCountryCode(plainOrder.shipping_address.country || 'US');
+    const normState = normalizeStateProvinceCode(plainOrder.shipping_address.state || 'KS', normCountry);
+    if (plainOrder.shipping_address.country !== normCountry || plainOrder.shipping_address.state !== normState) {
+      plainOrder.shipping_address = {
+        ...plainOrder.shipping_address,
+        country: normCountry,
+        state: normState
+      };
+      orderItemsUpdated = true;
+    }
+  }
+
+  // Query CJ's live freightCalculate with ALL hydrated item variant VIDs together (`products[]`) and `endCountryCode: "US"`
+  // so multi-item orders (e.g. 3-piece Monthly Ritual Boxes with liquid + cream + jar) only pick a carrier valid for the entire combined parcel!
   try {
     const freightProducts = hydratedItems
-      .filter(it => it.vid && !/^(CUSTOM-|SBC-)/i.test(String(it.vid)))
+      .filter(it => it.vid && !/^(CUSTOM-|SBC-|CJ-PKG-|CJ-POD-|CJ-SUITE-)/i.test(String(it.vid)))
       .map(it => ({
         vid: String(it.vid).trim(),
         quantity: Math.max(1, Number(it.quantity) || 1)
       }));
     if (freightProducts.length > 0) {
-      const destCountry = String(plainOrder.shipping_address?.country || 'US').toUpperCase().trim().slice(0, 2) || 'US';
+      const destCountry = normalizeIsoCountryCode(plainOrder.shipping_address?.country || 'US');
+      const totalItemsQty = freightProducts.reduce((s, p) => s + p.quantity, 0);
       const quoteRes = await calculateCjFreightRates({
         products: freightProducts,
         startCountryCode: plainOrder.fromCountryCode || 'CN',
         endCountryCode: destCountry,
-        weightGrams: 150
+        weightGrams: Math.max(150, totalItemsQty * 140),
+        quantity: totalItemsQty
       });
       const validRates = Array.isArray(quoteRes?.rates) ? quoteRes.rates : [];
       const currentRequested = String(plainOrder.selectedLogisticName || plainOrder.logisticName || '').trim();
@@ -14691,11 +14808,12 @@ const buildHydratedCjOrderPayload = async (order, options = {}) => {
     // Non-fatal carrier pre-validation fallback
   }
 
-  // Persist the hydrated child variant VIDs, SKUs & optimal CJ carrier back onto the Order document in MongoDB
+  // Persist the hydrated child variant VIDs, SKUs, normalized US shipping_address & optimal CJ carrier back onto the Order document in MongoDB
   if (orderItemsUpdated && plainOrder._id && mongoose.Types.ObjectId.isValid(String(plainOrder._id))) {
     await Order.findByIdAndUpdate(plainOrder._id, {
       $set: {
         items: hydratedItems.map(({ isVerifiedVariantSku, parentProductSku, ...rest }) => rest),
+        shipping_address: plainOrder.shipping_address,
         selectedLogisticName: plainOrder.selectedLogisticName || 'CJPacket Sensitive Pro',
         logisticName: plainOrder.logisticName || 'CJPacket Sensitive Pro',
         ...(plainOrder.shippingCostUsd ? { shippingCostUsd: plainOrder.shippingCostUsd } : {})
@@ -14829,6 +14947,16 @@ const lookupLiveCjOrder = async ({ order = null, explicitCjId = '', headers = nu
   const logisticName = String(detailObj.logisticName || '').trim();
   const orderAmountUsd = Number(parseFloat(detailObj.orderAmount ?? detailObj.productAmount ?? 0).toFixed(2));
 
+  const remoteCountryCode = String(detailObj.shippingCountryCode || '').toUpperCase().trim();
+  const expectedCountryCode = normalizeIsoCountryCode(order?.shipping_address?.country || 'US');
+  const hasInvalidCountryOnCj =
+    Boolean(remoteCountryCode) &&
+    (remoteCountryCode === 'UN' || remoteCountryCode !== expectedCountryCode);
+
+  const hasMissingLogisticsOnCj =
+    orderStatus === 'CREATED' &&
+    (!logisticName || detailObj.postageAmount === null || detailObj.orderAmount === null || isComplete === 0);
+
   const alreadyPaidOnCj =
     Boolean(paymentDate) ||
     ['UNSHIPPED', 'PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(orderStatus) ||
@@ -14839,6 +14967,9 @@ const lookupLiveCjOrder = async ({ order = null, explicitCjId = '', headers = nu
   return {
     found: !isCancelledOnCj,
     notFoundOnCj: isCancelledOnCj,
+    hasInvalidCountryOnCj,
+    hasMissingLogisticsOnCj,
+    remoteCountryCode,
     rawOrderId,
     realCjOrderId,
     cjOrderCode,
@@ -14957,15 +15088,22 @@ const confirmAndQueueCjOrderForAutoPayment = async ({
     headers: activeHeaders
   });
 
-  if (initialLookup.notFoundOnCj && !initialLookup.found) {
+  if ((initialLookup.notFoundOnCj && !initialLookup.found) || (!initialLookup.alreadyPaidOnCj && initialLookup.hasInvalidCountryOnCj)) {
     return {
       confirmedForAutoPay: false,
       paidViaWallet: false,
       needsRecreate: true,
+      staleIdsToDelete: [initialLookup.rawOrderId, initialLookup.cjOrderCode, initialLookup.realCjOrderId, cleanCjId].filter(Boolean),
       resolvedCjOrderId: '',
       resolvedCarrier,
-      stepsCompleted: ['lookupLiveCjOrder:NOT_FOUND_ON_CJ'],
-      payNote: 'Stale CJ Order ID not found on CJ — recreating fresh CJ order automatically.'
+      stepsCompleted: [
+        initialLookup.hasInvalidCountryOnCj
+          ? `lookupLiveCjOrder:INVALID_COUNTRY_${initialLookup.remoteCountryCode}_NEEDS_US_RECREATE`
+          : 'lookupLiveCjOrder:NOT_FOUND_ON_CJ'
+      ],
+      payNote: initialLookup.hasInvalidCountryOnCj
+        ? `Existing CJ draft had country "${initialLookup.remoteCountryCode}" instead of "US" — replacing with clean US order automatically.`
+        : 'Stale CJ Order ID not found on CJ — recreating fresh CJ order automatically.'
     };
   }
 
@@ -15002,7 +15140,9 @@ const confirmAndQueueCjOrderForAutoPayment = async ({
     let matchedLogisticId = null;
 
     if (rawList.length > 0) {
-      const normalizedRates = rawList
+      const availableRaw = rawList.filter(item => item && item.hasStock !== false);
+      const poolToUse = availableRaw.length > 0 ? availableRaw : rawList;
+      const normalizedRates = poolToUse
         .map(item => ({
           id: item.id,
           orderCode: item.orderCode || logisticsQueryCode,
@@ -15010,7 +15150,7 @@ const confirmAndQueueCjOrderForAutoPayment = async ({
           shippingCostUsd: Number(parseFloat(item.postage ?? item.postageDiscountPrice ?? item.basePostage ?? 7.84).toFixed(2)),
           deliveryTime: String(item.arrivalTime ? `${item.arrivalTime} Days` : '5-11 Days')
         }))
-        .filter(r => r.logisticName);
+        .filter(r => r.logisticName && r.shippingCostUsd > 0);
       if (normalizedRates.length > 0) {
         const optimal = selectOptimalCjCarrier(normalizedRates) || normalizedRates[0];
         if (optimal?.logisticName) {
@@ -15260,21 +15400,31 @@ const confirmAndQueueCjOrderForAutoPayment = async ({
     }
   }
 
-  // If the order could not be found on CJ at all (`Order not found, please check the CJ order id`), tell `fulfillSingleOrderOnCj` to recreate it!
+  // If the order could not be found on CJ at all (`Order not found, please check the CJ order id`)
+  // OR is stuck in CREATED with missing logistics / invalid country (`Check unavailable shipping methods and reasons`), recreate it!
+  const isStuckIncompleteDraft =
+    !paidViaWallet &&
+    !orderConfirmed &&
+    !addedToCart &&
+    (finalLookup.hasInvalidCountryOnCj || finalLookup.hasMissingLogisticsOnCj);
+
   const isNotFoundFailure =
     !paidViaWallet &&
     !finalLookup.found &&
     (sawOrderNotFoundError || /not found|check the cj order id/i.test(String(payNote || '')));
 
-  if (isNotFoundFailure) {
+  if (isNotFoundFailure || isStuckIncompleteDraft) {
     return {
       confirmedForAutoPay: false,
       paidViaWallet: false,
       needsRecreate: true,
+      staleIdsToDelete: [rawOrderId, cjOrderCode, realCjOrderId, cleanCjId].filter(Boolean),
       resolvedCjOrderId: '',
       resolvedCarrier,
       stepsCompleted,
-      payNote: 'Order not found on CJ — recreating fresh order automatically.'
+      payNote: isStuckIncompleteDraft
+        ? 'CJ order had unavailable shipping method or non-US country code — replacing with clean US order & compatible multi-item carrier.'
+        : 'Order not found on CJ — recreating fresh order automatically.'
     };
   }
 
@@ -15544,11 +15694,20 @@ const fulfillSingleOrderOnCj = async (
     // If the stored `order.cjOrderId` (such as 2611041845580642000) was deleted, expired, or not found on CJ,
     // automatically re-create a fresh order on CJ with a unique orderNumber and run confirmation + payment immediately!
     if (autoConfirmRes.needsRecreate && !createdOnCj) {
-      const staleId = order.cjOrderId;
-      await axios.delete(
-        `${CJ_BASE_URL}/shopping/order/deleteOrder?orderId=${encodeURIComponent(staleId)}`,
-        { headers, timeout: 8000 }
-      ).catch(() => {});
+      const idsToClean = Array.from(
+        new Set([
+          ...(Array.isArray(autoConfirmRes.staleIdsToDelete) ? autoConfirmRes.staleIdsToDelete : []),
+          order.cjOrderId,
+          order.cjOrderCode,
+          order.cjRealOrderId
+        ].filter(Boolean))
+      );
+      for (const staleId of idsToClean) {
+        await axios.delete(
+          `${CJ_BASE_URL}/shopping/order/deleteOrder?orderId=${encodeURIComponent(staleId)}`,
+          { headers, timeout: 8000 }
+        ).catch(() => {});
+      }
       order.cjOrderId = '';
       order.cjOrderCode = '';
       order.cjRealOrderId = '';
@@ -15669,6 +15828,7 @@ const fulfillSingleOrderOnCj = async (
 // Automatically sweeps any unconfirmed/unfulfilled orders (including Order #9BC16E / 6aeae0f1d1b9eec7a89bc16e)
 // and pushes them through optimal CJ carrier selection + createOrderV2 + confirmOrder + addCart + saveGenerateParentOrder + payBalance/payBalanceV2
 const autoSweepAndConfirmPendingCjOrders = async () => {
+  await sanitizeStoredShippingAddressesInMongo().catch(() => {});
   const headers = getCjHeaders();
   if (!headers) {
     return { sweptCount: 0, succeededCount: 0, message: 'CJ_ACCESS_TOKEN not configured.' };
@@ -15798,7 +15958,7 @@ app.post('/api/cart/shipping-rates', async (req, res) => {
       weightGrams: Math.max(80, totalWeightGrams),
       quantity: Math.max(1, totalQuantity),
       startCountryCode: 'CN',
-      endCountryCode: String(countryCode || 'US').toUpperCase().trim().slice(0, 2) || 'US'
+      endCountryCode: normalizeIsoCountryCode(countryCode || 'US')
     });
 
     const optimalCarrier = quote.optimalCarrier || selectOptimalCjCarrier(quote.rates) || quote.rates[0];
