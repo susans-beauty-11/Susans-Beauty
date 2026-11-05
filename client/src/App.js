@@ -7133,6 +7133,14 @@ const AdminFinancesAndOrders = ({
   const reserveAppliedUsd = moneyDumpForm.reserveForActiveOrders ? uncoveredCjWholesaleUsd : 0;
   const maxSafeStripeDumpUsd = Number(Math.max(0, availableStripeUsd - reserveAppliedUsd).toFixed(2));
 
+  const isOrderCjPaidOrConfirmed = (o = {}) => {
+    const cjSt = String(o.cjOrderStatus || '').toUpperCase().trim();
+    return (
+      Boolean(o.tracking_code) ||
+      ['PAID_WALLET', 'CONFIRMED_AUTO_PAY', 'UNSHIPPED', 'PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(cjSt)
+    );
+  };
+
   const allPipelineOrders = telemetry?.orderPipeline?.all || [];
   const needsCjOrders = allPipelineOrders.filter(
     o =>
@@ -7140,7 +7148,7 @@ const AdminFinancesAndOrders = ({
       o.status !== 'DELIVERED' &&
       o.status !== 'CANCELLED' &&
       o.status !== 'REFUNDED' &&
-      (!o.cjOrderId || o.cjOrderStatus !== 'PAID_WALLET')
+      (!o.cjOrderId || !isOrderCjPaidOrConfirmed(o))
   );
 
   const rawOrders =
@@ -8249,7 +8257,10 @@ const AdminFinancesAndOrders = ({
                   const addr = order.shipping_address || {};
                   const formattedAddress = [addr.address_1, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean).join(', ');
                   const hasCjOrder = Boolean(order.cjOrderId);
-                  const isCjWalletPaid = order.cjOrderStatus === 'PAID_WALLET';
+                  const isCjWalletPaid =
+                    order.cjOrderStatus === 'PAID_WALLET' ||
+                    ['UNSHIPPED', 'PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(String(order.cjOrderStatus || '').toUpperCase());
+                  const isCjConfirmedAutoPay = order.cjOrderStatus === 'CONFIRMED_AUTO_PAY';
                   const isFulfillingThis = fulfillingOrderId === order._id;
                   const isEditingThisAddr = editingShippingOrderId === order._id;
                   const addrDraft = shippingDraftMap[order._id] || {
@@ -8348,9 +8359,11 @@ const AdminFinancesAndOrders = ({
                           <strong>⚡ Manual CJ Fulfillment Actions:</strong>
                           <span style={{ color: '#8A797A' }}>
                             {isCjWalletPaid
-                              ? 'Order is created & paid on CJ.'
+                              ? 'Order is confirmed & paid on CJ Dropshipping.'
+                              : isCjConfirmedAutoPay
+                              ? 'Order is confirmed in CJ Cart for Auto-Pay — click to force immediate wallet settlement or re-create.'
                               : hasCjOrder
-                              ? 'Order is created on CJ — click to pay via CJ Wallet or re-send.'
+                              ? 'Order is on CJ — click to confirm & pay via CJ Wallet (auto-recreates if CJ ID expired).'
                               : 'Click to push this order to CJ Dropshipping now.'}
                           </span>
                         </div>
@@ -8376,14 +8389,14 @@ const AdminFinancesAndOrders = ({
                             {isFulfillingThis
                               ? '⏳ Processing on CJ...'
                               : hasCjOrder && !isCjWalletPaid
-                              ? '💳 Pay CJ Wallet Balance Now'
+                              ? '💳 Confirm & Pay CJ Wallet Now'
                               : '🚀 Fulfill on CJ Now (Create + Pay Wallet)'}
                           </button>
 
                           <button
                             type="button"
                             disabled={isFulfillingThis}
-                            onClick={() => handleManualFulfillSingleOrder(order, { payWithWallet: false, forceRecreate: true })}
+                            onClick={() => handleManualFulfillSingleOrder(order, { payWithWallet: true, forceRecreate: true })}
                             style={{
                               backgroundColor: '#FFF0F2',
                               color: '#5C5454',
@@ -8395,8 +8408,9 @@ const AdminFinancesAndOrders = ({
                               fontWeight: 'bold',
                               cursor: isFulfillingThis ? 'wait' : 'pointer'
                             }}
+                            title="Creates a brand-new order on CJ with a fresh orderNumber and pays immediately"
                           >
-                            {hasCjOrder ? '↻ Re-Send createOrderV2 to CJ' : '📦 Create on CJ Only (Unpaid)'}
+                            {hasCjOrder ? '↻ Re-Create & Pay Fresh CJ Order' : '📦 Create & Confirm on CJ'}
                           </button>
 
                           <button
