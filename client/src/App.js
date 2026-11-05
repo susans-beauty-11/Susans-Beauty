@@ -3820,27 +3820,50 @@ const CJ_CARRIER_OPTIONS = [
 
 const DEFAULT_CJ_PACKAGING_CHOICES = [
   {
-    packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
-    packagingName: "Susan's Rose-Gold Custom Box & Seal",
-    labelType: 'CJ_CUSTOM_PACKAGING',
-    packagingCostUsd: 0.65
-  },
-  {
-    packagingVid: 'CJ-PKG-SATIN-POUCH-02',
-    packagingName: 'Luxury Satin Ritual Pouch',
-    labelType: 'CJ_CUSTOM_PACKAGING',
-    packagingCostUsd: 0.45
+    packagingVid: 'CJ-SUITE-ALL-THREE-04',
+    packagingName: 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
+    shortLabel: 'All 3 Branding Layers (Label + Pouch + Box)',
+    layerKey: 'allThree',
+    isFullSuite: true,
+    labelType: 'CJ_FULL_BRANDING_SUITE',
+    packagingCostUsd: 1.95,
+    estimatedWeightGrams: 63,
+    description: 'Mandatory 3-layer boutique branding on every unit: [1] Waterproof Bottle/Jar Product Label ($0.85) + [2] Inner Luxury Satin Ritual Pouch ($0.45) + [3] Outer Rose-Gold Custom Box & Seal ($0.65).'
   },
   {
     packagingVid: 'CJ-POD-BOTTLE-LABEL-03',
     packagingName: 'CJ POD Custom Bottle/Jar Logo Label',
+    shortLabel: 'Bottle/Jar Product Label',
+    layerKey: 'bottleLabel',
     labelType: 'CJ_POD_LOGO',
-    packagingCostUsd: 0.85
+    packagingCostUsd: 0.85,
+    estimatedWeightGrams: 10,
+    description: 'Print-on-Demand waterproof outer bottle/jar wrap label with Susan\'s logo & bespoke client ritual name.'
+  },
+  {
+    packagingVid: 'CJ-PKG-SATIN-POUCH-02',
+    packagingName: 'Luxury Satin Ritual Pouch',
+    shortLabel: 'Luxury Satin Pouch',
+    layerKey: 'satinPouch',
+    labelType: 'CJ_CUSTOM_PACKAGING',
+    packagingCostUsd: 0.45,
+    estimatedWeightGrams: 18,
+    description: 'Blush-pink drawstring inner satin travel pouch embossed with Susan\'s Beauty Consulting crest.'
+  },
+  {
+    packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
+    packagingName: "Susan's Rose-Gold Custom Box & Seal",
+    shortLabel: 'Rose-Gold Custom Box',
+    layerKey: 'customBox',
+    labelType: 'CJ_CUSTOM_PACKAGING',
+    packagingCostUsd: 0.65,
+    estimatedWeightGrams: 35,
+    description: 'Rose-gold magnetic boutique outer box with gold-foil seal & personalized Beauty Blueprint card insert (Zero MOQ).'
   }
 ];
 
-const buildClientDefaultCjCarriers = (weightGrams = 120) => {
-  const w = Math.max(25, Number(weightGrams) || 120);
+const buildClientDefaultCjCarriers = (weightGrams = 183) => {
+  const w = Math.max(25, Number(weightGrams) || 183);
   const extra = Math.max(0, (w - 120) / 100);
   return [
     { logisticName: 'CJPacket Sensitive Pro', shippingCostUsd: Number((7.84 + extra * 0.72).toFixed(2)), deliveryTime: '5-11 Days', isOptimal: true, recommended: true, optimalReason: 'Least Expensive & Most Efficient' },
@@ -3858,7 +3881,28 @@ const buildClientDefaultCjCarriers = (weightGrams = 120) => {
 
 const computeClientProductPriceBreakdown = (prod = {}) => {
   const primaryVariant = prod.variants?.[0] || {};
-  const weightGrams = Math.max(25, Number(prod.estimatedWeightGrams || 120) || 120);
+  const rawCfg = prod.customLabelConfig || {};
+  // Mandatory 3-Layer Branding on Everything: Bottle Label ($0.85) + Satin Pouch ($0.45) + Custom Box ($0.65) = $1.95 (+63g)
+  const includeBottleLabel = rawCfg.includeBottleLabel !== undefined ? Boolean(rawCfg.includeBottleLabel) : true;
+  const includeSatinPouch = rawCfg.includeSatinPouch !== undefined ? Boolean(rawCfg.includeSatinPouch) : true;
+  const includeCustomBox = rawCfg.includeCustomBox !== undefined ? Boolean(rawCfg.includeCustomBox) : true;
+  const allThreeEnabled = Boolean(includeBottleLabel && includeSatinPouch && includeCustomBox);
+  const customLabelEnabled = rawCfg.forceDisable === true ? false : true;
+
+  const computedLayerCost = Number(
+    ((includeBottleLabel ? 0.85 : 0) + (includeSatinPouch ? 0.45 : 0) + (includeCustomBox ? 0.65 : 0)).toFixed(2)
+  );
+  const computedLayerWeight = (includeBottleLabel ? 10 : 0) + (includeSatinPouch ? 18 : 0) + (includeCustomBox ? 35 : 0);
+
+  const customLabelCostUsd = customLabelEnabled
+    ? Number((computedLayerCost > 0 ? computedLayerCost : 1.95).toFixed(2))
+    : 0;
+  const customLabelName = allThreeEnabled
+    ? 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)'
+    : (rawCfg.packagingName || 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)');
+
+  const baseWeightGrams = Math.max(25, Number(prod.estimatedWeightGrams || 120) || 120);
+  const weightGrams = baseWeightGrams + (customLabelEnabled ? computedLayerWeight : 0);
   const defaultCarriers = buildClientDefaultCjCarriers(weightGrams);
 
   const rawAvailable = Array.isArray(prod.availableLogistics) && prod.availableLogistics.length > 0
@@ -3898,11 +3942,6 @@ const computeClientProductPriceBreakdown = (prod = {}) => {
   const rawShipping = Number(prod.shippingCostUsd ?? matchedRate?.shippingCostUsd ?? optimalCarrier?.shippingCostUsd ?? 7.84);
   const shippingCostUsd = Number((rawShipping < 5.25 ? (matchedRate?.shippingCostUsd || 7.84) : rawShipping).toFixed(2));
   const shippingIncludedInPrice = prod.shippingIncludedInPrice !== false;
-  const customLabelEnabled = Boolean(prod.customLabelConfig?.enabled);
-  const customLabelName = prod.customLabelConfig?.packagingName || "Susan's Rose-Gold Custom Box & Seal";
-  const customLabelCostUsd = customLabelEnabled
-    ? Number(Number(prod.customLabelConfig?.packagingCostUsd || 0.65).toFixed(2))
-    : 0;
 
   const computedRetail = Number(
     ((wholesalePriceUsd * markupMultiplier) + (shippingIncludedInPrice ? shippingCostUsd : 0) + customLabelCostUsd).toFixed(2)
@@ -3921,6 +3960,10 @@ const computeClientProductPriceBreakdown = (prod = {}) => {
     shippingCostUsd,
     shippingIncludedInPrice,
     customLabelEnabled,
+    allThreeEnabled,
+    includeBottleLabel,
+    includeSatinPouch,
+    includeCustomBox,
     customLabelName,
     customLabelCostUsd,
     allInCostUsd,
@@ -3942,9 +3985,10 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
     selectedLogisticName: 'CJPacket Sensitive Pro',
     shippingCostUsd: '7.84',
     shippingIncludedInPrice: true,
-    customLabelEnabled: false,
-    packagingName: "Susan's Rose-Gold Custom Box & Seal",
-    packagingCostUsd: 0.65,
+    customLabelEnabled: true,
+    allThreeEnabled: true,
+    packagingName: 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
+    packagingCostUsd: 1.95,
     imageUrl: '',
     description: '',
     tags: '',
@@ -3983,9 +4027,10 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
     selectedLogisticName: 'CJPacket Sensitive Pro',
     shippingIncludedInPrice: true,
     markupMultiplier: 6.5,
-    enableCustomLabelAll: false,
-    packagingName: "Susan's Rose-Gold Custom Box & Seal",
-    packagingCostUsd: 0.65
+    enableCustomLabelAll: true,
+    allThreeEnabled: true,
+    packagingName: 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
+    packagingCostUsd: 1.95
   });
 
   const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
@@ -4110,11 +4155,15 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
           markupMultiplier: Number(globalShippingControl.markupMultiplier) || 6.5,
           customLabelConfig: {
             enabled: Boolean(globalShippingControl.enableCustomLabelAll),
+            allThreeEnabled: matchedPkg.isFullSuite ? true : Boolean(globalShippingControl.allThreeEnabled),
+            includeBottleLabel: matchedPkg.isFullSuite || matchedPkg.layerKey === 'bottleLabel',
+            includeSatinPouch: matchedPkg.isFullSuite || matchedPkg.layerKey === 'satinPouch',
+            includeCustomBox: matchedPkg.isFullSuite || matchedPkg.layerKey === 'customBox',
             labelType: matchedPkg.labelType,
             packagingVid: matchedPkg.packagingVid,
             packagingName: matchedPkg.packagingName,
             customBrandText: "Susan's Beauty Consulting ✧",
-            packagingCostUsd: Number(globalShippingControl.packagingCostUsd || matchedPkg.packagingCostUsd)
+            packagingCostUsd: Number(globalShippingControl.packagingCostUsd || matchedPkg.packagingCostUsd || 1.95)
           }
         })
       });
@@ -4345,15 +4394,18 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
     setSavingInlineProductId(null);
   };
 
-  const handleToggleProductCustomLabel = async (prod, nextEnabled, packagingNameOverride = null) => {
+  const handleToggleProductCustomLabel = async (prod, nextEnabled = true, layerOverrides = {}) => {
     const token = localStorage.getItem('token');
     setTogglingLabelProductId(prod._id);
     setOpsBanner({ type: '', text: '' });
 
-    const chosenName = packagingNameOverride || prod.customLabelConfig?.packagingName || "Susan's Rose-Gold Custom Box & Seal";
-    const matchedOpt =
-      DEFAULT_CJ_PACKAGING_CHOICES.find(o => o.packagingName === chosenName) ||
-      DEFAULT_CJ_PACKAGING_CHOICES[0];
+    const currentBd = computeClientProductPriceBreakdown(prod);
+    const includeBottleLabel = layerOverrides.includeBottleLabel !== undefined ? Boolean(layerOverrides.includeBottleLabel) : currentBd.includeBottleLabel;
+    const includeSatinPouch = layerOverrides.includeSatinPouch !== undefined ? Boolean(layerOverrides.includeSatinPouch) : currentBd.includeSatinPouch;
+    const includeCustomBox = layerOverrides.includeCustomBox !== undefined ? Boolean(layerOverrides.includeCustomBox) : currentBd.includeCustomBox;
+    const allThreeEnabled = layerOverrides.allThreeEnabled !== undefined
+      ? Boolean(layerOverrides.allThreeEnabled)
+      : Boolean(includeBottleLabel && includeSatinPouch && includeCustomBox);
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/admin/products/${prod._id}/custom-label`, {
@@ -4364,11 +4416,16 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
         },
         body: JSON.stringify({
           enabled: Boolean(nextEnabled),
-          labelType: matchedOpt.labelType,
-          packagingVid: matchedOpt.packagingVid,
-          packagingName: matchedOpt.packagingName,
-          customBrandText: prod.customLabelConfig?.customBrandText || "Susan's Beauty Consulting ✧",
-          packagingCostUsd: matchedOpt.packagingCostUsd
+          allThreeEnabled,
+          includeBottleLabel: allThreeEnabled ? true : includeBottleLabel,
+          includeSatinPouch: allThreeEnabled ? true : includeSatinPouch,
+          includeCustomBox: allThreeEnabled ? true : includeCustomBox,
+          labelType: allThreeEnabled ? 'CJ_FULL_BRANDING_SUITE' : 'CJ_CUSTOM_PACKAGING',
+          packagingVid: allThreeEnabled ? 'CJ-SUITE-ALL-THREE-04' : 'CJ-PKG-ROSEGOLD-BOX-01',
+          packagingName: allThreeEnabled
+            ? 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)'
+            : 'Custom Branded Packaging',
+          customBrandText: prod.customLabelConfig?.customBrandText || "Susan's Beauty Consulting ✧"
         })
       });
       const data = await res.json().catch(() => ({}));
@@ -4522,14 +4579,16 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
           customTitleLocked: Boolean(editModalData.customTitleLocked),
           recalculateFromWholesale: Boolean(editModalData.recalculateFromWholesale),
           customLabelConfig: {
-            enabled: Boolean(editModalData.customLabelEnabled),
-            labelType: matchedPkg.labelType,
-            packagingVid: matchedPkg.packagingVid,
-            packagingName: matchedPkg.packagingName,
+            enabled: true,
+            allThreeEnabled: Boolean(editModalData.includeBottleLabel !== false && editModalData.includeSatinPouch !== false && editModalData.includeCustomBox !== false),
+            includeBottleLabel: editModalData.includeBottleLabel !== false,
+            includeSatinPouch: editModalData.includeSatinPouch !== false,
+            includeCustomBox: editModalData.includeCustomBox !== false,
+            labelType: 'CJ_FULL_BRANDING_SUITE',
+            packagingVid: 'CJ-SUITE-ALL-THREE-04',
+            packagingName: editModalData.customLabelName || 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
             customBrandText: editModalData.customBrandText || "Susan's Beauty Consulting ✧",
-            packagingCostUsd: Boolean(editModalData.customLabelEnabled)
-              ? Number(editModalData.customLabelCostUsd || matchedPkg.packagingCostUsd)
-              : 0
+            packagingCostUsd: Number(editModalData.customLabelCostUsd || 1.95)
           }
         })
       });
@@ -4584,9 +4643,13 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       selectedLogisticName: bd.selectedLogisticName,
       shippingCostUsd: bd.shippingCostUsd,
       shippingIncludedInPrice: bd.shippingIncludedInPrice,
-      customLabelEnabled: bd.customLabelEnabled,
+      customLabelEnabled: true,
+      allThreeEnabled: bd.allThreeEnabled,
+      includeBottleLabel: bd.includeBottleLabel,
+      includeSatinPouch: bd.includeSatinPouch,
+      includeCustomBox: bd.includeCustomBox,
       customLabelName: bd.customLabelName,
-      customLabelCostUsd: bd.customLabelCostUsd || 0.65,
+      customLabelCostUsd: bd.customLabelCostUsd || 1.95,
       customBrandText: prod.customLabelConfig?.customBrandText || "Susan's Beauty Consulting ✧",
       recalculateFromWholesale: false,
       availableLogistics: Array.isArray(prod.availableLogistics) ? prod.availableLogistics : [],
@@ -4983,52 +5046,79 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                 </div>
               </div>
 
-              {/* CJ Custom Label & Private Packaging Controls */}
-              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '10px', border: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {/* Mandatory 3-Layer CJ Custom Branding Suite Controls */}
+              <div style={{ backgroundColor: '#FFFFFF', padding: '12px', borderRadius: '10px', border: '1.5px solid #B38B8F', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.88rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer', fontWeight: 'bold' }}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(editModalData.customLabelEnabled)}
-                      onChange={e => setEditModalData({ ...editModalData, customLabelEnabled: e.target.checked, recalculateFromWholesale: true })}
-                    />
-                    🏷️ Enable CJ Custom Label / Branded Packaging
-                  </label>
-                  <span style={{ fontSize: '0.78rem', color: '#B38B8F', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
-                    +${Number(editModalData.customLabelEnabled ? editModalData.customLabelCostUsd : 0).toFixed(2)} / unit
+                  <span style={{ fontSize: '0.88rem', color: '#5C5454', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                    ✨ Mandatory 3-Piece Custom Branding Suite (Included on Every Order)
+                  </span>
+                  <span style={{ fontSize: '0.8rem', color: '#2E7D32', backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', padding: '2px 8px', borderRadius: '8px', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                    +${Number(editModalData.customLabelCostUsd || 1.95).toFixed(2)} / unit (+63g)
                   </span>
                 </div>
 
-                {editModalData.customLabelEnabled && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
-                    <select
-                      value={editModalData.customLabelName}
-                      onChange={e => {
-                        const matched = DEFAULT_CJ_PACKAGING_CHOICES.find(o => o.packagingName === e.target.value);
-                        setEditModalData({
-                          ...editModalData,
-                          customLabelName: e.target.value,
-                          customLabelCostUsd: matched ? matched.packagingCostUsd : editModalData.customLabelCostUsd,
-                          recalculateFromWholesale: true
-                        });
-                      }}
-                      style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFF9F9', fontSize: '0.84rem', fontFamily: 'sans-serif', color: '#5C5454' }}
-                    >
-                      {DEFAULT_CJ_PACKAGING_CHOICES.map(opt => (
-                        <option key={opt.packagingVid} value={opt.packagingName}>
-                          {opt.packagingName} (+${opt.packagingCostUsd.toFixed(2)})
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      placeholder="Custom Brand Text"
-                      value={editModalData.customBrandText}
-                      onChange={e => setEditModalData({ ...editModalData, customBrandText: e.target.value })}
-                      style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontSize: '0.84rem', fontFamily: 'sans-serif' }}
-                    />
-                  </div>
-                )}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '8px' }}>
+                  {[
+                    { key: 'includeBottleLabel', label: '🏷️ Bottle/Jar Product Label', cost: 0.85 },
+                    { key: 'includeSatinPouch', label: '👛 Luxury Satin Ritual Pouch', cost: 0.45 },
+                    { key: 'includeCustomBox', label: "🎁 Rose-Gold Custom Box & Seal", cost: 0.65 }
+                  ].map(layer => {
+                    const isChecked = editModalData[layer.key] !== false;
+                    return (
+                      <label
+                        key={layer.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '6px',
+                          padding: '7px 10px',
+                          borderRadius: '8px',
+                          border: isChecked ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+                          backgroundColor: isChecked ? '#FFF0F2' : '#FFF9F9',
+                          fontSize: '0.78rem',
+                          fontFamily: 'sans-serif',
+                          color: '#5C5454',
+                          cursor: 'pointer',
+                          fontWeight: isChecked ? 'bold' : 'normal'
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              const nextVal = e.target.checked;
+                              const nextBottle = layer.key === 'includeBottleLabel' ? nextVal : (editModalData.includeBottleLabel !== false);
+                              const nextPouch = layer.key === 'includeSatinPouch' ? nextVal : (editModalData.includeSatinPouch !== false);
+                              const nextBox = layer.key === 'includeCustomBox' ? nextVal : (editModalData.includeCustomBox !== false);
+                              const sumCost = Number(((nextBottle ? 0.85 : 0) + (nextPouch ? 0.45 : 0) + (nextBox ? 0.65 : 0)).toFixed(2)) || 1.95;
+                              setEditModalData({
+                                ...editModalData,
+                                customLabelEnabled: true,
+                                includeBottleLabel: nextBottle || (!nextPouch && !nextBox),
+                                includeSatinPouch: nextPouch,
+                                includeCustomBox: nextBox,
+                                customLabelCostUsd: sumCost,
+                                recalculateFromWholesale: true
+                              });
+                            }}
+                          />
+                          {layer.label}
+                        </span>
+                        <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>+${layer.cost.toFixed(2)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <input
+                  type="text"
+                  placeholder="Custom Brand Text on Label, Pouch & Box"
+                  value={editModalData.customBrandText}
+                  onChange={e => setEditModalData({ ...editModalData, customBrandText: e.target.value })}
+                  style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontSize: '0.84rem', fontFamily: 'sans-serif' }}
+                />
               </div>
 
               <div>
@@ -5740,20 +5830,17 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                               </div>
                             )}
 
-                            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.73rem', color: '#5C5454', fontFamily: 'sans-serif', cursor: 'pointer' }}>
-                              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                <input
-                                  type="checkbox"
-                                  disabled={togglingLabelProductId === prod._id}
-                                  checked={bd.customLabelEnabled}
-                                  onChange={(e) => handleToggleProductCustomLabel(prod, e.target.checked)}
-                                />
-                                🏷️ Custom Label / Packaging
-                              </span>
-                              <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>
-                                {bd.customLabelEnabled ? `+$${bd.customLabelCostUsd.toFixed(2)}` : 'Off'}
-                              </span>
-                            </label>
+                            <div style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '7px', padding: '5px 7px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem', color: '#5C5454', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                                <span>✨ All 3 Branding Layers Active</span>
+                                <span style={{ color: '#2E7D32' }}>+${bd.customLabelCostUsd.toFixed(2)} (+63g)</span>
+                              </div>
+                              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', fontSize: '0.62rem', fontFamily: 'sans-serif', color: '#5C5454' }}>
+                                <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '5px', padding: '1px 5px' }}>✓ 🏷️ Bottle Label ($0.85)</span>
+                                <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '5px', padding: '1px 5px' }}>✓ 👛 Satin Pouch ($0.45)</span>
+                                <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '5px', padding: '1px 5px' }}>✓ 🎁 Custom Box ($0.65)</span>
+                              </div>
+                            </div>
                           </div>
 
                           {/* Skin Type & Skin Condition Badges */}
@@ -9574,14 +9661,18 @@ const AdminMonthlyBoxesAndCjStudio = ({
 
   const [studioConfig, setStudioConfig] = useState({
     enabled: true,
-    packagingVid: 'CJ-PKG-ROSEGOLD-BOX-01',
-    packagingName: "Susan's Rose-Gold Custom Box & Seal",
-    labelType: 'CJ_CUSTOM_PACKAGING',
+    allThreeEnabled: true,
+    includeBottleLabel: true,
+    includeSatinPouch: true,
+    includeCustomBox: true,
+    packagingVid: 'CJ-SUITE-ALL-THREE-04',
+    packagingName: 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
+    labelType: 'CJ_FULL_BRANDING_SUITE',
     customBrandText: "Susan's Beauty Consulting ✧",
     logoUrl: 'https://susansbeautyconsulting.com/susans-logo.png',
     ritualCardMessage: 'Hand-selected for your Personal Beauty Blueprint Sanctuary ✧',
-    packagingCostUsd: 0.65,
-    defaultLogisticName: 'CJPacket Sensitive',
+    packagingCostUsd: 1.95,
+    defaultLogisticName: 'CJPacket Sensitive Pro',
     shippingIncludedInPrice: true,
     markupMultiplier: 6.5
   });
@@ -9812,13 +9903,17 @@ const AdminMonthlyBoxesAndCjStudio = ({
         },
         body: JSON.stringify({
           applyToAll: true,
-          enabled: Boolean(studioConfig.enabled),
-          labelType: studioConfig.labelType,
-          packagingVid: studioConfig.packagingVid,
-          packagingName: studioConfig.packagingName,
+          enabled: true,
+          allThreeEnabled: true,
+          includeBottleLabel: true,
+          includeSatinPouch: true,
+          includeCustomBox: true,
+          labelType: studioConfig.labelType || 'CJ_FULL_BRANDING_SUITE',
+          packagingVid: studioConfig.packagingVid || 'CJ-SUITE-ALL-THREE-04',
+          packagingName: studioConfig.packagingName || 'Full 3-Piece Sanctuary Branding Suite (Bottle Label + Satin Pouch + Custom Box)',
           customBrandText: `${studioConfig.customBrandText} • ${studioConfig.ritualCardMessage}`,
           logoUrl: studioConfig.logoUrl,
-          packagingCostUsd: Boolean(studioConfig.enabled) ? Number(studioConfig.packagingCostUsd || 0.65) : 0
+          packagingCostUsd: Number(studioConfig.packagingCostUsd || 1.95)
         })
       });
       await labelRes.json().catch(() => ({}));
