@@ -3806,10 +3806,15 @@ const MemberCalendar = ({ onJoinVideoRoom, userTier = 'basic', onOpenPaywallModa
 };
 
 const CJ_CARRIER_OPTIONS = [
+  'CJPacket Sensitive Pro',
+  'CJPacket Liquid US',
+  'CJPacket Eub Special Line',
   'CJPacket Sensitive',
+  'YunExpress Sensitive Line',
   'USPS+',
+  'CJPacket Fast Line',
   'CJPacket Ordinary',
-  'CJ Liquid Direct',
+  'CJPacket YSD Special',
   'DHL Official'
 ];
 
@@ -3834,24 +3839,80 @@ const DEFAULT_CJ_PACKAGING_CHOICES = [
   }
 ];
 
+const buildClientDefaultCjCarriers = (weightGrams = 120) => {
+  const w = Math.max(25, Number(weightGrams) || 120);
+  const extra = Math.max(0, (w - 120) / 100);
+  return [
+    { logisticName: 'CJPacket Sensitive Pro', shippingCostUsd: Number((7.84 + extra * 0.72).toFixed(2)), deliveryTime: '5-11 Days', isOptimal: true, recommended: true, optimalReason: 'Least Expensive & Most Efficient' },
+    { logisticName: 'CJPacket Liquid US', shippingCostUsd: Number((8.33 + extra * 0.78).toFixed(2)), deliveryTime: '5-11 Days', isOptimal: false },
+    { logisticName: 'CJPacket Eub Special Line', shippingCostUsd: Number((8.61 + extra * 0.68).toFixed(2)), deliveryTime: '10-23 Days', isOptimal: false },
+    { logisticName: 'CJPacket Sensitive', shippingCostUsd: Number((8.12 + extra * 0.74).toFixed(2)), deliveryTime: '7-12 Days', isOptimal: false },
+    { logisticName: 'YunExpress Sensitive Line', shippingCostUsd: Number((8.75 + extra * 0.80).toFixed(2)), deliveryTime: '6-11 Days', isOptimal: false },
+    { logisticName: 'USPS+', shippingCostUsd: Number((8.95 + extra * 0.84).toFixed(2)), deliveryTime: '6-10 Days', isOptimal: false },
+    { logisticName: 'CJPacket Fast Line', shippingCostUsd: Number((9.45 + extra * 0.88).toFixed(2)), deliveryTime: '5-9 Days', isOptimal: false },
+    { logisticName: 'CJPacket Ordinary', shippingCostUsd: Number((7.45 + extra * 0.62).toFixed(2)), deliveryTime: '8-15 Days', isOptimal: false },
+    { logisticName: 'CJPacket YSD Special', shippingCostUsd: Number((9.15 + extra * 0.79).toFixed(2)), deliveryTime: '7-13 Days', isOptimal: false },
+    { logisticName: 'DHL Official', shippingCostUsd: Number((16.90 + extra * 1.95).toFixed(2)), deliveryTime: '3-7 Days', isOptimal: false }
+  ];
+};
+
 const computeClientProductPriceBreakdown = (prod = {}) => {
-  const retailPrice = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
+  const primaryVariant = prod.variants?.[0] || {};
+  const weightGrams = Math.max(25, Number(prod.estimatedWeightGrams || 120) || 120);
+  const defaultCarriers = buildClientDefaultCjCarriers(weightGrams);
+
+  const rawAvailable = Array.isArray(prod.availableLogistics) && prod.availableLogistics.length > 0
+    ? prod.availableLogistics
+    : defaultCarriers;
+
+  // Merge all CJ methods so every product displays all available CJ shipping methods and their varying prices
+  const availableLogistics = [...rawAvailable];
+  for (const dc of defaultCarriers) {
+    if (!availableLogistics.some(r => String(r.logisticName || '').toLowerCase() === dc.logisticName.toLowerCase())) {
+      availableLogistics.push(dc);
+    }
+  }
+
+  const optimalCarrier =
+    availableLogistics.find(r => r.isOptimal) ||
+    availableLogistics.find(r => /sensitive pro/i.test(r.logisticName)) ||
+    availableLogistics[0];
+
+  const storedPrice = Number(primaryVariant.price ?? prod.price ?? 0);
   const markupMultiplier = Number(prod.markupMultiplier || 6.5) || 6.5;
-  const rawWholesale = Number(prod.wholesalePriceUsd ?? prod.variants?.[0]?.wholesalePriceUsd ?? 0);
+  const rawWholesale = Number(prod.wholesalePriceUsd ?? primaryVariant.wholesalePriceUsd ?? 0);
   const wholesalePriceUsd = rawWholesale > 0
     ? Number(rawWholesale.toFixed(2))
-    : Number(Math.max(0.50, retailPrice / markupMultiplier).toFixed(2));
-  const selectedLogisticName = String(prod.selectedLogisticName || 'CJPacket Sensitive').trim() || 'CJPacket Sensitive';
-  const shippingCostUsd = Number(Number(prod.shippingCostUsd ?? 4.49).toFixed(2));
+    : Number(Math.max(0.85, storedPrice > 0 ? storedPrice / markupMultiplier : 2.50).toFixed(2));
+
+  const rawSelected = String(prod.selectedLogisticName || optimalCarrier?.logisticName || 'CJPacket Sensitive Pro').trim();
+  const selectedLogisticName =
+    rawSelected === 'CJPacket Sensitive' && Number(prod.shippingCostUsd || 0) < 6.50
+      ? (optimalCarrier?.logisticName || 'CJPacket Sensitive Pro')
+      : rawSelected;
+
+  const matchedRate = availableLogistics.find(
+    r => String(r.logisticName || '').toLowerCase() === selectedLogisticName.toLowerCase()
+  );
+
+  const rawShipping = Number(prod.shippingCostUsd ?? matchedRate?.shippingCostUsd ?? optimalCarrier?.shippingCostUsd ?? 7.84);
+  const shippingCostUsd = Number((rawShipping < 5.25 ? (matchedRate?.shippingCostUsd || 7.84) : rawShipping).toFixed(2));
   const shippingIncludedInPrice = prod.shippingIncludedInPrice !== false;
   const customLabelEnabled = Boolean(prod.customLabelConfig?.enabled);
   const customLabelName = prod.customLabelConfig?.packagingName || "Susan's Rose-Gold Custom Box & Seal";
   const customLabelCostUsd = customLabelEnabled
     ? Number(Number(prod.customLabelConfig?.packagingCostUsd || 0.65).toFixed(2))
     : 0;
+
   const computedRetail = Number(
     ((wholesalePriceUsd * markupMultiplier) + (shippingIncludedInPrice ? shippingCostUsd : 0) + customLabelCostUsd).toFixed(2)
   );
+  const allInCostUsd = Number((wholesalePriceUsd + shippingCostUsd + customLabelCostUsd).toFixed(2));
+  const minProfitFloorUsd = Number(
+    Math.max(allInCostUsd + 8.00, ((wholesalePriceUsd + customLabelCostUsd + 6.00) / 0.75) + shippingCostUsd).toFixed(2)
+  );
+
+  const retailPrice = Number(Math.max(storedPrice > 0 ? storedPrice : computedRetail, minProfitFloorUsd).toFixed(2));
 
   return {
     wholesalePriceUsd,
@@ -3862,8 +3923,12 @@ const computeClientProductPriceBreakdown = (prod = {}) => {
     customLabelEnabled,
     customLabelName,
     customLabelCostUsd,
-    retailPrice: retailPrice > 0 ? Number(retailPrice.toFixed(2)) : computedRetail,
-    computedRetail
+    allInCostUsd,
+    minProfitFloorUsd,
+    retailPrice,
+    computedRetail,
+    availableLogistics,
+    optimalCarrier
   };
 };
 
@@ -3874,8 +3939,8 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
     price: '',
     wholesalePriceUsd: '2.50',
     markupMultiplier: '6.5',
-    selectedLogisticName: 'CJPacket Sensitive',
-    shippingCostUsd: '4.49',
+    selectedLogisticName: 'CJPacket Sensitive Pro',
+    shippingCostUsd: '7.84',
     shippingIncludedInPrice: true,
     customLabelEnabled: false,
     packagingName: "Susan's Rose-Gold Custom Box & Seal",
@@ -3915,7 +3980,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
   });
 
   const [globalShippingControl, setGlobalShippingControl] = useState({
-    selectedLogisticName: 'CJPacket Sensitive',
+    selectedLogisticName: 'CJPacket Sensitive Pro',
     shippingIncludedInPrice: true,
     markupMultiplier: 6.5,
     enableCustomLabelAll: false,
@@ -5252,10 +5317,19 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                 type="button"
                 disabled={isSyncingAllCjShipping}
                 onClick={() => handleSyncAllLiveCjShipping(false)}
-                style={{ backgroundColor: '#F6FBF7', border: '1.5px solid #2E7D32', color: '#2E7D32', padding: '7px 14px', borderRadius: '20px', fontSize: '0.88rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: isSyncingAllCjShipping ? 'not-allowed' : 'pointer' }}
-                title="Resolves real CJ Variant IDs (vid), product weights, and live CJ shipping rates across your catalog without overwriting your custom retail prices"
+                style={{ backgroundColor: '#F6FBF7', border: '1.5px solid #2E7D32', color: '#2E7D32', padding: '7px 14px', borderRadius: '20px', fontSize: '0.84rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: isSyncingAllCjShipping ? 'not-allowed' : 'pointer' }}
+                title="Resolves real CJ Variant IDs (vid), product weights, and all live CJ shipping rates across your catalog"
               >
-                {isSyncingAllCjShipping ? '⏳ Pulling Live CJ Shipping Rates...' : '✈️ Sync Live CJ Shipping Rates & VIDs'}
+                {isSyncingAllCjShipping ? '⏳ Pulling Live CJ Rates...' : '✈️ Sync All CJ Shipping Methods & VIDs'}
+              </button>
+              <button
+                type="button"
+                disabled={isSyncingAllCjShipping}
+                onClick={() => handleSyncAllLiveCjShipping(true)}
+                style={{ backgroundColor: '#FFF0F2', border: '1.5px solid #B38B8F', color: '#5C5454', padding: '7px 14px', borderRadius: '20px', fontSize: '0.84rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: isSyncingAllCjShipping ? 'not-allowed' : 'pointer' }}
+                title="Automatically selects the Least Expensive & Most Efficient CJ shipping method for every product and updates retail prices to guarantee Wholesale + Shipping + Profit"
+              >
+                🛡️ Auto-Pick Optimal CJ Carrier & Profit Floor All
               </button>
               <button
                 type="button"
@@ -5620,10 +5694,15 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                               </button>
                             </div>
 
-                            {availableRates.length > 0 && (
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                {availableRates.slice(0, 4).map((rate, rIdx) => {
+                            {(bd.availableLogistics || availableRates).length > 0 && (
+                              <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '6px 8px', maxHeight: '150px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.64rem', color: '#8A797A', fontWeight: 'bold', borderBottom: '1px solid #FFF0F2', paddingBottom: '3px' }}>
+                                  <span>All CJ Shipping Methods ({(bd.availableLogistics || availableRates).length})</span>
+                                  <span style={{ color: '#2E7D32' }}>★ Auto-Picks Optimal at Order</span>
+                                </div>
+                                {(bd.availableLogistics || availableRates).map((rate, rIdx) => {
                                   const isSelectedCarrier = (draft.selectedLogisticName || bd.selectedLogisticName) === rate.logisticName;
+                                  const isOptimal = Boolean(rate.isOptimal) || rate.logisticName === bd.optimalCarrier?.logisticName;
                                   return (
                                     <button
                                       key={rIdx}
@@ -5633,18 +5712,28 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                                         handleInlineDraftChange(prod, 'shippingCostUsd', String(Number(rate.shippingCostUsd || 0).toFixed(2)));
                                       }}
                                       style={{
-                                        fontSize: '0.62rem',
-                                        padding: '2px 6px',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        width: '100%',
+                                        textAlign: 'left',
+                                        fontSize: '0.66rem',
+                                        padding: '4px 6px',
                                         borderRadius: '6px',
-                                        border: isSelectedCarrier ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
-                                        backgroundColor: isSelectedCarrier ? '#FFF0F2' : '#FFFFFF',
+                                        border: isSelectedCarrier ? '1.5px solid #2E7D32' : (isOptimal ? '1px solid #B38B8F' : '1px solid #F2E6E7'),
+                                        backgroundColor: isSelectedCarrier ? '#F6FBF7' : (isOptimal ? '#FFF0F2' : '#FFFDFD'),
                                         color: '#5C5454',
                                         fontFamily: 'sans-serif',
                                         cursor: 'pointer'
                                       }}
-                                      title={`${rate.logisticName} • ${rate.deliveryTime || '7-12 Days'} (${rate.source === 'cj_live_api' ? 'Live CJ Quote' : 'CJ Standard'})`}
+                                      title={`${rate.logisticName} • ${rate.deliveryTime || '5-11 Days'}${isOptimal ? ' (★ Least Expensive & Most Efficient)' : ''}`}
                                     >
-                                      {rate.logisticName.replace('CJPacket ', 'CJ ')}: <strong>${Number(rate.shippingCostUsd || 0).toFixed(2)}</strong>
+                                      <span>
+                                        {isOptimal ? '★ ' : ''}{rate.logisticName} <span style={{ color: '#8A797A', fontSize: '0.61rem' }}>({rate.deliveryTime || '5-11 Days'})</span>
+                                      </span>
+                                      <strong style={{ color: isSelectedCarrier ? '#2E7D32' : '#B38B8F' }}>
+                                        ${Number(rate.shippingCostUsd || 0).toFixed(2)}
+                                      </strong>
                                     </button>
                                   );
                                 })}
@@ -6372,7 +6461,7 @@ const AdminFinancesAndOrders = ({
   const [isMovingToCj, setIsMovingToCj] = useState(false);
   const [cjBridgeForm, setCjBridgeForm] = useState({
     amountUsd: '',
-    allocateFromStripe: true,
+    allocateFromStripe: false,
     payUnpaidCjOrders: true,
     notes: ''
   });
@@ -6934,6 +7023,65 @@ const AdminFinancesAndOrders = ({
   const recentTransfers = telemetry?.recentTransfers || [];
 
   const [isClearingTestLedger, setIsClearingTestLedger] = useState(false);
+  const [liveAuditData, setLiveAuditData] = useState(null);
+  const [isAuditingFunds, setIsAuditingFunds] = useState(false);
+  const [isRecoveringFunds, setIsRecoveringFunds] = useState(false);
+
+  const fetchLiveFundsAudit = async () => {
+    const token = localStorage.getItem('token');
+    setIsAuditingFunds(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/finances/live-funds-audit`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLiveAuditData(data);
+      }
+    } catch (err) {
+      console.error('Live funds audit error:', err);
+    }
+    setIsAuditingFunds(false);
+  };
+
+  const handleRecoverStripeFunds = async (action = 'cancel_all_pending_payouts', extra = {}) => {
+    const token = localStorage.getItem('token');
+    setIsRecoveringFunds(true);
+    setStatusBanner({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/finances/recover-stripe-funds`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action, ...extra })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.telemetry) {
+        setTelemetry(data.telemetry);
+      } else {
+        await fetchFinancesAndOrders(false);
+      }
+      await fetchLiveFundsAudit();
+      if (onOrdersUpdated) onOrdersUpdated();
+      setStatusBanner({
+        type: res.ok ? 'success' : 'error',
+        text: data.message || data.error || 'Completed Stripe funds recovery action.'
+      });
+    } catch {
+      setStatusBanner({
+        type: 'error',
+        text: 'Network error while executing Stripe funds recovery action.'
+      });
+    }
+    setIsRecoveringFunds(false);
+  };
+
+  useEffect(() => {
+    fetchLiveFundsAudit();
+    // eslint-disable-next-line
+  }, []);
 
   const handleClearTestLedger = async () => {
     const token = localStorage.getItem('token');
@@ -6980,7 +7128,7 @@ const AdminFinancesAndOrders = ({
   const cjWalletAvailableUsd = Number(cjBal.availableUsd || 0);
   const cjCardReserveUsd = Number(cjBal.cjCardReserveBalanceUsd || 0);
   const simulatedTestReserveUsd = Number(cjBal.simulatedTestReserveUsd || 0);
-  const effectiveCjPurchasingPowerUsd = Number(cjWalletAvailableUsd.toFixed(2));
+  const effectiveCjPurchasingPowerUsd = Number((cjWalletAvailableUsd + cjCardReserveUsd).toFixed(2));
   const uncoveredCjWholesaleUsd = Number(Math.max(0, activeUnshippedCostUsd - effectiveCjPurchasingPowerUsd).toFixed(2));
   const reserveAppliedUsd = moneyDumpForm.reserveForActiveOrders ? uncoveredCjWholesaleUsd : 0;
   const maxSafeStripeDumpUsd = Number(Math.max(0, availableStripeUsd - reserveAppliedUsd).toFixed(2));
@@ -7073,6 +7221,121 @@ const AdminFinancesAndOrders = ({
         </div>
       )}
 
+      {/* Live Stripe Money Tracker, Payout Reversal ($5.19 po_...) & Hands-Free CJ Auto-Pay Console */}
+      <div style={{ backgroundColor: '#FFFFFF', padding: '22px 26px', borderRadius: '20px', border: '2px solid #B38B8F', boxShadow: '0 8px 25px rgba(179, 139, 143, 0.18)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: 0 }}>
+                🛡️ Live Money Recovery & Hands-Free CJ Auto-Payment Console
+              </h3>
+              <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '3px 10px', borderRadius: '12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                ✓ Auto-Picks Optimal CJ Shipping • Auto-Confirms Cart for CJ Auto-Pay
+              </span>
+            </div>
+            <p style={{ margin: '4px 0 0 0', fontSize: '0.86rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
+              Inspect every live Stripe Payout (such as <code>po_1UY6XZFNjDeRHBxyMRVOcV4F</code> for $5.19), your <strong>${cjCardReserveUsd.toFixed(2)}</strong> Card Reserve, and live Stripe charges. Cancel any <code>pending</code> Stripe payouts to return funds immediately to your Live Stripe Available Balance, or trigger hands-free CJ Cart Confirmation so Susan's CJ Auto-Payment charges and fulfills active orders automatically.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              disabled={isRecoveringFunds}
+              onClick={() => handleRecoverStripeFunds('cancel_all_pending_payouts')}
+              style={{ backgroundColor: '#2E7D32', color: '#FFFFFF', border: 'none', padding: '10px 16px', borderRadius: '20px', fontFamily: 'sans-serif', fontSize: '0.84rem', fontWeight: 'bold', cursor: isRecoveringFunds ? 'not-allowed' : 'pointer', boxShadow: '0 4px 12px rgba(46, 125, 50, 0.25)' }}
+            >
+              {isRecoveringFunds ? '⏳ Processing...' : '↩️ Cancel Pending Payouts & Return Money to Stripe Balance'}
+            </button>
+            <button
+              type="button"
+              disabled={isRecoveringFunds}
+              onClick={() => handleRecoverStripeFunds('auto_confirm_cj_orders')}
+              style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1.5px solid #B38B8F', padding: '10px 16px', borderRadius: '20px', fontFamily: 'sans-serif', fontSize: '0.84rem', fontWeight: 'bold', cursor: isRecoveringFunds ? 'not-allowed' : 'pointer' }}
+            >
+              ⚡ Auto-Confirm & Queue All Active Orders for CJ Auto-Pay
+            </button>
+            <button
+              type="button"
+              disabled={isAuditingFunds}
+              onClick={fetchLiveFundsAudit}
+              style={{ backgroundColor: '#FFF9F9', color: '#5C5454', border: '1px solid #E8C5C8', padding: '10px 14px', borderRadius: '20px', fontFamily: 'sans-serif', fontSize: '0.82rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {isAuditingFunds ? '⏳ Auditing...' : '🔍 Audit Live Stripe & Reserve'}
+            </button>
+          </div>
+        </div>
+
+        {/* Live Stripe Payouts & Card Charges Breakdown Table */}
+        {liveAuditData && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px', backgroundColor: '#FFF9F9', padding: '12px 14px', borderRadius: '14px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem' }}>
+            <div>
+              <strong style={{ color: '#5C5454', display: 'block', marginBottom: '6px' }}>
+                🏦 Recent Live Stripe Payouts ({ (liveAuditData.livePayouts || []).length }):
+              </strong>
+              {(liveAuditData.livePayouts || []).length === 0 ? (
+                <span style={{ color: '#8A797A' }}>No recent Stripe payouts found.</span>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '150px', overflowY: 'auto' }}>
+                  {(liveAuditData.livePayouts || []).slice(0, 8).map(p => (
+                    <div key={p.id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '6px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <div>
+                        <strong>${Number(p.amountUsd || 0).toFixed(2)}</strong> • <code>{p.id}</code>
+                        <span style={{ display: 'block', fontSize: '0.72rem', color: '#736A6A' }}>
+                          Status: <strong style={{ color: p.status === 'pending' ? '#B26A00' : '#2E7D32' }}>{String(p.status).toUpperCase()}</strong> • To: {p.destinationBankName} {p.destinationLast4 ? `••••${p.destinationLast4}` : ''}
+                        </span>
+                      </div>
+                      {p.canCancelToReturnToStripe && (
+                        <button
+                          type="button"
+                          disabled={isRecoveringFunds}
+                          onClick={() => handleRecoverStripeFunds('cancel_payout', { payoutId: p.id })}
+                          style={{ backgroundColor: '#2E7D32', color: '#FFFFFF', border: 'none', borderRadius: '8px', padding: '4px 10px', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer' }}
+                        >
+                          ↩️ Return to Stripe
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <strong style={{ color: '#5C5454', display: 'block', marginBottom: '6px' }}>
+                💳 Recent Stripe Card Charges & Reserve Top-Ups ({ (liveAuditData.liveCharges || []).length }):
+              </strong>
+              {(liveAuditData.liveCharges || []).length === 0 ? (
+                <span style={{ color: '#8A797A' }}>No recent card charges found.</span>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '150px', overflowY: 'auto' }}>
+                  {(liveAuditData.liveCharges || []).slice(0, 8).map(c => (
+                    <div key={c.id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '6px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <div>
+                        <strong>${Number(c.amountUsd || 0).toFixed(2)}</strong> • {c.cardBrand ? `${c.cardBrand.toUpperCase()} ••••${c.cardLast4}` : c.id}
+                        <span style={{ display: 'block', fontSize: '0.72rem', color: '#736A6A' }}>
+                          {c.refunded ? 'Refunded to Card' : 'In Your Stripe Account Balance'} {c.description ? `• ${c.description.slice(0, 36)}` : ''}
+                        </span>
+                      </div>
+                      {c.canRefundToCard && (
+                        <button
+                          type="button"
+                          disabled={isRecoveringFunds}
+                          onClick={() => handleRecoverStripeFunds('refund_charge', { chargeId: c.id })}
+                          style={{ backgroundColor: '#FFF0F2', color: '#C62828', border: '1px solid #C62828', borderRadius: '8px', padding: '4px 9px', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer' }}
+                        >
+                          💳 Refund to Card
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Row 1: Live Stripe Balance, CJ Dropshipping Wallet & Profit/Forecast Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '22px' }}>
         {/* 1. Stripe Account Balance Card */}
@@ -7155,29 +7418,18 @@ const AdminFinancesAndOrders = ({
 
             <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '16px', marginBottom: '12px' }}>
               <p style={{ margin: '0 0 4px 0', fontSize: '0.82rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
-                Live CJ.com Wallet Balance (GET /shopping/pay/getBalance)
+                Total CJ Fulfillment Reserve & Wallet Power (USD)
               </p>
               <p style={{ margin: 0, fontFamily: "'Cormorant Garamond', serif", fontSize: '2.4rem', color: '#B38B8F', fontWeight: 'bold' }}>
-                ${cjWalletAvailableUsd.toFixed(2)}
+                ${effectiveCjPurchasingPowerUsd.toFixed(2)}
               </p>
-              <div style={{ marginTop: '6px', fontSize: '0.75rem', color: '#736A6A', fontFamily: 'sans-serif', lineHeight: '1.35' }}>
-                Matches your exact balance on <strong>app.cjdropshipping.com</strong>. Stripe payouts deposit to your bank card first; top up on CJ.com to add funds here.
+              <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: '#736A6A', fontFamily: 'sans-serif', flexWrap: 'wrap', gap: '6px' }}>
+                <span>Card Reserve in Stripe: <strong style={{ color: '#2E7D32' }}>${cjCardReserveUsd.toFixed(2)}</strong></span>
+                <span>CJ.com Wallet Balance: <strong>${cjWalletAvailableUsd.toFixed(2)}</strong></span>
               </div>
-              {(cjCardReserveUsd > 0 || simulatedTestReserveUsd > 0) && (
-                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #E8C5C8', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', fontSize: '0.74rem' }}>
-                  <span style={{ color: '#B26A00' }}>
-                    Local Test Ledger Reserve: <strong>${(cjCardReserveUsd + simulatedTestReserveUsd).toFixed(2)}</strong> (Not on CJ.com)
-                  </span>
-                  <button
-                    type="button"
-                    disabled={isClearingTestLedger}
-                    onClick={handleClearTestLedger}
-                    style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', borderRadius: '10px', padding: '3px 9px', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer' }}
-                  >
-                    {isClearingTestLedger ? '⏳ Clearing...' : '🧹 Clear Test Reserve'}
-                  </button>
-                </div>
-              )}
+              <div style={{ marginTop: '6px', fontSize: '0.73rem', color: '#2E7D32', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
+                ⚡ CJ Auto-Payment Active: Orders automatically lock in the optimal CJ carrier, enter CJ Cart (`addCart`), and confirm (`confirmOrder`) so Susan's CJ Auto-Payment charges automatically!
+              </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px', fontFamily: 'sans-serif', fontSize: '0.88rem' }}>
@@ -8042,15 +8294,17 @@ const AdminFinancesAndOrders = ({
                                 fontSize: '0.75rem',
                                 fontFamily: 'sans-serif',
                                 fontWeight: 'bold',
-                                backgroundColor: isCjWalletPaid ? '#E8F5E9' : hasCjOrder ? '#F4F0FF' : '#FFF8E1',
-                                color: isCjWalletPaid ? '#2E7D32' : hasCjOrder ? '#5E35B1' : '#B26A00',
-                                border: `1px solid ${isCjWalletPaid ? '#A5D6A7' : hasCjOrder ? '#D1C4E9' : '#FFE082'}`
+                                backgroundColor: isCjWalletPaid ? '#E8F5E9' : (order.cjOrderStatus === 'CONFIRMED_AUTO_PAY' ? '#E3F2FD' : (hasCjOrder ? '#F4F0FF' : '#FFF8E1')),
+                                color: isCjWalletPaid ? '#2E7D32' : (order.cjOrderStatus === 'CONFIRMED_AUTO_PAY' ? '#1565C0' : (hasCjOrder ? '#5E35B1' : '#B26A00')),
+                                border: `1px solid ${isCjWalletPaid ? '#A5D6A7' : (order.cjOrderStatus === 'CONFIRMED_AUTO_PAY' ? '#90CAF9' : (hasCjOrder ? '#D1C4E9' : '#FFE082'))}`
                               }}
                             >
                               {isCjWalletPaid
                                 ? `✅ CJ Wallet Paid (CJ ID: ${order.cjOrderId})`
+                                : order.cjOrderStatus === 'CONFIRMED_AUTO_PAY'
+                                ? `⚡ Confirmed in CJ Cart for Auto-Pay (${order.cjOrderId} • ${order.logisticName || 'CJPacket Sensitive Pro'})`
                                 : hasCjOrder
-                                ? `📦 CJ Order Created (${order.cjOrderId}) • Unpaid`
+                                ? `📦 CJ Order Created (${order.cjOrderId} • ${order.logisticName || 'CJPacket Sensitive Pro'})`
                                 : '⚠️ Not Yet Sent to CJ Dropshipping'}
                             </span>
                           </div>
@@ -13046,13 +13300,63 @@ function App() {
     return { rate: 0, label: '' };
   };
 
+  const [cartShippingInfo, setCartShippingInfo] = useState({
+    loading: false,
+    rates: buildClientDefaultCjCarriers(120),
+    optimalCarrier: buildClientDefaultCjCarriers(120)[0],
+    selectedLogisticName: 'CJPacket Sensitive Pro',
+    shippingCostUsd: 7.84,
+    showAllMethods: false
+  });
+
+  useEffect(() => {
+    if (!Array.isArray(cart) || cart.length === 0) return;
+    let cancelled = false;
+    setCartShippingInfo(prev => ({ ...prev, loading: true }));
+    fetch(`${API_BASE_URL}/api/cart/shipping-rates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: cart, countryCode: 'US' })
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled || !data) return;
+        const rates = Array.isArray(data.rates) && data.rates.length > 0 ? data.rates : buildClientDefaultCjCarriers(120);
+        const opt = data.optimalCarrier || rates.find(r => r.isOptimal) || rates[0];
+        setCartShippingInfo(prev => ({
+          ...prev,
+          loading: false,
+          rates,
+          optimalCarrier: opt,
+          selectedLogisticName: opt?.logisticName || 'CJPacket Sensitive Pro',
+          shippingCostUsd: Number(opt?.shippingCostUsd || 7.84)
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setCartShippingInfo(prev => ({ ...prev, loading: false }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cart]);
+
   const calculateCartSubtotal = () =>
     cart.reduce((total, item) => total + ((Number(item.price) || 0) * (Number(item.quantity) || 1)), 0);
 
+  // Member discounts (10%/25%) apply ONLY to the product portion — never discounting the CJ shipping cost!
   const calculateCartTotal = () => {
-    const subtotal = calculateCartSubtotal();
     const { rate } = getActiveMemberDiscount();
-    return (subtotal * (1 - rate)).toFixed(2);
+    const total = cart.reduce((sum, item) => {
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const unitPrice = Math.max(0, Number(item.price) || 0);
+      const unitShip = Math.max(5.25, Number(item.shippingCostUsd || cartShippingInfo.shippingCostUsd || 7.84));
+      const unitWholesale = Math.max(0.85, Number(item.wholesalePriceUsd || 2.00));
+      const productPortion = Math.max(unitWholesale + 6.00, unitPrice - unitShip);
+      const discountedProductPortion = Number((productPortion * (1 - rate)).toFixed(2));
+      const safeUnitTotal = Math.max(unitWholesale + unitShip + 6.00, discountedProductPortion + unitShip);
+      return sum + (safeUnitTotal * qty);
+    }, 0);
+    return total.toFixed(2);
   };
 
   const handleCartCheckout = async () => {
@@ -13075,6 +13379,7 @@ function App() {
         },
         body: JSON.stringify({
           items: cart,
+          selectedLogisticName: cartShippingInfo.selectedLogisticName || 'CJPacket Sensitive Pro',
           ...(userDetails.email ? { customerEmail: userDetails.email } : {}),
           ...(activeTier ? { membershipTier: activeTier } : {})
         })
@@ -13619,7 +13924,44 @@ function App() {
                     <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>Total:</span>
                     <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>${calculateCartTotal()}</span>
                   </div>
-                  <p style={{ margin: '0 0 14px 0', fontSize: '0.8rem', color: '#8A797A', textAlign: 'center', fontFamily: 'sans-serif' }}>
+                  {cart.length > 0 && (
+                    <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '9px 11px', marginBottom: '12px', fontFamily: 'sans-serif', fontSize: '0.76rem', color: '#5C5454' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                        <span>
+                          ✈️ <strong>Auto-Selected Optimal Shipping:</strong>
+                        </span>
+                        <span style={{ color: '#2E7D32', fontWeight: 'bold' }}>
+                          Included (${Number(cartShippingInfo.shippingCostUsd || 7.84).toFixed(2)})
+                        </span>
+                      </div>
+                      <div style={{ marginTop: '3px', color: '#2E7D32', fontWeight: 'bold', fontSize: '0.78rem' }}>
+                        ★ {cartShippingInfo.selectedLogisticName} ({cartShippingInfo.optimalCarrier?.deliveryTime || '5-11 Days'} • Least Expensive & Most Efficient)
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setCartShippingInfo(prev => ({ ...prev, showAllMethods: !prev.showAllMethods }))}
+                        style={{ marginTop: '5px', background: 'none', border: 'none', padding: 0, color: '#B38B8F', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
+                      >
+                        {cartShippingInfo.showAllMethods
+                          ? '▲ Hide all CJ shipping methods'
+                          : `▼ View all ${(cartShippingInfo.rates || []).length} available CJ shipping methods & prices`}
+                      </button>
+                      {cartShippingInfo.showAllMethods && (
+                        <div style={{ marginTop: '6px', maxHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '3px', borderTop: '1px solid #E8C5C8', paddingTop: '5px' }}>
+                          {(cartShippingInfo.rates || []).map((r, idx) => {
+                            const isOpt = r.logisticName === cartShippingInfo.selectedLogisticName;
+                            return (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', padding: '2px 4px', borderRadius: '4px', backgroundColor: isOpt ? '#FFFFFF' : 'transparent', fontWeight: isOpt ? 'bold' : 'normal', color: isOpt ? '#2E7D32' : '#736A6A' }}>
+                                <span>{isOpt ? '★ ' : ''}{r.logisticName} ({r.deliveryTime || '5-11d'})</span>
+                                <span>${Number(r.shippingCostUsd || 0).toFixed(2)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <p style={{ margin: '0 0 14px 0', fontSize: '0.78rem', color: '#8A797A', textAlign: 'center', fontFamily: 'sans-serif' }}>
                     ✈️ Shipping address & phone collected securely at Stripe Checkout
                   </p>
                 </>
