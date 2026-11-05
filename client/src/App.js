@@ -3805,6 +3805,18 @@ const MemberCalendar = ({ onJoinVideoRoom, userTier = 'basic', onOpenPaywallModa
   );
 };
 
+const normalizeClientCountryCode = (rawCountry = 'US') => {
+  const clean = String(rawCountry || 'US').trim().toUpperCase().replace(/\./g, '');
+  if (!clean || clean === 'US' || clean === 'UN' || clean === 'USA' || clean.startsWith('UNITED STATE') || clean === 'AMERICA') {
+    return 'US';
+  }
+  if (clean === 'CA' || clean === 'CAN' || clean.startsWith('CANADA')) return 'CA';
+  if (clean === 'GB' || clean === 'UK' || clean === 'GBR' || clean.startsWith('UNITED KINGDOM') || clean.startsWith('GREAT BRITAIN')) return 'GB';
+  if (clean === 'AU' || clean === 'AUS' || clean.startsWith('AUSTRALIA')) return 'AU';
+  if (/^[A-Z]{2}$/.test(clean) && clean !== 'UN') return clean;
+  return 'US';
+};
+
 const CJ_CARRIER_OPTIONS = [
   'CJPacket Sensitive Pro',
   'CJPacket Liquid US',
@@ -7051,9 +7063,9 @@ const AdminFinancesAndOrders = ({
         name: addr.name || order.customerName || '',
         address_1: addr.address_1 || '',
         city: addr.city || '',
-        state: addr.state || '',
+        state: addr.state || 'KS',
         postcode: addr.postcode || '',
-        country: addr.country || 'US',
+        country: normalizeClientCountryCode(addr.country || 'US'),
         phone: addr.phone || ''
       }
     }));
@@ -7075,7 +7087,10 @@ const AdminFinancesAndOrders = ({
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          shipping_address: addrDraft
+          shipping_address: {
+            ...addrDraft,
+            country: normalizeClientCountryCode(addrDraft.country || 'US')
+          }
         })
       });
       const data = await res.json().catch(() => ({}));
@@ -8342,7 +8357,9 @@ const AdminFinancesAndOrders = ({
                     notifyCustomer: true
                   };
                   const addr = order.shipping_address || {};
-                  const formattedAddress = [addr.address_1, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean).join(', ');
+                  const normalizedCountry = normalizeClientCountryCode(addr.country || 'US');
+                  const hadLegacyUnCountry = String(addr.country || '').toUpperCase().trim() === 'UN' || String(addr.country || '').length > 2;
+                  const formattedAddress = [addr.address_1, addr.city, addr.state, addr.postcode, normalizedCountry].filter(Boolean).join(', ');
                   const hasCjOrder = Boolean(order.cjOrderId);
                   const isCjWalletPaid =
                     order.cjOrderStatus === 'PAID_WALLET' ||
@@ -8409,6 +8426,11 @@ const AdminFinancesAndOrders = ({
                           <p style={{ margin: '6px 0 0 0', fontSize: '0.88rem', color: '#736A6A', fontFamily: 'sans-serif' }}>
                             📧 {order.customerEmail} • Placed {new Date(order.createdAt).toLocaleString()}
                             {formattedAddress ? ` • ✈️ Ship To: ${formattedAddress}` : ' • ⚠️ Shipping address pending'}
+                            {hadLegacyUnCountry && (
+                              <span style={{ marginLeft: '8px', backgroundColor: '#FFF8E1', color: '#B26A00', border: '1px solid #FFE082', borderRadius: '8px', padding: '1px 7px', fontSize: '0.74rem', fontWeight: 'bold' }}>
+                                🛡️ Auto-Repaired Country → {normalizedCountry}
+                              </span>
+                            )}
                           </p>
                         </div>
 
@@ -8562,13 +8584,16 @@ const AdminFinancesAndOrders = ({
                               onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, postcode: e.target.value } }))}
                               style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
                             />
-                            <input
-                              type="text"
-                              placeholder="Country (US)"
-                              value={addrDraft.country}
-                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, country: e.target.value } }))}
-                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.86rem' }}
-                            />
+                            <select
+                              value={normalizeClientCountryCode(addrDraft.country || 'US')}
+                              onChange={(e) => setShippingDraftMap(prev => ({ ...prev, [order._id]: { ...addrDraft, country: normalizeClientCountryCode(e.target.value) } }))}
+                              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #E8C5C8', backgroundColor: '#FFFFFF', fontFamily: 'sans-serif', fontSize: '0.86rem', color: '#5C5454' }}
+                            >
+                              <option value="US">🇺🇸 United States (ISO: US)</option>
+                              <option value="CA">🇨🇦 Canada (ISO: CA)</option>
+                              <option value="GB">🇬🇧 United Kingdom (ISO: GB)</option>
+                              <option value="AU">🇦🇺 Australia (ISO: AU)</option>
+                            </select>
                             <input
                               type="text"
                               placeholder="Phone Number"
@@ -12608,7 +12633,7 @@ function App() {
         }
       } else if (section === 'shipping') {
         payload = {
-          shippingAddress: accountForm.shippingAddress
+          shippingAddress: { ...accountForm.shippingAddress, country: normalizeClientCountryCode(accountForm.shippingAddress?.country || 'US') }
         };
       } else if (section === 'billing') {
         payload = {
