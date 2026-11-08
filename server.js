@@ -16445,6 +16445,63 @@ app.patch('/api/orders/:orderId/status', authenticateToken, async (req, res) => 
 // ============================================================================
 // FOUNDING 50 PROMO CODE ENGINE (25 LUMINARY @ $49, 25 RADIANCE @ $119)
 // ============================================================================
+const parseFounderCodeBlueprint = (rawCode = '') => {
+  const code = String(rawCode || '').trim().toUpperCase();
+
+  // Match LUM-FOUNDER-01..25 (or LUM-FOUNDER-1..25)
+  const lumMatch = code.match(/^LUM-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
+  if (lumMatch) {
+    const num = String(lumMatch[1]).padStart(2, '0');
+    return {
+      code: `LUM-FOUNDER-${num}`,
+      tier: 'Luminary',
+      creditAmount: 49,
+      lockedPrice: 49,
+      includesMysteryBox: false,
+      maxUses: 1
+    };
+  }
+
+  // Match RAD-FOUNDER-01..25 (or RAD-FOUNDER-1..25)
+  const radMatch = code.match(/^RAD-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
+  if (radMatch) {
+    const num = String(radMatch[1]).padStart(2, '0');
+    return {
+      code: `RAD-FOUNDER-${num}`,
+      tier: 'Radiance',
+      creditAmount: 119,
+      lockedPrice: 119,
+      includesMysteryBox: true,
+      maxUses: 1
+    };
+  }
+
+  // Optional master codes (capped at 25 uses each)
+  if (code === 'RADIANCE50' || code === 'RAD-FOUNDER') {
+    return {
+      code,
+      tier: 'Radiance',
+      creditAmount: 119,
+      lockedPrice: 119,
+      includesMysteryBox: true,
+      maxUses: 25
+    };
+  }
+
+  if (code === 'LUMINARY50' || code === 'LUM-FOUNDER') {
+    return {
+      code,
+      tier: 'Luminary',
+      creditAmount: 49,
+      lockedPrice: 49,
+      includesMysteryBox: false,
+      maxUses: 25
+    };
+  }
+
+  return null;
+};
+
 const seedFounding50PromoCodes = async () => {
   const codesToInsert = [];
 
@@ -16502,6 +16559,7 @@ app.post('/api/admin/promos/seed-founding-50', authenticateToken, async (req, re
 // Admin / Public Endpoint: List Founding 50 Promo Code Status
 app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => {
   try {
+    await seedFounding50PromoCodes().catch(() => {});
     const codes = await PromoCode.find({}).sort({ code: 1 }).lean();
     const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
     res.json({
@@ -16515,13 +16573,14 @@ app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => 
   }
 });
 
-// Customer Endpoint: Redeem a Founding 50 Promo Code
-app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
+// Customer Endpoint: Redeem a Founding 50 Promo Code (Self-Seeding & Self-Healing)
+const handleRedeemFoundingPromo = async (req, res) => {
   try {
     const { code } = req.body || {};
     if (!code) return res.status(400).json({ error: 'Please enter a valid promo code.' });
 
-    const cleanCode = String(code).trim().toUpperCase();
+    const blueprint = parseFounderCodeBlueprint(code);
+    const cleanCode = blueprint ? blueprint.code : String(code).trim().toUpperCase();
     const userId = req.user.id || req.user._id;
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User account not found.' });
@@ -16538,13 +16597,39 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'All 50 Founding Member spots have been claimed.' });
     }
 
-    const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
+    // Look up code regardless of isActive first so we can auto-seed or heal orphaned test codes
+    let promo = await PromoCode.findOne({ code: cleanCode });
+
+    if (!promo && blueprint) {
+      promo = await PromoCode.create({
+        code: blueprint.code,
+        tier: blueprint.tier,
+        creditAmount: blueprint.creditAmount,
+        lockedPrice: blueprint.lockedPrice,
+        includesMysteryBox: blueprint.includesMysteryBox,
+        maxUses: blueprint.maxUses,
+        currentUses: 0,
+        isActive: true
+      });
+    }
+
     if (!promo) {
       return res.status(404).json({ error: 'Invalid or expired Founding 50 promo code.' });
     }
 
-    if (promo.currentUses >= promo.maxUses) {
-      return res.status(400).json({ error: 'This Founding 50 code has already been redeemed.' });
+    // Self-heal if a code was marked used during testing but no active Founding Member holds it
+    if (!promo.isActive || promo.currentUses >= promo.maxUses) {
+      const activeHolders = await User.countDocuments({
+        redeemedPromoCode: cleanCode,
+        isFoundingMember: true
+      });
+      if (activeHolders < promo.maxUses) {
+        promo.currentUses = activeHolders;
+        promo.isActive = true;
+        await promo.save();
+      } else {
+        return res.status(400).json({ error: `Code ${cleanCode} has already been claimed. Please try the next code number (e.g. RAD-FOUNDER-02).` });
+      }
     }
 
     const slotNumber = totalFoundersCount + 1;
@@ -16596,7 +16681,7 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       </div>
     `;
 
-    await InboxItem.create({
+    const createdInboxItem = await InboxItem.create({
       userId: user._id,
       userEmail: user.email,
       subject: welcomeSubject,
@@ -16614,20 +16699,27 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       success: true,
       message: `Founding 50 ${promo.tier} code redeemed! Slot #${slotNumber} locked for life.`,
       entitlements: {
+        isFoundingMember: true,
         foundingSlotNumber: user.foundingSlotNumber,
         membershipTier: user.membershipTier,
         lockedTierPrice: user.lockedTierPrice,
         priceLockedForLife: user.priceLockedForLife,
         storeCreditBalance: user.storeCreditBalance,
         aiBeautyRitualConsultation: user.aiBeautyRitualConsultation,
-        pendingVipMysteryBox: user.pendingVipMysteryBox
+        pendingVipMysteryBox: user.pendingVipMysteryBox,
+        redeemedPromoCode: user.redeemedPromoCode
       },
+      inboxItem: createdInboxItem,
       user: serializeMemberProfile(user)
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to redeem promo code', details: err.message });
   }
-});
+};
+
+app.post('/api/promos/redeem-founding', authenticateToken, handleRedeemFoundingPromo);
+app.post('/api/promo/redeem', authenticateToken, handleRedeemFoundingPromo);
+
 
 // ============================================================================
 // DOLLAR-FOR-DOLLAR STORE CREDIT MITIGATION & 3PC MYSTERY BOX AUTO-INJECTION
@@ -18122,11 +18214,12 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     await ensureDefaultOdieMemories();
+    await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
     await backfillProductBlueprintLabels(false);
     await backfillProductShippingAndCustomLabelMeta(false);
     await backfillConsultationAnalyses();
     await backfillAnalyticsBaseline();
-    
+
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
     } else {
