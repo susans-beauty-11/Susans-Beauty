@@ -1051,6 +1051,30 @@ const buildInboundInboxCounts = async () => {
 
 
 // ---------------- MONGODB SCHEMAS ---------------- //
+// 1. CJ Token Cache Schema (Persists token across Render/server restarts)
+const CjAuthTokenSchema = new mongoose.Schema({
+  key: { type: String, default: 'primary', unique: true },
+  accessToken: { type: String, required: true },
+  accessTokenExpiryDate: { type: Date, required: true },
+  refreshToken: { type: String, required: true },
+  refreshTokenExpiryDate: { type: Date, required: true },
+  updatedAt: { type: Date, default: Date.now }
+});
+const CjAuthToken = mongoose.models.CjAuthToken || mongoose.model('CjAuthToken', CjAuthTokenSchema);
+
+// 2. Updated User Schema Fields (Founding 50 & Store Credit Vault)
+const UserFoundingFields = {
+  membershipTier: { type: String, default: 'basic', index: true },
+  isFoundingMember: { type: Boolean, default: false },
+  foundingSlotNumber: { type: Number, default: null },
+  priceLockedForLife: { type: Boolean, default: false },
+  lockedTierPrice: { type: Number, default: null }, // 49 for Luminary, 119 for Radiance
+  storeCreditBalance: { type: Number, default: 0 }, // Dollar-for-dollar match vault
+  aiBeautyRitualConsultation: { type: Boolean, default: false },
+  pendingVipMysteryBox: { type: Boolean, default: false }, // True for Radiance until 1st order completes
+  redeemedPromoCode: { type: String, default: null }
+};
+
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   username: { type: String, default: '', index: true },
@@ -1063,7 +1087,7 @@ const userSchema = new mongoose.Schema({
     default: 'client',
     index: true 
   },
-  membershipTier: { type: String, default: 'basic', index: true },
+  ...UserFoundingFields,
   pendingUpgradeTier: { type: String, default: '' },
   authProvider: {
     type: String,
@@ -1235,13 +1259,21 @@ const Product = mongoose.model('Product', productSchema);
 
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
-  items: Array,
-  totalAmount: Number,
-  shipping_address: { type: mongoose.Schema.Types.Mixed },
   customerEmail: { type: String, index: true },
+  customerName: { type: String, default: '' },
+  items: Array,
+  subtotalAmount: { type: Number, default: 0 },
+  storeCreditApplied: { type: Number, default: 0 },
+  totalAmount: Number,
+  includesVipMysteryBox: { type: Boolean, default: false },
+  shipping_address: { type: mongoose.Schema.Types.Mixed },
+  shippingAddress: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   status: { type: String, default: 'Pending', index: true },
   tracking_code: { type: String, default: '' },
+  trackingNumber: { type: String, default: null },
   logisticName: { type: String, default: '' },
+  carrier: { type: String, default: null },
+  trackingUrl: { type: String, default: null },
   selectedLogisticName: { type: String, default: 'CJPacket Sensitive' },
   fromCountryCode: { type: String, default: 'CN' },
   shippingCostUsd: { type: Number, default: 0 },
@@ -1253,13 +1285,14 @@ const orderSchema = new mongoose.Schema({
   cjPayId: { type: String, default: '' },
   cjOrderNumberSent: { type: String, default: '' },
   cjOrderStatus: { type: String, default: '' },
+  stripeSessionId: { type: String, default: null, index: true },
   estimatedWholesaleCost: { type: Number, default: 0 },
   estimatedProfit: { type: Number, default: 0 },
   notes: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-const Order = mongoose.model('Order', orderSchema);
+const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
 
 const emailLogSchema = new mongoose.Schema({
   to: { type: String, required: true, index: true },
@@ -1347,14 +1380,50 @@ const logWebhookDelivery = async ({
   }
 };
 
-const inboxItemSchema = new mongoose.Schema({
+// 3. On-Site Customer Inbox Schema (InboxItem - supports Dual-Channel Order/VIP Alerts & Susan's Product Curations)
+const InboxItemSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  userEmail: { type: String, default: '', index: true },
+  orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+  subject: { type: String, default: "Susan's Beauty Consulting Update ✧" },
+  category: { 
+    type: String, 
+    enum: ['Order Update', 'Shipping Alert', 'Founding Member VIP', 'AI Consultation', 'System', 'Bespoke Curation'], 
+    default: 'Order Update' 
+  },
   message: { type: String, default: "Susan has hand-selected this specifically for your custom beauty profile ✧" },
+  bodyText: { type: String, default: '' },
+  bodyHtml: { type: String, default: '' },
+  metadata: {
+    orderStatus: String,
+    trackingNumber: String,
+    carrier: String,
+    trackingUrl: String
+  },
   isRead: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
-const InboxItem = mongoose.model('InboxItem', inboxItemSchema);
+const InboxItem = mongoose.models.InboxItem || mongoose.model('InboxItem', InboxItemSchema);
+
+// 4. Founding 50 Promo Code Schema
+const PromoCodeSchema = new mongoose.Schema({
+  code: { type: String, required: true, unique: true, uppercase: true, trim: true },
+  tier: { type: String, enum: ['Luminary', 'Radiance', 'Any'], required: true },
+  creditAmount: { type: Number, required: true }, // 49 or 119
+  lockedPrice: { type: Number, required: true },  // 49 or 119
+  includesMysteryBox: { type: Boolean, default: false },
+  maxUses: { type: Number, default: 1 },
+  currentUses: { type: Number, default: 0 },
+  redeemedBy: [{
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    email: String,
+    redeemedAt: { type: Date, default: Date.now }
+  }],
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const PromoCode = mongoose.models.PromoCode || mongoose.model('PromoCode', PromoCodeSchema);
 
 // Odie's Long-Term Persistent Memory Bank (Facts, Preferences, VIP Client Notes & Business Rules)
 const odieMemorySchema = new mongoose.Schema({
@@ -1530,7 +1599,7 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
     
-    const user = await User.findById(decoded._id).select('_id name username email phone avatarUrl role membershipTier pendingUpgradeTier shippingAddress billingInfo');
+    const user = await User.findById(decoded._id).select('_id name username email phone avatarUrl role membershipTier pendingUpgradeTier shippingAddress billingInfo isFoundingMember foundingSlotNumber priceLockedForLife lockedTierPrice storeCreditBalance aiBeautyRitualConsultation pendingVipMysteryBox redeemedPromoCode');
     
     if (!user) {
       return res.status(401).json({ error: 'The user associated with this token no longer exists.' });
@@ -1629,10 +1698,245 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
   'led facial mask'
 ];
 
+// ============================================================================
+// CJ DROPSHIPPING SINGLETON TOKEN MANAGER & 1-QPS FIFO QUEUE
+// ============================================================================
+const CJ_RATE_LIMIT_MS = 1100; // 1.1 seconds strictly enforces < 1 QPS
+
+class CjApiClient {
+  constructor() {
+    this.memoryToken = cleanEnv(process.env.CJ_ACCESS_TOKEN) || null;
+    this.tokenExpiresAt = this.memoryToken ? Date.now() + 24 * 60 * 60 * 1000 : 0;
+    this.refreshPromise = null; // Singleton lock so parallel requests never double-refresh
+    this.queue = [];
+    this.isProcessingQueue = false;
+    this.lastRequestTime = 0;
+  }
+
+  // Acquire valid CJ Access Token with Singleton Promise Lock
+  async getValidAccessToken(forceRefresh = false) {
+    const now = Date.now();
+    // 1. Return in-memory token if valid (with 10-minute safety buffer)
+    if (!forceRefresh && this.memoryToken && this.tokenExpiresAt - now > 10 * 60 * 1000) {
+      return this.memoryToken;
+    }
+
+    // 2. If a token fetch/refresh is ALREADY in flight, await the exact same Promise
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const stored = mongoose.connection.readyState === 1
+          ? await CjAuthToken.findOne({ key: 'primary' }).catch(() => null)
+          : null;
+
+        // Check if MongoDB has a valid non-expired token
+        if (!forceRefresh && stored && stored.accessToken && new Date(stored.accessTokenExpiryDate).getTime() - now > 10 * 60 * 1000) {
+          this.memoryToken = stored.accessToken;
+          this.tokenExpiresAt = new Date(stored.accessTokenExpiryDate).getTime();
+          return this.memoryToken;
+        }
+
+        // If we have a valid refreshToken, use refreshAccessToken first (higher rate limit than getAccessToken)
+        if (stored && stored.refreshToken && new Date(stored.refreshTokenExpiryDate).getTime() > now) {
+          try {
+            const refreshRes = await axios.post(`${CJ_BASE_URL}/authentication/refreshAccessToken`, {
+              refreshToken: stored.refreshToken
+            }, { timeout: 15000, _skipCjQueue: true });
+
+            if (refreshRes.data && refreshRes.data.result && refreshRes.data.data?.accessToken) {
+              const d = refreshRes.data.data;
+              await CjAuthToken.findOneAndUpdate(
+                { key: 'primary' },
+                {
+                  accessToken: d.accessToken,
+                  accessTokenExpiryDate: new Date(d.accessTokenExpiryDate),
+                  refreshToken: d.refreshToken,
+                  refreshTokenExpiryDate: new Date(d.refreshTokenExpiryDate),
+                  updatedAt: new Date()
+                },
+                { upsert: true }
+              ).catch(() => {});
+              this.memoryToken = d.accessToken;
+              this.tokenExpiresAt = new Date(d.accessTokenExpiryDate).getTime();
+              return this.memoryToken;
+            }
+          } catch (refreshErr) {
+            console.warn('[CJ API] Refresh token failed, falling back to getAccessToken:', refreshErr.message);
+          }
+        }
+
+        const configuredApiKey = cleanEnv(process.env.CJ_API_KEY);
+        const configuredAccessToken = cleanEnv(process.env.CJ_ACCESS_TOKEN);
+
+        // If only a static CJ_ACCESS_TOKEN is configured and no CJ_API_KEY is present, use it directly unless forceRefresh is possible
+        if (!configuredApiKey && configuredAccessToken && !forceRefresh) {
+          this.memoryToken = configuredAccessToken;
+          this.tokenExpiresAt = Date.now() + 12 * 60 * 60 * 1000;
+          return this.memoryToken;
+        }
+
+        const apiKeyToUse = configuredApiKey || configuredAccessToken;
+        if (!apiKeyToUse) {
+          throw new Error('CJ Auth Failed: Neither CJ_API_KEY nor CJ_ACCESS_TOKEN is configured in .env');
+        }
+
+        // Full authentication via CJ_API_KEY
+        const authRes = await axios.post(`${CJ_BASE_URL}/authentication/getAccessToken`, {
+          apiKey: apiKeyToUse
+        }, { timeout: 15000, _skipCjQueue: true });
+
+        if (!authRes.data || !authRes.data.result || !authRes.data.data?.accessToken) {
+          // If CJ_ACCESS_TOKEN is already a live access token rather than an API key, fallback gracefully
+          if (configuredAccessToken) {
+            this.memoryToken = configuredAccessToken;
+            this.tokenExpiresAt = Date.now() + 6 * 60 * 60 * 1000;
+            return this.memoryToken;
+          }
+          throw new Error(`CJ Auth Failed: ${authRes.data?.message || 'Unknown error'}`);
+        }
+
+        const tokenData = authRes.data.data;
+        await CjAuthToken.findOneAndUpdate(
+          { key: 'primary' },
+          {
+            accessToken: tokenData.accessToken,
+            accessTokenExpiryDate: new Date(tokenData.accessTokenExpiryDate),
+            refreshToken: tokenData.refreshToken,
+            refreshTokenExpiryDate: new Date(tokenData.refreshTokenExpiryDate),
+            updatedAt: new Date()
+          },
+          { upsert: true }
+        ).catch(() => {});
+
+        this.memoryToken = tokenData.accessToken;
+        this.tokenExpiresAt = new Date(tokenData.accessTokenExpiryDate).getTime();
+        return this.memoryToken;
+      } finally {
+        // Release the lock once resolved or rejected
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  // Enqueue any CJ API request
+  request(config, retries = 2) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ config, retries, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.isProcessingQueue || this.queue.length === 0) return;
+    this.isProcessingQueue = true;
+
+    while (this.queue.length > 0) {
+      const item = this.queue.shift();
+      const elapsed = Date.now() - this.lastRequestTime;
+
+      if (elapsed < CJ_RATE_LIMIT_MS) {
+        await new Promise((r) => setTimeout(r, CJ_RATE_LIMIT_MS - elapsed));
+      }
+
+      try {
+        const token = await this.getValidAccessToken();
+        this.lastRequestTime = Date.now();
+
+        const response = await axios({
+          ...item.config,
+          _skipCjQueue: true,
+          url: item.config.url.startsWith('http') ? item.config.url : `${CJ_BASE_URL}${item.config.url}`,
+          headers: {
+            ...(item.config.headers || {}),
+            'CJ-Access-Token': token,
+            'Content-Type': 'application/json'
+          },
+          timeout: item.config.timeout || 20000
+        });
+
+        // Handle CJ internal rate limit or expired token codes inside HTTP 200 responses
+        const cjCode = Number(response.data?.code);
+        if ((cjCode === 1600200 || /too Many Requests|QPS/i.test(String(response.data?.message || ''))) && item.retries > 0) {
+          console.warn('[CJ Queue] Rate limit 1600200 hit, re-queuing with backoff...');
+          this.queue.unshift({ ...item, retries: item.retries - 1 });
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+
+        if ((cjCode === 1600101 || cjCode === 1600102) && item.retries > 0) {
+          console.warn('[CJ Queue] Token expired mid-flight, forcing refresh and re-queuing...');
+          await this.getValidAccessToken(true).catch(() => {});
+          this.queue.unshift({ ...item, retries: item.retries - 1 });
+          continue;
+        }
+
+        item.resolve(response.data);
+      } catch (err) {
+        const status = err.response?.status;
+        if ((status === 429 || status >= 500) && item.retries > 0) {
+          console.warn(`[CJ Queue] HTTP ${status}, retrying (${item.retries} left)...`);
+          this.queue.unshift({ ...item, retries: item.retries - 1 });
+          await new Promise((r) => setTimeout(r, 1500));
+        } else {
+          item.reject(err);
+        }
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+}
+
+const cjClient = new CjApiClient();
+
+// Helper wrapper for all CJ endpoints in server.js
+// Usage: const data = await cjRequest('GET', '/product/list', { params: { pageNum: 1, pageSize: 20 } });
+async function cjRequest(method, endpoint, options = {}) {
+  return cjClient.request({
+    method,
+    url: endpoint,
+    params: options.params || undefined,
+    data: options.data || undefined
+  });
+}
+
+// Global Axios request interceptor for CJ_BASE_URL so any legacy axios.get/post to CJ
+// also acquires the singleton token lock and respects the 1.1s FIFO spacing automatically
+axios.interceptors.request.use(async (config) => {
+  const url = String(config?.url || '');
+  if (
+    url.startsWith(CJ_BASE_URL) &&
+    !config._skipCjQueue &&
+    !url.includes('/authentication/getAccessToken') &&
+    !url.includes('/authentication/refreshAccessToken')
+  ) {
+    const elapsed = Date.now() - cjClient.lastRequestTime;
+    if (elapsed < CJ_RATE_LIMIT_MS) {
+      await new Promise((r) => setTimeout(r, CJ_RATE_LIMIT_MS - elapsed));
+    }
+    cjClient.lastRequestTime = Date.now();
+    try {
+      const validToken = await cjClient.getValidAccessToken();
+      if (validToken) {
+        config.headers = config.headers || {};
+        config.headers['CJ-Access-Token'] = validToken;
+      }
+    } catch (e) {
+      // Fallback to existing header if token lookup fails
+    }
+  }
+  return config;
+});
+
 const getCjHeaders = () => {
-  const token = cleanEnv(process.env.CJ_ACCESS_TOKEN);
+  const token = cjClient.memoryToken || cleanEnv(process.env.CJ_ACCESS_TOKEN) || cleanEnv(process.env.CJ_API_KEY);
   if (!token) {
-    console.warn("⚠ CJ_ACCESS_TOKEN is missing in environment.");
+    console.warn("⚠ CJ_ACCESS_TOKEN / CJ_API_KEY is missing in environment.");
     return null;
   }
   return {
@@ -6453,26 +6757,18 @@ app.put('/api/admin/orders/:id/status', authenticateToken, requireAdmin, async (
     order.updatedAt = new Date();
     await order.save();
 
+    order.trackingNumber = order.tracking_code || order.trackingNumber || null;
+    order.carrier = order.logisticName || order.carrier || null;
+    await order.save();
+
     let customerNotified = false;
-    if (notifyCustomer && order.customerEmail && order.customerEmail !== 'Customer') {
-      const subject = `✧ Order Update (#${String(order._id).slice(-6).toUpperCase()}): ${order.status}`;
-      const trackingBlock = order.tracking_code
-        ? `<div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; margin: 18px 0;">
-             <p style="margin: 4px 0;"><strong>Tracking Number${order.logisticName ? ` (${escapeHtml(order.logisticName)})` : ''}:</strong> <span style="color: #B38B8F; font-weight: bold;">${escapeHtml(order.tracking_code)}</span></p>
-           </div>`
-        : '';
-      const html = `
-        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 35px; border-radius: 15px;">
-          <h2 style="color: #B38B8F; font-style: italic; text-align: center;">Your Ritual Order Update ✧</h2>
-          <p style="font-size: 1.05rem; line-height: 1.6;">Hello,</p>
-          <p style="font-size: 1.05rem; line-height: 1.6;">Susan has updated the status of your order <strong>#${String(order._id).slice(-6).toUpperCase()}</strong> to <strong>${escapeHtml(order.status)}</strong>.</p>
-          ${trackingBlock}
-          <p style="font-size: 0.95rem; color: #8A797A; margin-top: 25px; text-align: center;">Warmly,<br>Susan's Beauty Consulting</p>
-        </div>
-      `;
-      const text = `Your Susan's Beauty Consulting order #${String(order._id).slice(-6).toUpperCase()} status is now: ${order.status}.${order.tracking_code ? ` Tracking: ${order.tracking_code}` : ''}`;
-      await sendEmail(order.customerEmail, subject, html, text).catch(() => {});
-      await new EmailLog({ to: order.customerEmail, subject, body: text }).save().catch(() => {});
+    if (notifyCustomer !== false && (order.userId || (order.customerEmail && order.customerEmail !== 'Customer'))) {
+      await dispatchOrderUpdate({
+        order,
+        statusLabel: order.status,
+        customMessage: notes ? String(notes).trim() : undefined,
+        sendEmailFn: sendEmail
+      }).catch(() => {});
       customerNotified = true;
     }
 
@@ -8201,6 +8497,7 @@ const upsertOdieMemoryFact = async ({ key, content, category = 'general', source
 app.get('/api/admin/odie/memory', authenticateToken, requireAdmin, async (req, res) => {
   try {
     await ensureDefaultOdieMemories();
+    await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 promo seed notice:', err.message));
     const [memories, recentHistory] = await Promise.all([
       OdieMemory.find({}).sort({ pinned: -1, updatedAt: -1 }).lean(),
       OdieChatHistory.find({}).sort({ createdAt: -1 }).limit(60).lean()
@@ -10235,7 +10532,13 @@ app.post('/api/admin/appointments/:id/remind', authenticateToken, requireAdmin, 
 const isPaidOrAdminMember = (user = {}) => {
   const role = String(user?.role || '').toLowerCase().trim();
   const tier = String(user?.membershipTier || 'basic').toLowerCase().trim();
-  return role === 'admin' || role === 'staff' || ['admin', 'luminary', 'radiance'].includes(tier);
+  return (
+    role === 'admin' ||
+    role === 'staff' ||
+    Boolean(user?.isFoundingMember) ||
+    Boolean(user?.aiBeautyRitualConsultation) ||
+    ['admin', 'luminary', 'radiance'].includes(tier)
+  );
 };
 
 // Computes live consultation booking quota for a member:
@@ -13487,6 +13790,14 @@ const serializeMemberProfile = (user = {}) => ({
       user.billingInfo?.subscriptionStatus ||
       (['luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) ? 'active' : 'inactive')
   },
+  isFoundingMember: Boolean(user.isFoundingMember),
+  foundingSlotNumber: user.foundingSlotNumber ?? null,
+  priceLockedForLife: Boolean(user.priceLockedForLife),
+  lockedTierPrice: user.lockedTierPrice ?? null,
+  storeCreditBalance: Number(user.storeCreditBalance || 0),
+  aiBeautyRitualConsultation: Boolean(user.aiBeautyRitualConsultation),
+  pendingVipMysteryBox: Boolean(user.pendingVipMysteryBox),
+  redeemedPromoCode: user.redeemedPromoCode || null,
   socialProfiles: user.socialProfiles || {},
   createdAt: user.createdAt
 });
@@ -14311,14 +14622,24 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
 app.post('/api/create-checkout-session', authenticateToken, async (req, res) => {
   try {
     const { tier } = req.body;
+    const cleanRequestedTier = String(tier || req.user?.membershipTier || 'luminary').toLowerCase().trim();
     let unit_amount = 4900; 
     let productName = "The Luminary Circle Membership";
     let productDescription = "3-piece skin care ritual box, quarterly 1-on-1 consultation, and 10% boutique discount.";
 
-    if (tier === 'radiance') {
+    if (cleanRequestedTier === 'radiance') {
       unit_amount = 11900; 
       productName = "The Radiance Elite Membership";
       productDescription = "5-piece premium skin care ritual box, monthly 1-on-1 consultations, 25% off the boutique, and new product early updates.";
+    }
+
+    // Honor Founding 50 lifetime locked tier price if applicable
+    if (req.user?.priceLockedForLife && req.user?.lockedTierPrice) {
+      const userLockedTier = String(req.user.membershipTier || '').toLowerCase().trim();
+      if (!tier || userLockedTier === cleanRequestedTier) {
+        unit_amount = Math.round(Number(req.user.lockedTierPrice) * 100);
+        productName += ` (Founding 50 Lifetime Lock #${req.user.foundingSlotNumber || ''})`;
+      }
     }
 
     const cleanTier = String(tier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
@@ -15923,6 +16244,623 @@ const parseCjWebhookFields = (body = {}) => {
   };
 };
 
+
+// ============================================================================
+// DUAL-CHANNEL ORDER UPDATE DISPATCHER (IONOS SMTP + ON-SITE INBOX)
+// ============================================================================
+/**
+ * Dispatches an order status/tracking update simultaneously to:
+ * 1) The customer's on-site account Inbox (MongoDB InboxItem)
+ * 2) The customer's email address via your existing IONOS SMTP mailer (sendEmail)
+ *
+ * @param {Object} params
+ * @param {Object} params.order - Mongoose Order document
+ * @param {String} params.statusLabel - e.g., 'Order Confirmed', 'Processing', 'Shipped', 'Delivered'
+ * @param {String} [params.customMessage] - Optional custom message note
+ * @param {Function} params.sendEmailFn - Reference to your existing IONOS sendEmail(to, subject, html, text) function
+ */
+async function dispatchOrderUpdate({ order, statusLabel, customMessage, sendEmailFn = sendEmail }) {
+  if (!order) throw new Error('Order document is required for dispatchOrderUpdate');
+
+  const shortOrderId = order._id.toString().slice(-6).toUpperCase();
+  const subject = `Susan's Beauty Consulting — Order #${shortOrderId} Update: ${statusLabel}`;
+
+  const effectiveTrackingNumber = order.trackingNumber || order.tracking_code || '';
+  const effectiveCarrier = order.carrier || order.logisticName || order.selectedLogisticName || 'Standard Carrier';
+
+  const trackingBlockHtml = effectiveTrackingNumber
+    ? `
+      <div style="margin: 18px 0; padding: 14px; background: #fdf8f5; border-left: 4px solid #d4af37; border-radius: 6px;">
+        <p style="margin: 0 0 6px 0; font-weight: 600; color: #2c1e18;">Tracking Information</p>
+        <p style="margin: 0; font-size: 14px; color: #5a463c;">
+          <strong>Carrier:</strong> ${effectiveCarrier}<br/>
+          <strong>Tracking Number:</strong> ${effectiveTrackingNumber}
+        </p>
+        ${order.trackingUrl ? `<p style="margin: 10px 0 0 0;"><a href="${order.trackingUrl}" style="display:inline-block;padding:8px 16px;background:#2c1e18;color:#fff;text-decoration:none;border-radius:4px;font-size:13px;">Track Your Package</a></p>` : ''}
+      </div>
+    `
+    : '';
+
+  const itemsListHtml = (order.items || [])
+    .map((item) => {
+      const itemName = item.name || item.title || item.displayTitle || 'Boutique Essential';
+      return `
+        <tr>
+          <td style="padding: 8px 0; border-bottom: 1px solid #eee; font-size: 14px; color: #2c1e18;">
+            ${itemName} ${item.isVipBonus ? '<span style="background:#d4af37;color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;margin-left:6px;">VIP FREE GIFT</span>' : ''}
+            <span style="color: #777;">x${item.quantity || 1}</span>
+          </td>
+          <td style="padding: 8px 0; border-bottom: 1px solid #eee; font-size: 14px; text-align: right; color: #2c1e18;">
+            ${Number(item.price || 0) === 0 ? 'FREE' : `$${(Number(item.price || 0) * (Number(item.quantity) || 1)).toFixed(2)}`}
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  const bodyHtml = `
+    <div style="font-family: 'Georgia', serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #2c1e18; background: #ffffff; border: 1px solid #efe6dd; border-radius: 10px;">
+      <h2 style="margin-top: 0; color: #2c1e18; font-weight: normal; border-bottom: 1px solid #efe6dd; padding-bottom: 12px;">
+        Susan's Beauty Consulting
+      </h2>
+      <p style="font-size: 15px;">Hello ${order.customerName || order.shipping_address?.name || 'Valued Client'},</p>
+      <p style="font-size: 15px; line-height: 1.6;">
+        ${customMessage || `Your order <strong>#${shortOrderId}</strong> status has been updated to: <strong>${statusLabel}</strong>.`}
+      </p>
+      ${trackingBlockHtml}
+      <h4 style="margin: 20px 0 8px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #7a6356;">Order Summary</h4>
+      <table style="width: 100%; border-collapse: collapse;">
+        ${itemsListHtml}
+      </table>
+      <div style="margin-top: 14px; text-align: right; font-size: 14px; color: #2c1e18;">
+        ${order.storeCreditApplied > 0 ? `<p style="margin: 4px 0; color: #2e7d32;">Store Credit Applied (1:1 Match): -$${Number(order.storeCreditApplied).toFixed(2)}</p>` : ''}
+        <p style="margin: 4px 0; font-size: 16px; font-weight: bold;">Total Charged: $${Number(order.totalAmount || 0).toFixed(2)}</p>
+      </div>
+      <p style="margin-top: 24px; font-size: 13px; color: #8c766a;">
+        A copy of this update has also been saved directly to your On-Site Member Inbox at susansbeautyconsulting.com.
+      </p>
+    </div>
+  `;
+
+  const bodyText = `${customMessage || `Your order #${shortOrderId} status is now: ${statusLabel}.`} ${
+    effectiveTrackingNumber ? `Tracking (${effectiveCarrier}): ${effectiveTrackingNumber}` : ''
+  }`.trim();
+
+  // Resolve userId by email if order.userId was not attached at checkout
+  let targetUserId = order.userId || null;
+  const recipientEmail = order.customerEmail && order.customerEmail !== 'Customer' ? normalizeEmail(order.customerEmail) : '';
+  if (!targetUserId && recipientEmail) {
+    const matchedUser = await User.findOne({ email: new RegExp(`^${escapeRegex(recipientEmail)}$`, 'i') }).select('_id').lean().catch(() => null);
+    if (matchedUser) targetUserId = matchedUser._id;
+  }
+
+  // 1. Save to Customer's On-Site Inbox (if associated with a registered userId)
+  let inboxRecord = null;
+  if (targetUserId) {
+    inboxRecord = await InboxItem.create({
+      userId: targetUserId,
+      userEmail: recipientEmail || order.customerEmail || '',
+      orderId: order._id,
+      subject,
+      category: ['Shipped', 'SHIPPED'].includes(statusLabel) ? 'Shipping Alert' : 'Order Update',
+      message: bodyText,
+      bodyText,
+      bodyHtml,
+      metadata: {
+        orderStatus: statusLabel,
+        trackingNumber: effectiveTrackingNumber || '',
+        carrier: effectiveCarrier || '',
+        trackingUrl: order.trackingUrl || ''
+      },
+      isRead: false
+    });
+  }
+
+  // 2. Dispatch via IONOS SMTP Mailer
+  let emailSent = false;
+  if (typeof sendEmailFn === 'function' && recipientEmail) {
+    try {
+      await sendEmailFn(recipientEmail, subject, bodyHtml, bodyText);
+      await new EmailLog({ to: recipientEmail, subject, body: bodyText }).save().catch(() => {});
+      emailSent = true;
+    } catch (smtpErr) {
+      console.error('[Dual-Channel Dispatcher] IONOS SMTP send failed (Inbox copy still saved):', smtpErr.message);
+    }
+  }
+
+  return { inboxRecord, emailSent };
+}
+
+// GET Customer's On-Site Inbox
+app.get('/api/inbox', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const items = await InboxItem.find({ userId })
+      .populate('productId')
+      .sort({ createdAt: -1 })
+      .limit(50);
+    const unreadCount = await InboxItem.countDocuments({ userId, isRead: false });
+    res.json({ success: true, items, unreadCount });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load on-site inbox', details: err.message });
+  }
+});
+
+// Mark Inbox Item as Read
+app.patch('/api/inbox/:id/read', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const item = await InboxItem.findOneAndUpdate(
+      { _id: req.params.id, userId },
+      { isRead: true },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ error: 'Inbox message not found' });
+    res.json({ success: true, item });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update inbox item', details: err.message });
+  }
+});
+
+// Admin / Webhook Order Status Update Route (Triggers Both IONOS Email + On-Site Inbox)
+app.patch('/api/orders/:orderId/status', authenticateToken, async (req, res) => {
+  try {
+    const { status, trackingNumber, tracking_code, carrier, logisticName, trackingUrl, customMessage } = req.body || {};
+    const order = await Order.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    if (status) order.status = status;
+    const resolvedTracking = trackingNumber !== undefined ? trackingNumber : tracking_code;
+    if (resolvedTracking !== undefined) {
+      order.trackingNumber = resolvedTracking;
+      order.tracking_code = resolvedTracking;
+    }
+    const resolvedCarrier = carrier !== undefined ? carrier : logisticName;
+    if (resolvedCarrier !== undefined) {
+      order.carrier = resolvedCarrier;
+      order.logisticName = resolvedCarrier;
+      order.selectedLogisticName = resolvedCarrier;
+    }
+    if (trackingUrl !== undefined) order.trackingUrl = trackingUrl;
+    order.updatedAt = new Date();
+    await order.save();
+
+    const dispatchResult = await dispatchOrderUpdate({
+      order,
+      statusLabel: status || order.status,
+      customMessage,
+      sendEmailFn: typeof sendEmail === 'function' ? sendEmail : null
+    });
+
+    res.json({
+      success: true,
+      order,
+      dispatchResult
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update order and dispatch notifications', details: err.message });
+  }
+});
+
+// ============================================================================
+// FOUNDING 50 PROMO CODE ENGINE (25 LUMINARY @ $49, 25 RADIANCE @ $119)
+// ============================================================================
+const seedFounding50PromoCodes = async () => {
+  const codesToInsert = [];
+
+  // Generate 25 Luminary Codes ($49 Lock + $49 Credit + AI Beauty Consultation)
+  for (let i = 1; i <= 25; i++) {
+    const num = String(i).padStart(2, '0');
+    codesToInsert.push({
+      code: `LUM-FOUNDER-${num}`,
+      tier: 'Luminary',
+      creditAmount: 49,
+      lockedPrice: 49,
+      includesMysteryBox: false,
+      maxUses: 1
+    });
+  }
+
+  // Generate 25 Radiance Codes ($119 Lock + $119 Credit + AI Beauty Consultation + 3pc Mystery Box)
+  for (let i = 1; i <= 25; i++) {
+    const num = String(i).padStart(2, '0');
+    codesToInsert.push({
+      code: `RAD-FOUNDER-${num}`,
+      tier: 'Radiance',
+      creditAmount: 119,
+      lockedPrice: 119,
+      includesMysteryBox: true,
+      maxUses: 1
+    });
+  }
+
+  let createdCount = 0;
+  for (const c of codesToInsert) {
+    const exists = await PromoCode.findOne({ code: c.code });
+    if (!exists) {
+      await PromoCode.create(c);
+      createdCount++;
+    }
+  }
+  return { createdCount, totalAvailable: 50 };
+};
+
+// Admin Endpoint: Seed 50 Unique Founding Member Promo Codes (25 Luminary, 25 Radiance)
+app.post('/api/admin/promos/seed-founding-50', authenticateToken, async (req, res) => {
+  try {
+    const result = await seedFounding50PromoCodes();
+    res.json({
+      success: true,
+      message: `Seeded ${result.createdCount} Founding 50 promo codes (LUM-FOUNDER-01..25 and RAD-FOUNDER-01..25).`,
+      ...result
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to seed Founding 50 promo codes', details: err.message });
+  }
+});
+
+// Admin / Public Endpoint: List Founding 50 Promo Code Status
+app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => {
+  try {
+    const codes = await PromoCode.find({}).sort({ code: 1 }).lean();
+    const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
+    res.json({
+      success: true,
+      totalFoundersCount,
+      remainingFounderSlots: Math.max(0, 50 - totalFoundersCount),
+      codes
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch Founding 50 promo codes', details: err.message });
+  }
+});
+
+// Customer Endpoint: Redeem a Founding 50 Promo Code
+app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) return res.status(400).json({ error: 'Please enter a valid promo code.' });
+
+    const cleanCode = String(code).trim().toUpperCase();
+    const userId = req.user.id || req.user._id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User account not found.' });
+
+    if (user.isFoundingMember) {
+      return res.status(400).json({
+        error: `You have already claimed Founding Member Slot #${user.foundingSlotNumber} (${user.membershipTier} Tier).`
+      });
+    }
+
+    // Enforce global ceiling of 50 Founding Members
+    const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
+    if (totalFoundersCount >= 50) {
+      return res.status(400).json({ error: 'All 50 Founding Member spots have been claimed.' });
+    }
+
+    const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
+    if (!promo) {
+      return res.status(404).json({ error: 'Invalid or expired Founding 50 promo code.' });
+    }
+
+    if (promo.currentUses >= promo.maxUses) {
+      return res.status(400).json({ error: 'This Founding 50 code has already been redeemed.' });
+    }
+
+    const slotNumber = totalFoundersCount + 1;
+
+    // Apply Founding 50 Entitlements to User
+    if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+      user.membershipTier = promo.tier; // 'Luminary' or 'Radiance'
+    }
+    user.isFoundingMember = true;
+    user.foundingSlotNumber = slotNumber;
+    user.priceLockedForLife = true;
+    user.lockedTierPrice = promo.lockedPrice; // $49 or $119 locked for life
+    user.storeCreditBalance = Number((Number(user.storeCreditBalance || 0) + Number(promo.creditAmount)).toFixed(2));
+    user.aiBeautyRitualConsultation = true;
+    user.pendingVipMysteryBox = promo.tier === 'Radiance' || Boolean(promo.includesMysteryBox);
+    user.redeemedPromoCode = cleanCode;
+    user.billingInfo = {
+      ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
+      subscriptionStatus: 'active'
+    };
+    user.markModified('billingInfo');
+    await user.save();
+
+    // Mark Promo Code as used
+    promo.currentUses += 1;
+    if (promo.currentUses >= promo.maxUses) {
+      promo.isActive = false;
+    }
+    promo.redeemedBy.push({
+      userId: user._id,
+      email: user.email,
+      redeemedAt: new Date()
+    });
+    await promo.save();
+
+    // Send Dual-Channel Welcome Notification to On-Site Inbox (+ IONOS SMTP)
+    const welcomeSubject = `Welcome to the Founding 50 (#${slotNumber}) — ${promo.tier} Tier Unlocked!`;
+    const welcomeText = `Congratulations! Your ${promo.tier} tier rate of $${promo.lockedPrice} is locked for life. $${promo.creditAmount.toFixed(2)} in Store Credit has been added to your vault (redeemable dollar-for-dollar on product orders), and your AI Beauty & Ritual Consultation is now unlocked.${user.pendingVipMysteryBox ? ' Your complimentary 3pc VIP Mystery Box will automatically attach to your first order!' : ''}`;
+    const welcomeHtml = `
+      <div style="font-family: Georgia, serif; padding: 20px; color: #2c1e18; border: 1px solid #d4af37; border-radius: 8px; background: #fffdf9;">
+        <h3 style="color: #b8860b; margin-top: 0;">Welcome to the Founding 50 — Slot #${slotNumber}</h3>
+        <p>You have unlocked the <strong>${promo.tier} Founding Membership</strong> with lifetime price protection.</p>
+        <ul style="line-height: 1.8;">
+          <li><strong>Lifetime Locked Rate:</strong> $${promo.lockedPrice} (Never increases)</li>
+          <li><strong>100% Store Credit Vault Added:</strong> $${promo.creditAmount.toFixed(2)} (Applies dollar-for-dollar alongside cash at checkout)</li>
+          <li><strong>AI Beauty & Ritual Consultation:</strong> Unlocked in your dashboard</li>
+          ${user.pendingVipMysteryBox ? '<li><strong>3pc VIP Mystery Box Set:</strong> Auto-attaches FREE ($0.00) on your first checkout!</li>' : ''}
+        </ul>
+      </div>
+    `;
+
+    await InboxItem.create({
+      userId: user._id,
+      userEmail: user.email,
+      subject: welcomeSubject,
+      category: 'Founding Member VIP',
+      message: welcomeText,
+      bodyText: welcomeText,
+      bodyHtml: welcomeHtml
+    });
+
+    if (typeof sendEmail === 'function' && user.email) {
+      sendEmail(user.email, welcomeSubject, welcomeHtml, welcomeText).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: `Founding 50 ${promo.tier} code redeemed! Slot #${slotNumber} locked for life.`,
+      entitlements: {
+        foundingSlotNumber: user.foundingSlotNumber,
+        membershipTier: user.membershipTier,
+        lockedTierPrice: user.lockedTierPrice,
+        priceLockedForLife: user.priceLockedForLife,
+        storeCreditBalance: user.storeCreditBalance,
+        aiBeautyRitualConsultation: user.aiBeautyRitualConsultation,
+        pendingVipMysteryBox: user.pendingVipMysteryBox
+      },
+      user: serializeMemberProfile(user)
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to redeem promo code', details: err.message });
+  }
+});
+
+// ============================================================================
+// DOLLAR-FOR-DOLLAR STORE CREDIT MITIGATION & 3PC MYSTERY BOX AUTO-INJECTION
+// ============================================================================
+
+const VIP_MYSTERY_BOX_ITEM = {
+  productId: 'VIP-RADIANCE-3PC-BOX',
+  cjVariantId: process.env.CJ_MYSTERY_BOX_VARIANT_ID || 'CJ-VIP-3PC-SET',
+  vid: process.env.CJ_MYSTERY_BOX_VARIANT_ID || 'CJ-VIP-3PC-SET',
+  sku: process.env.CJ_MYSTERY_BOX_VARIANT_ID || 'CJ-VIP-3PC-SET',
+  name: 'Founders 3pc VIP Mystery Box Set (Radiance Exclusive)',
+  title: 'Founders 3pc VIP Mystery Box Set (Radiance Exclusive)',
+  price: 0.00,
+  quantity: 1,
+  isVipBonus: true
+};
+
+/**
+ * Computes the exact checkout breakdown enforcing:
+ * 1) Dollar-for-Dollar Store Credit Match:
+ *    - Every $1.00 of Store Credit requires $1.00 of out-of-pocket cash spend.
+ *    - Max Store Credit usable on an order = 50% of the cart's merchandise subtotal.
+ *    - Example: To use all $119.00 of Radiance store credit, cart subtotal must be $238.00 ($119 credit + $119 cash).
+ *    - Example: On a $100.00 cart, up to $50.00 credit applies, user pays $50.00 cash, and $69.00 credit remains in vault.
+ * 2) Auto-injection of the 3pc VIP Mystery Box ($0.00) if `user.pendingVipMysteryBox === true`.
+ */
+function calculateCartWithFoundingPerks(rawItems = [], user = null, applyStoreCredit = true) {
+  // Filter out any client-spoofed bonus items first
+  const paidItems = (Array.isArray(rawItems) ? rawItems : [])
+    .filter((i) => !i.isVipBonus && i.productId !== VIP_MYSTERY_BOX_ITEM.productId)
+    .map((item) => ({
+      ...item,
+      productId: item.productId || item._id || item.sku,
+      cjVariantId: item.cjVariantId || item.vid || item.sku || '',
+      vid: item.vid || item.cjVariantId || item.sku || '',
+      sku: item.sku || item.vid || item.cjVariantId || '',
+      name: item.name || item.title || item.displayTitle || 'Boutique Essential',
+      title: item.title || item.name || item.displayTitle || 'Boutique Essential',
+      price: Math.max(0, Number(item.price || 0)),
+      quantity: Math.max(1, Number(item.quantity || 1)),
+      isVipBonus: false
+    }));
+
+  const merchandiseSubtotal = Number(
+    paidItems.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2)
+  );
+
+  // Dollar-for-Dollar Rule: Max credit allowed is 50% of merchandiseSubtotal
+  const availableCredit = user ? Math.max(0, Number(user.storeCreditBalance || 0)) : 0;
+  const maxAllowedByDollarForDollarRule = Number((merchandiseSubtotal * 0.5).toFixed(2));
+
+  const storeCreditApplied = applyStoreCredit
+    ? Number(Math.min(availableCredit, maxAllowedByDollarForDollarRule).toFixed(2))
+    : 0;
+
+  const cashDueAfterCredit = Number(Math.max(0, merchandiseSubtotal - storeCreditApplied).toFixed(2));
+  const remainingStoreCreditAfterOrder = Number(Math.max(0, availableCredit - storeCreditApplied).toFixed(2));
+
+  // Auto-inject 3pc VIP Mystery Box if Radiance Founder has a pending box and at least 1 paid item in cart
+  const finalItems = [...paidItems];
+  let includesVipMysteryBox = false;
+
+  if (user && user.pendingVipMysteryBox && paidItems.length > 0) {
+    finalItems.push({ ...VIP_MYSTERY_BOX_ITEM });
+    includesVipMysteryBox = true;
+  }
+
+  return {
+    items: finalItems,
+    merchandiseSubtotal,
+    storeCreditApplied,
+    remainingStoreCreditAfterOrder,
+    cashDueAfterCredit,
+    includesVipMysteryBox,
+    creditRuleExplanation:
+      storeCreditApplied > 0
+        ? `Dollar-for-Dollar Match applied: -$${storeCreditApplied.toFixed(2)} store credit matched with $${cashDueAfterCredit.toFixed(2)} cash.`
+        : 'Add items to unlock your 1:1 Dollar-for-Dollar Store Credit match.'
+  };
+}
+
+// Endpoint 1: Live Cart Preview Calculation (Used by React Cart Drawer)
+app.post('/api/checkout/calculate-preview', authenticateToken, async (req, res) => {
+  try {
+    const { items = [], applyStoreCredit = true } = req.body || {};
+    const userId = req.user.id || req.user._id;
+    const user = await User.findById(userId);
+    const breakdown = calculateCartWithFoundingPerks(items, user, applyStoreCredit);
+    res.json({ success: true, breakdown });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to calculate cart preview', details: err.message });
+  }
+});
+
+// Endpoint 2: Create Stripe Checkout Session with Dollar-for-Dollar Store Credit & Mystery Box
+app.post('/api/checkout/create-session', authenticateToken, async (req, res) => {
+  try {
+    const { items = [], shippingAddress = {}, applyStoreCredit = true } = req.body || {};
+    const userId = req.user.id || req.user._id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const breakdown = calculateCartWithFoundingPerks(items, user, applyStoreCredit);
+    if (breakdown.merchandiseSubtotal <= 0) {
+      return res.status(400).json({ error: 'Your cart must contain at least one paid item.' });
+    }
+
+    // Create Pending Order in MongoDB
+    const order = await Order.create({
+      userId: user._id,
+      customerEmail: user.email,
+      customerName: user.name || shippingAddress.fullName || shippingAddress.name || 'Valued Client',
+      items: breakdown.items,
+      subtotalAmount: breakdown.merchandiseSubtotal,
+      storeCreditApplied: breakdown.storeCreditApplied,
+      totalAmount: breakdown.cashDueAfterCredit,
+      includesVipMysteryBox: breakdown.includesVipMysteryBox,
+      shippingAddress: shippingAddress,
+      shipping_address: shippingAddress && Object.keys(shippingAddress).length > 0 ? shippingAddress : (user.shippingAddress || {}),
+      status: 'Pending'
+    });
+
+    const frontendOrigin = req.headers.origin || process.env.FRONTEND_URL || 'https://susansbeautyconsulting.com';
+
+    // Build Stripe Checkout Session charging exact cashDueAfterCredit
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'payment',
+      customer_email: user.email,
+      shipping_address_collection: {
+        allowed_countries: ['US', 'CA', 'GB', 'AU']
+      },
+      phone_number_collection: {
+        enabled: true
+      },
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: `Susan's Beauty Consulting Order #${order._id.toString().slice(-6).toUpperCase()}`,
+              description: [
+                breakdown.storeCreditApplied > 0
+                  ? `Includes -$${breakdown.storeCreditApplied.toFixed(2)} Founding Store Credit (1:1 Match)`
+                  : null,
+                breakdown.includesVipMysteryBox ? 'Includes FREE 3pc Radiance VIP Mystery Box Set' : null
+              ]
+                .filter(Boolean)
+                .join(' | ') || 'Luxury Skincare & Beauty Order'
+            },
+            unit_amount: Math.max(50, Math.round(breakdown.cashDueAfterCredit * 100)) // Stripe cents
+          },
+          quantity: 1
+        }
+      ],
+      metadata: {
+        orderId: order._id.toString(),
+        userId: user._id.toString(),
+        storeCreditApplied: String(breakdown.storeCreditApplied),
+        includesVipMysteryBox: String(breakdown.includesVipMysteryBox)
+      },
+      success_url: `${frontendOrigin}/?cart_success=true&order_id=${order._id}`,
+      cancel_url: `${frontendOrigin}/?cart_canceled=true`
+    });
+
+    order.stripeSessionId = session.id;
+    await order.save();
+
+    res.json({
+      success: true,
+      checkoutUrl: session.url,
+      url: session.url,
+      orderId: order._id,
+      breakdown
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Checkout session creation failed', details: err.message });
+  }
+});
+
+/**
+ * Call this inside your Stripe Webhook (`checkout.session.completed`) or Order Success handler
+ * to deduct the used Store Credit, mark the 3pc VIP Mystery Box as claimed, and fire Dual-Channel notifications.
+ */
+async function finalizeFoundingOrderAfterPayment(session, sendEmailFn = sendEmail) {
+  const orderId = session?.metadata?.orderId;
+  const order =
+    (orderId && mongoose.Types.ObjectId.isValid(String(orderId)) ? await Order.findById(orderId) : null) ||
+    (session?.id ? await Order.findOne({ stripeSessionId: session.id }) : null);
+  if (!order || (order.status !== 'Pending' && order._foundingPerksFinalized)) return order;
+
+  order._foundingPerksFinalized = true;
+  if (order.status === 'Pending') {
+    order.status = 'Processing';
+  }
+  await order.save();
+
+  const user = order.userId
+    ? await User.findById(order.userId)
+    : (order.customerEmail && order.customerEmail !== 'Customer'
+        ? await User.findOne({ email: new RegExp(`^${escapeRegex(normalizeEmail(order.customerEmail))}$`, 'i') })
+        : null);
+
+  if (user) {
+    // Deduct applied store credit from user's vault
+    if (order.storeCreditApplied > 0) {
+      user.storeCreditBalance = Math.max(
+        0,
+        Number((Number(user.storeCreditBalance || 0) - Number(order.storeCreditApplied || 0)).toFixed(2))
+      );
+    }
+    // Clear pending VIP Mystery Box flag once claimed on first order
+    if (order.includesVipMysteryBox && user.pendingVipMysteryBox) {
+      user.pendingVipMysteryBox = false;
+    }
+    await user.save();
+  }
+
+  // Trigger Dual-Channel Notification (IONOS Email + On-Site Inbox)
+  await dispatchOrderUpdate({
+    order,
+    statusLabel: 'Order Confirmed — Preparing Your Ritual',
+    customMessage: `Thank you for your order! ${
+      order.includesVipMysteryBox
+        ? 'Your complimentary Founders 3pc VIP Mystery Box Set has been included with your shipment!'
+        : ''
+    }`.trim(),
+    sendEmailFn
+  });
+
+  return order;
+}
+
 // POST /api/cart/shipping-rates — Dynamically calculates all available CJ shipping methods & varying prices for the cart items
 // and automatically selects the Least Expensive & Most Efficient CJ shipping method (`optimalCarrier`).
 app.post('/api/cart/shipping-rates', async (req, res) => {
@@ -16004,7 +16942,7 @@ app.post('/api/cart-checkout', async (req, res) => {
     if (token) {
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
-        const dbUser = await User.findById(decoded._id).select('_id email membershipTier shippingAddress').lean();
+        const dbUser = await User.findById(decoded._id).select('_id name email membershipTier shippingAddress isFoundingMember storeCreditBalance pendingVipMysteryBox').lean();
         if (dbUser) {
           verifiedUserId = dbUser._id;
           verifiedTier = String(dbUser.membershipTier || verifiedTier).toLowerCase().trim();
@@ -16094,21 +17032,34 @@ app.post('/api/cart-checkout', async (req, res) => {
     const chosenShippingCostUsd = Number(optimalCarrier?.shippingCostUsd || 7.84);
     const discountedItems = hydratedCartItems;
 
-    const totalAmount = discountedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const applyStoreCreditFlag = req.body?.applyStoreCredit !== false;
+    let foundingUserDoc = verifiedUserId ? await User.findById(verifiedUserId).lean().catch(() => null) : null;
+    const foundingBreakdown = calculateCartWithFoundingPerks(discountedItems, foundingUserDoc, applyStoreCreditFlag);
+    const finalOrderItems = foundingBreakdown.items;
+    const subtotalAmount = foundingBreakdown.merchandiseSubtotal;
+    const storeCreditApplied = foundingBreakdown.storeCreditApplied;
+    const includesVipMysteryBox = foundingBreakdown.includesVipMysteryBox;
+    const totalAmount = foundingBreakdown.cashDueAfterCredit;
     const estimatedAllInWholesale = Number((totalWholesaleUsd + chosenShippingCostUsd + totalCustomLabelCostUsd).toFixed(2));
     const estimatedNetProfit = Number((totalAmount - estimatedAllInWholesale).toFixed(2));
     
     const newOrder = new Order({ 
       ...(verifiedUserId ? { userId: verifiedUserId } : {}),
-      items: discountedItems, 
+      customerName: foundingUserDoc?.name || shipping_address?.name || 'Valued Client',
+      items: finalOrderItems,
+      subtotalAmount: Number(subtotalAmount.toFixed(2)),
+      storeCreditApplied: Number(storeCreditApplied.toFixed(2)),
+      includesVipMysteryBox,
       totalAmount: Number(totalAmount.toFixed(2)),
       logisticName: chosenLogisticName,
+      carrier: chosenLogisticName,
       selectedLogisticName: chosenLogisticName,
       shippingCostUsd: chosenShippingCostUsd,
       customLabelConfig: orderLevelCustomLabel,
       estimatedWholesaleCost: estimatedAllInWholesale,
       estimatedProfit: estimatedNetProfit,
       shipping_address: shipping_address || fallbackUserShipping || {},
+      shippingAddress: shipping_address || fallbackUserShipping || {},
       ...(verifiedEmail ? { customerEmail: verifiedEmail } : {})
     });
     await newOrder.save();
@@ -16126,10 +17077,29 @@ app.post('/api/cart-checkout', async (req, res) => {
       quantity: item.quantity,
     }));
 
+    const effectiveLineItems = storeCreditApplied > 0
+      ? [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: `Susan's Beauty Consulting Order #${newOrder._id.toString().slice(-6).toUpperCase()}`,
+                description: [
+                  storeCreditApplied > 0 ? `Includes -$${storeCreditApplied.toFixed(2)} Founding Store Credit (1:1 Match)` : null,
+                  includesVipMysteryBox ? 'Includes FREE 3pc Radiance VIP Mystery Box Set' : null
+                ].filter(Boolean).join(' | ')
+              },
+              unit_amount: Math.max(50, Math.round(totalAmount * 100))
+            },
+            quantity: 1
+          }
+        ]
+      : line_items;
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'payment',
-      line_items,
+      line_items: effectiveLineItems,
       shipping_address_collection: {
         allowed_countries: ['US', 'CA', 'GB', 'AU']
       },
@@ -16139,17 +17109,28 @@ app.post('/api/cart-checkout', async (req, res) => {
       ...(verifiedEmail ? { customer_email: verifiedEmail } : {}),
       metadata: {
         orderId: newOrder._id.toString(),
+        ...(verifiedUserId ? { userId: verifiedUserId.toString() } : {}),
         membershipTier: verifiedTier || 'guest',
-        discountRate: String(discountInfo.rate)
+        discountRate: String(discountInfo.rate),
+        storeCreditApplied: String(storeCreditApplied),
+        includesVipMysteryBox: String(includesVipMysteryBox)
       },
-      success_url: `${req.headers.origin || 'http://localhost:3000'}/?cart_success=true`,
+      success_url: `${req.headers.origin || 'http://localhost:3000'}/?cart_success=true&order_id=${newOrder._id}`,
       cancel_url: `${req.headers.origin || 'http://localhost:3000'}/?cart_canceled=true`,
     });
 
+    newOrder.stripeSessionId = session.id;
+    await newOrder.save();
+
     res.json({
       url: session.url,
+      checkoutUrl: session.url,
+      orderId: newOrder._id,
       discountApplied: discountInfo.rate > 0,
       discountLabel: discountInfo.label,
+      storeCreditApplied,
+      includesVipMysteryBox,
+      subtotalAmount: Number(subtotalAmount.toFixed(2)),
       totalAmount: Number(totalAmount.toFixed(2))
     });
   } catch (error) {
@@ -16288,29 +17269,29 @@ app.post(
           } catch (topupErr) {
             console.error('⚠️ Webhook CJ Wallet Card Top-Up confirm error:', topupErr.message);
           }
-        } else if (orderId && mongoose.Types.ObjectId.isValid(String(orderId))) {
+        } else if ((orderId && mongoose.Types.ObjectId.isValid(String(orderId))) || session.id) {
+          const matchedOrderCheck = (orderId && mongoose.Types.ObjectId.isValid(String(orderId)))
+            ? await Order.findById(orderId)
+            : await Order.findOne({ stripeSessionId: session.id });
+          if (matchedOrderCheck) {
           try {
-            const order = await Order.findById(orderId);
-            if (order && order.status === 'Pending') {
-              order.status = 'PAID_PROCESSING';
+            const order = matchedOrderCheck;
+            if (order && (order.status === 'Pending' || order.status === 'Processing')) {
               const rawEmail = session.customer_details?.email || session.customer_email || order.customerEmail || 'Customer';
               order.customerEmail = rawEmail !== 'Customer' ? String(rawEmail).toLowerCase().trim() : 'Customer';
-              order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || {});
+              order.shipping_address = extractStripeShippingAddress(session, order.shipping_address || order.shippingAddress || {});
+              order.shippingAddress = order.shipping_address;
+              order.customerName = order.customerName || order.shipping_address?.name || 'Valued Client';
+              await order.save();
+
+              // Deduct applied Store Credit, mark 3pc VIP Mystery Box claimed, and dispatch Dual-Channel confirmation (IONOS SMTP + On-Site Inbox)
+              await finalizeFoundingOrderAfterPayment(session, sendEmail).catch((finErr) => {
+                console.warn('⚠️ finalizeFoundingOrderAfterPayment warning:', finErr.message);
+              });
+
+              order.status = 'PAID_PROCESSING';
               await order.save();
               await incrementProductPurchaseCountsForOrder(order);
-
-              if (order.customerEmail !== 'Customer') {
-                const receiptHtml = `
-                  <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-                    <h1 style="color: #B38B8F; font-style: italic;">Payment Confirmed ✧</h1>
-                    <p style="font-size: 1.2rem; line-height: 1.6;">Thank you for your order! Your ritual essentials are being prepared.</p>
-                    <p style="font-size: 1.1rem;"><strong>Order Total:</strong> $${(order.totalAmount || 0).toFixed(2)}</p>
-                    <p style="font-size: 0.9rem; color: #8A797A; margin-top: 30px;">You will receive another update as soon as your package ships.</p>
-                  </div>
-                `;
-                const receiptText = `Payment Confirmed ✧\n\nThank you for your order! Your ritual essentials are being prepared.\n\nOrder Total: $${(order.totalAmount || 0).toFixed(2)}\n\nYou will receive another update as soon as your package ships.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
-                await sendEmail(order.customerEmail, "Your Susan's Beauty Consulting Receipt", receiptHtml, receiptText).catch(() => {});
-              }
 
               let cjStatusNote = 'Routed to CJ Dropshipping & Queued for CJ Auto-Payment';
               let cjPayload = await buildHydratedCjOrderPayload(order);
@@ -16351,7 +17332,9 @@ app.post(
           } catch (err) {
             console.error(`⚠️ Failed to process paid order ${orderId}:`, err.message);
           }
-        } else if (tier || userId) {
+          }
+        }
+        if (!orderId && (tier || userId)) {
           try {
             const user = await findUserForStripeEvent({
               userId,
@@ -16615,22 +17598,23 @@ app.post(
         });
       }
 
-      if (trackingNumber && updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer') {
-        const shippingHtml = `
-          <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-            <h1 style="color: #B38B8F; font-style: italic;">Your Ritual has Shipped ✈️</h1>
-            <p style="font-size: 1.2rem; line-height: 1.6;">Your bespoke beauty products have left our facility and are on their way to you!</p>
-            <div style="background-color: #FFF0F2; padding: 15px; border-radius: 10px; display: inline-block; margin: 20px 0;">
-              <p style="margin: 0; font-size: 1.1rem;">Tracking Number${logisticName ? ` (${logisticName})` : ''}:</p>
-              <strong style="font-size: 1.3rem; color: #B38B8F;">${trackingNumber}</strong>
-            </div>
-            <p style="font-size: 0.9rem; color: #8A797A;">Please allow up to 24-48 hours for the tracking link to activate with the courier.</p>
-          </div>
-        `;
+      if (trackingNumber) {
+        updatedOrder.trackingNumber = trackingNumber;
+      }
+      if (logisticName) {
+        updatedOrder.carrier = logisticName;
+      }
+      await updatedOrder.save().catch(() => {});
 
-        const shippingText = `Your Ritual has Shipped ✈️\n\nYour bespoke beauty products have left our facility and are on their way to you!\n\nTracking Number: ${trackingNumber}\n\nPlease allow up to 24-48 hours for the tracking link to activate with the courier.\n\nWarmly,\nSusan\nSusan's Beauty Consulting`;
-
-        await sendEmail(updatedOrder.customerEmail, "Your Susan's Beauty Consulting Order has Shipped!", shippingHtml, shippingText).catch(() => {});
+      if (updatedOrder.userId || (updatedOrder.customerEmail && updatedOrder.customerEmail !== 'Customer')) {
+        await dispatchOrderUpdate({
+          order: updatedOrder,
+          statusLabel: trackingNumber ? 'Shipped' : (status || 'Order Update'),
+          customMessage: trackingNumber
+            ? 'Your bespoke beauty products have left our fulfillment studio and are on their way to you!'
+            : undefined,
+          sendEmailFn: sendEmail
+        }).catch(() => {});
       }
 
       await logWebhookDelivery({
