@@ -12501,7 +12501,8 @@ export function FoundingMemberPromoAndCartModule({
 
   const handleRedeemPromo = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!promoCodeInput.trim()) return;
+    const cleaned = promoCodeInput.trim().toUpperCase();
+    if (!cleaned) return;
     if (!activeToken) {
       setPromoStatus({ loading: false, error: 'Please sign in to your account first to redeem a Founding 50 code.', success: null, checkoutOffer: null });
       return;
@@ -12515,7 +12516,7 @@ export function FoundingMemberPromoAndCartModule({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${activeToken}`
         },
-        body: JSON.stringify({ code: promoCodeInput.trim().toUpperCase() })
+        body: JSON.stringify({ code: cleaned })
       });
       const data = await res.json().catch(() => ({}));
 
@@ -12525,7 +12526,7 @@ export function FoundingMemberPromoAndCartModule({
           error: data.error,
           success: null,
           checkoutOffer: {
-            code: data.reservedPromoCode || promoCodeInput.trim().toUpperCase(),
+            code: data.reservedPromoCode || cleaned,
             targetTier: data.targetTier || 'luminary',
             lockedPrice: data.lockedPrice || 49,
             creditAmount: data.creditAmount || 49
@@ -12535,13 +12536,29 @@ export function FoundingMemberPromoAndCartModule({
       }
 
       if (!res.ok) {
-        throw new Error(data.error || 'Could not redeem promo code.');
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(data.error || 'Session expired — please sign out and sign back in to redeem your code.');
+        }
+        throw new Error(data.error || data.message || `Could not redeem promo code (HTTP ${res.status}).`);
       }
+
+      const mergedUser = {
+        ...(currentUser || {}),
+        ...(data.entitlements || {}),
+        ...(data.user || {}),
+        isFoundingMember: true
+      };
+
+      try {
+        const rawStored = localStorage.getItem('authUser');
+        const parsedStored = rawStored ? JSON.parse(rawStored) : {};
+        localStorage.setItem('authUser', JSON.stringify({ ...parsedStored, ...mergedUser }));
+      } catch (storageErr) {}
 
       setPromoStatus({ loading: false, error: null, success: data.message, checkoutOffer: null });
       setPromoCodeInput('');
       if (onUserUpdated) {
-        onUserUpdated(data.user || data.entitlements);
+        onUserUpdated(mergedUser, data.inboxItem || null);
       }
     } catch (err) {
       setPromoStatus({ loading: false, error: err.message, success: null, checkoutOffer: null });
@@ -13083,8 +13100,12 @@ export function CustomerOnSiteInbox({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success && Array.isArray(data.items)) {
-        setMessages(data.items);
-        setUnreadCount(Number(data.unreadCount || 0));
+        const serverIds = new Set(data.items.map((i) => String(i._id)));
+        const extraFallback = (Array.isArray(fallbackItems) ? fallbackItems : []).filter(
+          (f) => f && f._id && !serverIds.has(String(f._id))
+        );
+        setMessages([...extraFallback, ...data.items]);
+        setUnreadCount(Number(data.unreadCount || 0) + extraFallback.filter((f) => !f.isRead).length);
       } else if (Array.isArray(fallbackItems)) {
         setMessages(fallbackItems);
       }
@@ -16329,16 +16350,26 @@ function App() {
               <FoundingMemberPromoAndCartModule
                 authToken={localStorage.getItem('token')}
                 currentUser={userDetails}
-                onUserUpdated={(updatedUser) => {
+                onUserUpdated={(updatedUser, newInboxItem) => {
                   if (updatedUser) {
-                    setUserDetails((prev) => ({
-                      ...prev,
-                      ...updatedUser,
-                      password: ''
-                    }));
+                    setUserDetails((prev) => {
+                      const nextUser = {
+                        ...prev,
+                        ...updatedUser,
+                        isFoundingMember: true,
+                        password: ''
+                      };
+                      try {
+                        localStorage.setItem('authUser', JSON.stringify(nextUser));
+                      } catch (e) {}
+                      return nextUser;
+                    });
                     if (updatedUser.membershipTier) {
                       setSelectedTier(String(updatedUser.membershipTier).toLowerCase());
                     }
+                  }
+                  if (newInboxItem) {
+                    setInboxItems((prev) => [newInboxItem, ...(Array.isArray(prev) ? prev : [])]);
                   }
                 }}
                 cartItems={cart}
