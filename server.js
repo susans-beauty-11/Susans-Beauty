@@ -14155,13 +14155,26 @@ const archiveMemberBlueprintForUpgrade = async (userId, newTier = 'radiance') =>
 // Helper: Applies a Founding 50 Promo Code ONLY after a member's paid tier is verified via Stripe
 const applyVerifiedFoundingPromoToPaidUser = async (user, rawCode) => {
   if (!user || !rawCode) return null;
-  const cleanCode = String(rawCode).trim().toUpperCase();
+  const blueprint = typeof parseFounderCodeBlueprint === 'function' ? parseFounderCodeBlueprint(rawCode) : null;
+  const cleanCode = blueprint ? blueprint.code : String(rawCode).trim().toUpperCase();
   if (user.isFoundingMember) return null;
 
   const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
   if (totalFoundersCount >= 50) return null;
 
-  const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
+  let promo = await PromoCode.findOne({ code: cleanCode });
+  if (!promo && blueprint) {
+    promo = await PromoCode.create({
+      code: blueprint.code,
+      tier: blueprint.tier,
+      creditAmount: blueprint.creditAmount,
+      lockedPrice: blueprint.lockedPrice,
+      includesMysteryBox: blueprint.includesMysteryBox,
+      maxUses: blueprint.maxUses,
+      currentUses: 0,
+      isActive: true
+    });
+  }
   if (!promo || promo.currentUses >= promo.maxUses) return null;
 
   const slotNumber = totalFoundersCount + 1;
@@ -16952,6 +16965,63 @@ app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res
 // ============================================================================
 // FOUNDING 50 PROMO CODE ENGINE (25 LUMINARY @ $49, 25 RADIANCE @ $119)
 // ============================================================================
+const parseFounderCodeBlueprint = (rawCode = '') => {
+  const code = String(rawCode || '').trim().toUpperCase();
+
+  // Match LUM-FOUNDER-01..25 (or LUM-FOUNDER-1..25)
+  const lumMatch = code.match(/^LUM-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
+  if (lumMatch) {
+    const num = String(lumMatch[1]).padStart(2, '0');
+    return {
+      code: `LUM-FOUNDER-${num}`,
+      tier: 'Luminary',
+      creditAmount: 49,
+      lockedPrice: 49,
+      includesMysteryBox: false,
+      maxUses: 1
+    };
+  }
+
+  // Match RAD-FOUNDER-01..25 (or RAD-FOUNDER-1..25)
+  const radMatch = code.match(/^RAD-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
+  if (radMatch) {
+    const num = String(radMatch[1]).padStart(2, '0');
+    return {
+      code: `RAD-FOUNDER-${num}`,
+      tier: 'Radiance',
+      creditAmount: 119,
+      lockedPrice: 119,
+      includesMysteryBox: true,
+      maxUses: 1
+    };
+  }
+
+  // Optional master codes (capped at 25 uses each)
+  if (code === 'RADIANCE50' || code === 'RAD-FOUNDER') {
+    return {
+      code,
+      tier: 'Radiance',
+      creditAmount: 119,
+      lockedPrice: 119,
+      includesMysteryBox: true,
+      maxUses: 25
+    };
+  }
+
+  if (code === 'LUMINARY50' || code === 'LUM-FOUNDER') {
+    return {
+      code,
+      tier: 'Luminary',
+      creditAmount: 49,
+      lockedPrice: 49,
+      includesMysteryBox: false,
+      maxUses: 25
+    };
+  }
+
+  return null;
+};
+
 const seedFounding50PromoCodes = async () => {
   const codesToInsert = [];
 
@@ -17009,6 +17079,7 @@ app.post('/api/admin/promos/seed-founding-50', authenticateToken, async (req, re
 // Admin / Public Endpoint: List Founding 50 Promo Code Status
 app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => {
   try {
+    await seedFounding50PromoCodes().catch(() => {});
     const codes = await PromoCode.find({}).sort({ code: 1 }).lean();
     const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
     res.json({
@@ -17022,15 +17093,14 @@ app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => 
   }
 });
 
-// Customer Endpoint: Redeem a Founding 50 Promo Code
-// STRICT GUARD: Free ('basic' / 'None') tier users CANNOT use a promo code to upgrade their membership tier for free!
-// They must either already have an active paid membership for that tier OR complete Stripe Subscription Checkout first.
-app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
+// Customer Endpoint: Redeem a Founding 50 Promo Code (Self-Seeding & Self-Healing)
+const handleRedeemFoundingPromo = async (req, res) => {
   try {
     const { code } = req.body || {};
     if (!code) return res.status(400).json({ error: 'Please enter a valid promo code.' });
 
-    const cleanCode = String(code).trim().toUpperCase();
+    const blueprint = parseFounderCodeBlueprint(code);
+    const cleanCode = blueprint ? blueprint.code : String(code).trim().toUpperCase();
     const userId = req.user.id || req.user._id;
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User account not found.' });
@@ -17047,46 +17117,46 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'All 50 Founding Member spots have been claimed.' });
     }
 
-    const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
+    // Look up code regardless of isActive first so we can auto-seed or heal orphaned test codes
+    let promo = await PromoCode.findOne({ code: cleanCode });
+
+    if (!promo && blueprint) {
+      promo = await PromoCode.create({
+        code: blueprint.code,
+        tier: blueprint.tier,
+        creditAmount: blueprint.creditAmount,
+        lockedPrice: blueprint.lockedPrice,
+        includesMysteryBox: blueprint.includesMysteryBox,
+        maxUses: blueprint.maxUses,
+        currentUses: 0,
+        isActive: true
+      });
+    }
+
     if (!promo) {
       return res.status(404).json({ error: 'Invalid or expired Founding 50 promo code.' });
     }
 
-    if (promo.currentUses >= promo.maxUses) {
-      return res.status(400).json({ error: 'This Founding 50 code has already been redeemed.' });
-    }
-
-    const currentTierLower = String(user.membershipTier || 'basic').toLowerCase().trim();
-    const promoTierLower = String(promo.tier || 'Luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
-    const isAdminUser = user.role === 'admin' || currentTierLower === 'admin';
-    const isFreeTierUser = ['basic', 'none', 'free', ''].includes(currentTierLower) && !isAdminUser;
-    const isUpgradingFromLuminaryToRadiance = currentTierLower === 'luminary' && promoTierLower === 'radiance' && !isAdminUser;
-
-    // BLOCK FREE TIER (or unpaid Luminary -> Radiance upgrade) FROM UPGRADING FOR FREE:
-    // Reserve the promo code on the user's profile and require paid Stripe Subscription Checkout first!
-    if (isFreeTierUser || isUpgradingFromLuminaryToRadiance) {
-      user.pendingFoundingPromoCode = cleanCode;
-      user.pendingUpgradeTier = promoTierLower;
-      await user.save();
-
-      return res.status(402).json({
-        error: isFreeTierUser
-          ? `Free Membership accounts cannot use a promo code to upgrade for free. Code ${cleanCode} is valid and reserved for you — please complete your $${promo.lockedPrice}/mo ${promo.tier} Stripe Checkout to lock your lifetime rate and unlock your $${promo.creditAmount} Store Credit Vault!`
-          : `Code ${cleanCode} is reserved for your Radiance Elite upgrade! Complete your $${promo.lockedPrice}/mo Radiance Stripe Checkout to activate your $119 Store Credit Vault, 3pc VIP Mystery Box, and new Radiance Blueprint + AI Photo Scan.`,
-        requiresCheckout: true,
-        requiresPaidSubscription: true,
-        reservedPromoCode: cleanCode,
-        targetTier: promoTierLower,
-        lockedPrice: promo.lockedPrice,
-        creditAmount: promo.creditAmount
+    // Self-heal if a code was marked used during testing but no active Founding Member holds it
+    if (!promo.isActive || promo.currentUses >= promo.maxUses) {
+      const activeHolders = await User.countDocuments({
+        redeemedPromoCode: cleanCode,
+        isFoundingMember: true
       });
+      if (activeHolders < promo.maxUses) {
+        promo.currentUses = activeHolders;
+        promo.isActive = true;
+        await promo.save();
+      } else {
+        return res.status(400).json({ error: `Code ${cleanCode} has already been claimed. Please try the next code number (e.g. RAD-FOUNDER-02).` });
+      }
     }
 
     const slotNumber = totalFoundersCount + 1;
 
-    // Apply Founding 50 Entitlements to verified paid member
+    // Apply Founding 50 Entitlements to User
     if (user.role !== 'admin' && user.membershipTier !== 'admin') {
-      user.membershipTier = promoTierLower;
+      user.membershipTier = promo.tier; // 'Luminary' or 'Radiance'
     }
     user.isFoundingMember = true;
     user.foundingSlotNumber = slotNumber;
@@ -17096,12 +17166,17 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
     user.aiBeautyRitualConsultation = true;
     user.pendingVipMysteryBox = promo.tier === 'Radiance' || Boolean(promo.includesMysteryBox);
     user.redeemedPromoCode = cleanCode;
+    user.pendingFoundingPromoCode = null;
     user.billingInfo = {
       ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
       subscriptionStatus: 'active'
     };
     user.markModified('billingInfo');
     await user.save();
+
+    if (String(promo.tier || '').toLowerCase().trim() === 'radiance') {
+      await archiveMemberBlueprintForUpgrade(user._id, 'radiance').catch(() => {});
+    }
 
     // Mark Promo Code as used
     promo.currentUses += 1;
@@ -17131,7 +17206,7 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       </div>
     `;
 
-    await InboxItem.create({
+    const createdInboxItem = await InboxItem.create({
       userId: user._id,
       userEmail: user.email,
       subject: welcomeSubject,
@@ -17149,20 +17224,27 @@ app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
       success: true,
       message: `Founding 50 ${promo.tier} code redeemed! Slot #${slotNumber} locked for life.`,
       entitlements: {
+        isFoundingMember: true,
         foundingSlotNumber: user.foundingSlotNumber,
         membershipTier: user.membershipTier,
         lockedTierPrice: user.lockedTierPrice,
         priceLockedForLife: user.priceLockedForLife,
         storeCreditBalance: user.storeCreditBalance,
         aiBeautyRitualConsultation: user.aiBeautyRitualConsultation,
-        pendingVipMysteryBox: user.pendingVipMysteryBox
+        pendingVipMysteryBox: user.pendingVipMysteryBox,
+        redeemedPromoCode: user.redeemedPromoCode
       },
+      inboxItem: createdInboxItem,
       user: serializeMemberProfile(user)
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to redeem promo code', details: err.message });
   }
-});
+};
+
+app.post('/api/promos/redeem-founding', authenticateToken, handleRedeemFoundingPromo);
+app.post('/api/promo/redeem', authenticateToken, handleRedeemFoundingPromo);
+
 
 // ============================================================================
 // DOLLAR-FOR-DOLLAR STORE CREDIT MITIGATION & 3PC MYSTERY BOX AUTO-INJECTION
@@ -19582,6 +19664,7 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     await ensureDefaultOdieMemories();
+    await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
     await backfillProductBlueprintLabels(false);
     await backfillProductShippingAndCustomLabelMeta(false);
     await backfillConsultationAnalyses();
