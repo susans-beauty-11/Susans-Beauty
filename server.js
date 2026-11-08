@@ -1072,7 +1072,8 @@ const UserFoundingFields = {
   storeCreditBalance: { type: Number, default: 0 }, // Dollar-for-dollar match vault
   aiBeautyRitualConsultation: { type: Boolean, default: false },
   pendingVipMysteryBox: { type: Boolean, default: false }, // True for Radiance until 1st order completes
-  redeemedPromoCode: { type: String, default: null }
+  redeemedPromoCode: { type: String, default: null },
+  pendingFoundingPromoCode: { type: String, default: null }
 };
 
 const userSchema = new mongoose.Schema({
@@ -1182,6 +1183,9 @@ const Review = mongoose.model('Review', reviewSchema);
 
 const consultationSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  completedUnderTier: { type: String, default: 'luminary', index: true },
+  archivedByUpgrade: { type: Boolean, default: false, index: true },
+  archivedAt: { type: Date, default: null },
   skinType: String,
   primaryGoal: String,
   climate: String,
@@ -1425,6 +1429,49 @@ const PromoCodeSchema = new mongoose.Schema({
 });
 const PromoCode = mongoose.models.PromoCode || mongoose.model('PromoCode', PromoCodeSchema);
 
+// 5. Lily Customer Concierge Chat History Schema
+const lilyChatHistorySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  sessionId: { type: String, default: '', index: true },
+  userEmail: { type: String, default: '', index: true },
+  role: { type: String, enum: ['user', 'lily', 'susan', 'odie'], required: true },
+  text: { type: String, required: true },
+  actionCards: { type: Array, default: [] },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const LilyChatHistory = mongoose.models.LilyChatHistory || mongoose.model('LilyChatHistory', lilyChatHistorySchema);
+
+// 6. Lily <-> Susan & Odie Customer Help Desk Ticket Schema
+const lilySupportTicketSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  userName: { type: String, default: 'Valued Client' },
+  userEmail: { type: String, default: '', index: true },
+  membershipTier: { type: String, default: 'basic' },
+  category: {
+    type: String,
+    enum: [
+      'Blueprint & Routine',
+      'Product Recommendation',
+      'Order & CJ Tracking',
+      'Stripe Billing & Credit',
+      'Consultation Request',
+      'General Help Desk'
+    ],
+    default: 'General Help Desk'
+  },
+  subject: { type: String, required: true },
+  customerMessage: { type: String, required: true },
+  lilyAnalysis: { type: String, default: '' },
+  orderId: { type: String, default: '' },
+  status: { type: String, enum: ['open', 'in_progress', 'resolved'], default: 'open', index: true },
+  susanOrOdieReply: { type: String, default: '' },
+  repliedBy: { type: String, default: '' },
+  repliedAt: { type: Date, default: null },
+  createdAt: { type: Date, default: Date.now, index: true },
+  updatedAt: { type: Date, default: Date.now }
+});
+const LilySupportTicket = mongoose.models.LilySupportTicket || mongoose.model('LilySupportTicket', lilySupportTicketSchema);
+
 // Odie's Long-Term Persistent Memory Bank (Facts, Preferences, VIP Client Notes & Business Rules)
 const odieMemorySchema = new mongoose.Schema({
   category: {
@@ -1599,7 +1646,7 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
     
-    const user = await User.findById(decoded._id).select('_id name username email phone avatarUrl role membershipTier pendingUpgradeTier shippingAddress billingInfo isFoundingMember foundingSlotNumber priceLockedForLife lockedTierPrice storeCreditBalance aiBeautyRitualConsultation pendingVipMysteryBox redeemedPromoCode');
+    const user = await User.findById(decoded._id).select('_id name username email phone avatarUrl role membershipTier pendingUpgradeTier shippingAddress billingInfo isFoundingMember foundingSlotNumber priceLockedForLife lockedTierPrice storeCreditBalance aiBeautyRitualConsultation pendingVipMysteryBox redeemedPromoCode pendingFoundingPromoCode');
     
     if (!user) {
       return res.status(401).json({ error: 'The user associated with this token no longer exists.' });
@@ -8816,6 +8863,8 @@ You have 21 direct executive tools to manage the boutique, profit-protected mont
 21. dispatchMonthlyMemberBoxToCj: Dispatches a curated monthly membership box to CJ Dropshipping via createOrderV2, optionally pays for it from the CJ Wallet, and emails the member.
 22. syncAndReadIonosInbox: Syncs Susan's incoming IONOS email inbox (imap.ionos.com:993), lists unread or recent emails, or dispatches a threaded reply to an incoming email by its _id.
 23. topUpCjWalletWithCard: Initiates or confirms a Bank Debit/Credit Card top-up into Susan's CJ Dropshipping Wallet Reserve and optionally auto-pays waiting CJ orders.
+24. getLilyCustomerEscalations: Lists customer help-desk tickets and questions escalated by Lily (our customer-facing AI concierge) so you and Susan can review what customers asked.
+25. replyToLilyCustomerTicket: Sends a direct reply from Susan & Odie back to a customer's Lily chat window, On-Site Inbox, and email via IONOS SMTP.
 
 Live Monthly Membership Boxes & <=25% Cost Cap Snapshot:
 ${JSON.stringify(monthlyBoxesSummary)}
@@ -9296,6 +9345,41 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
                 description: 'Optional memo for the Treasury Ledger.'
               }
             }
+          }
+        },
+        {
+          name: 'getLilyCustomerEscalations',
+          description: 'Retrieves open or recent customer help-desk tickets escalated by Lily (the customer-facing AI chatbot).',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              status: {
+                type: Type.STRING,
+                description: 'Filter by "open", "resolved", or "all" (default "open").'
+              }
+            }
+          }
+        },
+        {
+          name: 'replyToLilyCustomerTicket',
+          description: "Sends a reply from Susan and Odie directly to a customer's Lily chat history, On-Site Inbox, and email.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              ticketId: {
+                type: Type.STRING,
+                description: 'MongoDB _id of the LilySupportTicket (or omit to reply to the most recent open ticket for userEmail).'
+              },
+              userEmail: {
+                type: Type.STRING,
+                description: 'Optional customer email if looking up their latest open Lily ticket.'
+              },
+              replyMessage: {
+                type: Type.STRING,
+                description: 'The reply message from Susan and Odie to deliver to the customer.'
+              }
+            },
+            required: ['replyMessage']
           }
         }
       ]
@@ -10087,6 +10171,91 @@ Always execute the appropriate tool when Susan asks you to remember or forget a 
             summaries.push(topUpRes.message);
           } catch (topErr) {
             summaries.push(`⚠️ Odie could not complete CJ Wallet Bank Card Top-Up: ${topErr.message}`);
+          }
+        }
+
+        else if (call.name === 'getLilyCustomerEscalations') {
+          try {
+            const statusFilter = String(args.status || 'open').toLowerCase();
+            const q = statusFilter === 'all' ? {} : { status: statusFilter };
+            const tickets = await LilySupportTicket.find(q).sort({ createdAt: -1 }).limit(15).lean();
+            payload.lilyTickets = tickets;
+            payload.actionsTaken.push('getLilyCustomerEscalations');
+            if (tickets.length === 0) {
+              summaries.push(`🌸 Lily Help Desk: No ${statusFilter} customer escalations right now.`);
+            } else {
+              const lines = tickets.map((t, i) =>
+                `${i + 1}. [#${String(t._id).slice(-6).toUpperCase()} • ${t.status.toUpperCase()}] ${t.userName} (${t.userEmail || 'Guest'} • ${t.membershipTier}) — "${t.subject}": ${t.customerMessage}`
+              );
+              summaries.push(`🌸 Lily Customer Escalations (${tickets.length}):\n` + lines.join('\n'));
+            }
+          } catch (lilyErr) {
+            summaries.push(`⚠️ Odie could not fetch Lily customer tickets: ${lilyErr.message}`);
+          }
+        }
+
+        else if (call.name === 'replyToLilyCustomerTicket') {
+          try {
+            let ticket = null;
+            if (args.ticketId && mongoose.Types.ObjectId.isValid(String(args.ticketId))) {
+              ticket = await LilySupportTicket.findById(args.ticketId);
+            }
+            if (!ticket && args.userEmail) {
+              ticket = await LilySupportTicket.findOne({
+                userEmail: new RegExp(`^${escapeRegex(normalizeEmail(args.userEmail))}$`, 'i')
+              }).sort({ createdAt: -1 });
+            }
+            if (!ticket) {
+              ticket = await LilySupportTicket.findOne({ status: 'open' }).sort({ createdAt: -1 });
+            }
+            if (!ticket) {
+              summaries.push(`⚠️ No matching Lily customer ticket was found to reply to.`);
+            } else {
+              const replyText = String(args.replyMessage || '').trim();
+              ticket.susanOrOdieReply = replyText;
+              ticket.status = 'resolved';
+              ticket.repliedBy = 'Susan & Odie';
+              ticket.repliedAt = new Date();
+              ticket.updatedAt = new Date();
+              await ticket.save();
+
+              if (ticket.userId) {
+                await LilyChatHistory.create({
+                  userId: ticket.userId,
+                  userEmail: ticket.userEmail || '',
+                  role: 'susan',
+                  text: `💌 Personal Reply from Susan & Odie regarding "${ticket.subject}":\n${replyText}`,
+                  actionCards: [{
+                    type: 'ticket_reply',
+                    ticketId: String(ticket._id),
+                    subject: ticket.subject,
+                    reply: replyText,
+                    repliedBy: 'Susan & Odie'
+                  }]
+                }).catch(() => {});
+
+                await InboxItem.create({
+                  userId: ticket.userId,
+                  userEmail: ticket.userEmail || '',
+                  subject: `💌 Susan & Odie Replied: ${ticket.subject}`,
+                  category: 'System',
+                  message: replyText,
+                  bodyText: replyText,
+                  bodyHtml: `<div style="font-family: Georgia, serif; padding: 20px; border: 1px solid #E8C5C8; border-radius: 12px; background: #FFF9F9;"><h3 style="color: #B38B8F; margin-top: 0;">Personal Reply from Susan &amp; Odie ✧</h3><p style="font-size: 15px; color: #5C5454; line-height: 1.6;">${escapeHtml(replyText)}</p><p style="font-size: 13px; color: #8A797A;">Regarding your message to Lily: "${escapeHtml(ticket.subject)}"</p></div>`
+                }).catch(() => {});
+              }
+
+              if (ticket.userEmail && typeof sendEmail === 'function') {
+                const html = `<div style="font-family: Georgia, serif; padding: 24px; border: 1px solid #E8C5C8; border-radius: 12px;"><h3 style="color: #B38B8F;">Personal Reply from Susan's Beauty Consulting ✧</h3><p>${escapeHtml(replyText)}</p></div>`;
+                await sendEmail(ticket.userEmail, `Re: ${ticket.subject} — Susan's Beauty Consulting`, html, replyText).catch(() => {});
+              }
+
+              payload.resolvedLilyTicket = ticket;
+              payload.actionsTaken.push('replyToLilyCustomerTicket');
+              summaries.push(`🌸 Odie delivered your reply to ${ticket.userName} (${ticket.userEmail || 'Client'}) in their Lily Chat, On-Site Inbox, and Email!`);
+            }
+          } catch (repErr) {
+            summaries.push(`⚠️ Odie could not reply to Lily ticket: ${repErr.message}`);
           }
         }
       }
@@ -13798,6 +13967,7 @@ const serializeMemberProfile = (user = {}) => ({
   aiBeautyRitualConsultation: Boolean(user.aiBeautyRitualConsultation),
   pendingVipMysteryBox: Boolean(user.pendingVipMysteryBox),
   redeemedPromoCode: user.redeemedPromoCode || null,
+  pendingFoundingPromoCode: user.pendingFoundingPromoCode || null,
   socialProfiles: user.socialProfiles || {},
   createdAt: user.createdAt
 });
@@ -13930,7 +14100,135 @@ app.put('/api/users/me/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper: Builds a direct clickable carrier tracking URL for any tracking number
+const buildCarrierTrackingUrl = (carrier = '', trackingNumber = '') => {
+  const cleanTrack = String(trackingNumber || '').trim();
+  if (!cleanTrack) return '';
+  const cleanCarrier = String(carrier || '').toLowerCase().trim();
+
+  if (cleanCarrier.includes('usps') || /^(94|93|92|95)\d{18,22}$/.test(cleanTrack)) {
+    return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(cleanTrack)}`;
+  }
+  if (cleanCarrier.includes('ups') || /^1Z[A-Z0-9]{16}$/i.test(cleanTrack)) {
+    return `https://www.ups.com/track?tracknum=${encodeURIComponent(cleanTrack)}`;
+  }
+  if (cleanCarrier.includes('fedex')) {
+    return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(cleanTrack)}`;
+  }
+  if (cleanCarrier.includes('dhl')) {
+    return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(cleanTrack)}`;
+  }
+  return `https://t.17track.net/en#nums=${encodeURIComponent(cleanTrack)}`;
+};
+
+// Helper: Archives a member's existing Consultation Blueprint when they upgrade tiers (e.g. Luminary -> Radiance)
+// so their old locked Blueprint goes away and they unlock the full new Blueprint quiz + Radiance AI Photo Upload.
+const archiveMemberBlueprintForUpgrade = async (userId, newTier = 'radiance') => {
+  if (!userId) return false;
+  try {
+    const activeConsultations = await Consultation.find({
+      userId,
+      archivedByUpgrade: { $ne: true }
+    });
+    if (activeConsultations.length > 0) {
+      await Consultation.updateMany(
+        { userId, archivedByUpgrade: { $ne: true } },
+        {
+          $set: {
+            archivedByUpgrade: true,
+            archivedAt: new Date()
+          }
+        }
+      );
+    }
+    await User.findByIdAndUpdate(userId, {
+      $set: { recommendedProducts: [] }
+    }).catch(() => {});
+    console.log(`💎 Reset & archived ${activeConsultations.length} prior Blueprint(s) for upgraded ${newTier} member ${userId}`);
+    return true;
+  } catch (err) {
+    console.warn('⚠️ Blueprint upgrade reset notice:', err.message);
+    return false;
+  }
+};
+
+// Helper: Applies a Founding 50 Promo Code ONLY after a member's paid tier is verified via Stripe
+const applyVerifiedFoundingPromoToPaidUser = async (user, rawCode) => {
+  if (!user || !rawCode) return null;
+  const cleanCode = String(rawCode).trim().toUpperCase();
+  if (user.isFoundingMember) return null;
+
+  const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
+  if (totalFoundersCount >= 50) return null;
+
+  const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
+  if (!promo || promo.currentUses >= promo.maxUses) return null;
+
+  const slotNumber = totalFoundersCount + 1;
+  const normalizedTier = String(promo.tier || 'Luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+
+  if (user.role !== 'admin' && user.membershipTier !== 'admin') {
+    user.membershipTier = normalizedTier;
+  }
+  user.isFoundingMember = true;
+  user.foundingSlotNumber = slotNumber;
+  user.priceLockedForLife = true;
+  user.lockedTierPrice = promo.lockedPrice;
+  user.storeCreditBalance = Number((Number(user.storeCreditBalance || 0) + Number(promo.creditAmount)).toFixed(2));
+  user.aiBeautyRitualConsultation = true;
+  user.pendingVipMysteryBox = normalizedTier === 'radiance' || Boolean(promo.includesMysteryBox);
+  user.redeemedPromoCode = cleanCode;
+  user.pendingFoundingPromoCode = null;
+  await user.save();
+
+  promo.currentUses += 1;
+  if (promo.currentUses >= promo.maxUses) {
+    promo.isActive = false;
+  }
+  promo.redeemedBy.push({
+    userId: user._id,
+    email: user.email,
+    redeemedAt: new Date()
+  });
+  await promo.save();
+
+  const welcomeSubject = `Welcome to the Founding 50 (#${slotNumber}) — ${promo.tier} Tier Unlocked!`;
+  const welcomeText = `Congratulations! Your ${promo.tier} tier rate of $${promo.lockedPrice} is locked for life. $${promo.creditAmount.toFixed(2)} in Store Credit has been added to your vault (redeemable dollar-for-dollar on product orders), and your AI Beauty & Ritual Consultation is now unlocked.${user.pendingVipMysteryBox ? ' Your complimentary 3pc VIP Mystery Box will automatically attach to your first order!' : ''}`;
+  const welcomeHtml = `
+    <div style="font-family: Georgia, serif; padding: 20px; color: #2c1e18; border: 1px solid #d4af37; border-radius: 8px; background: #fffdf9;">
+      <h3 style="color: #b8860b; margin-top: 0;">Welcome to the Founding 50 — Slot #${slotNumber}</h3>
+      <p>You have unlocked the <strong>${promo.tier} Founding Membership</strong> with lifetime price protection.</p>
+      <ul style="line-height: 1.8;">
+        <li><strong>Lifetime Locked Rate:</strong> $${promo.lockedPrice}/mo (Never increases)</li>
+        <li><strong>100% Store Credit Vault Added:</strong> $${promo.creditAmount.toFixed(2)} (Applies dollar-for-dollar alongside cash at checkout)</li>
+        <li><strong>AI Beauty & Ritual Consultation:</strong> Unlocked in your dashboard</li>
+        ${user.pendingVipMysteryBox ? '<li><strong>3pc VIP Mystery Box Set:</strong> Auto-attaches FREE ($0.00) on your first checkout!</li>' : ''}
+      </ul>
+    </div>
+  `;
+
+  await InboxItem.create({
+    userId: user._id,
+    userEmail: user.email,
+    subject: welcomeSubject,
+    category: 'Founding Member VIP',
+    message: welcomeText,
+    bodyText: welcomeText,
+    bodyHtml: welcomeHtml
+  }).catch(() => {});
+
+  if (typeof sendEmail === 'function' && user.email) {
+    sendEmail(user.email, welcomeSubject, welcomeHtml, welcomeText).catch(() => {});
+  }
+
+  return {
+    slotNumber,
+    promo
+  };
+};
+
 // POST /api/users/me/confirm-upgrade — Strictly verifies a paid Stripe Checkout session before activating 'luminary' or 'radiance'
+// and automatically resets the member's Beauty Blueprint when upgrading tiers so they can take the new tier's full quiz + AI photo upload!
 app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -14037,6 +14335,9 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
       .filter(Boolean)
       .join(', ') || (user.billingInfo?.billingAddress || '');
 
+    const previousTier = String(user.membershipTier || 'basic').toLowerCase().trim();
+    const isTierUpgrade = previousTier !== resolvedTier;
+
     if (user.role !== 'admin' && user.membershipTier !== 'admin') {
       user.membershipTier = resolvedTier;
     }
@@ -14055,12 +14356,25 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
     user.markModified('billingInfo');
     await user.save();
 
+    // If a Founding 50 promo code was attached to this paid checkout session, redeem it now that payment is verified!
+    const promoToApply = sessionObj.metadata?.promoCode || user.pendingFoundingPromoCode || '';
+    if (promoToApply) {
+      await applyVerifiedFoundingPromoToPaidUser(user, promoToApply).catch(() => {});
+    }
+
+    // Archive previous Blueprint on upgrade (or if upgrading to Radiance) so member unlocks the full new Blueprint Quiz + Photo Upload!
+    let blueprintResetForUpgrade = false;
+    if (isTierUpgrade || resolvedTier === 'radiance') {
+      blueprintResetForUpgrade = await archiveMemberBlueprintForUpgrade(user._id, resolvedTier);
+    }
+
     const quotaInfo = await computeMemberConsultationQuota(user);
 
     res.status(200).json({
-      message: `Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'}! Your Stripe payment is verified and your membership benefits are now unlocked ✧`,
+      message: `Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite ($119/mo)' : 'The Luminary Circle ($49/mo)'}! Your membership is now verified and active${blueprintResetForUpgrade ? ' — your Beauty Blueprint has been unlocked so you can complete your new full Radiance consultation & AI photo scan' : ''} ✧`,
       user: serializeMemberProfile(user),
-      quotaInfo
+      quotaInfo,
+      blueprintResetForUpgrade
     });
   } catch (error) {
     console.error('Confirm Upgrade Error:', error);
@@ -14309,9 +14623,12 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
         totalAmount: Number(ord.totalAmount || 0),
         status: ord.status || 'Pending',
         pipelineStage: classifyOrderStage(ord),
-        tracking_code: ord.tracking_code || '',
-        logisticName: ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive',
-        shipping_address: ord.shipping_address || user.shippingAddress || {},
+        tracking_code: ord.tracking_code || ord.trackingNumber || '',
+        trackingNumber: ord.trackingNumber || ord.tracking_code || '',
+        logisticName: ord.logisticName || ord.carrier || ord.selectedLogisticName || 'CJPacket Sensitive Pro',
+        carrier: ord.carrier || ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive Pro',
+        trackingUrl: ord.trackingUrl || buildCarrierTrackingUrl(ord.carrier || ord.logisticName || ord.selectedLogisticName, ord.tracking_code || ord.trackingNumber),
+        shipping_address: ord.shipping_address || ord.shippingAddress || user.shippingAddress || {},
         createdAt: ord.createdAt,
         updatedAt: ord.updatedAt || ord.createdAt
       };
@@ -14447,7 +14764,34 @@ Provide a warm, empowering, luxury cosmetic & skincare visual assessment (non-me
 
 app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
   try {
-    const existingBlueprint = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 }).lean();
+    const userTier = String(req.user.membershipTier || 'basic').toLowerCase().trim();
+    let existingBlueprint = await Consultation.findOne({
+      userId: req.user._id,
+      archivedByUpgrade: { $ne: true }
+    }).sort({ createdAt: -1 }).lean();
+
+    // Auto-Heal for Luminary -> Radiance Upgrades:
+    // If the member is currently on Radiance Elite, but their existing Blueprint was taken under Luminary
+    // (or lacks both completedUnderTier === 'radiance' and a Radiance AI Photo Analysis),
+    // automatically archive the old Luminary Blueprint so the member gets a fresh Radiance Blueprint + AI Photo Upload!
+    if (
+      existingBlueprint &&
+      userTier === 'radiance' &&
+      String(existingBlueprint.completedUnderTier || 'luminary').toLowerCase() !== 'radiance' &&
+      !existingBlueprint.skinPhotoUrl &&
+      !existingBlueprint.aiPhotoAnalysis
+    ) {
+      await archiveMemberBlueprintForUpgrade(req.user._id, 'radiance');
+      return res.status(200).json({
+        hasCompletedQuiz: false,
+        blueprintResetForUpgrade: true,
+        blueprint: null,
+        blueprintAnalysis: null,
+        skinPhotoUrl: '',
+        aiPhotoAnalysis: null
+      });
+    }
+
     if (existingBlueprint && (!existingBlueprint.blueprintAnalysis || !existingBlueprint.blueprintAnalysis.archetypeTitle)) {
       const generatedAnalysis = generateBlueprintAnalysis(existingBlueprint);
       if (existingBlueprint.aiPhotoAnalysis) {
@@ -14465,10 +14809,27 @@ app.get('/api/users/me/blueprint', authenticateToken, async (req, res) => {
       blueprint: existingBlueprint || null,
       blueprintAnalysis: existingBlueprint?.blueprintAnalysis || null,
       skinPhotoUrl: existingBlueprint?.skinPhotoUrl || '',
-      aiPhotoAnalysis: existingBlueprint?.aiPhotoAnalysis || existingBlueprint?.blueprintAnalysis?.aiPhotoAnalysis || null
+      aiPhotoAnalysis: existingBlueprint?.aiPhotoAnalysis || existingBlueprint?.blueprintAnalysis?.aiPhotoAnalysis || null,
+      completedUnderTier: existingBlueprint?.completedUnderTier || userTier
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch member blueprint status' });
+  }
+});
+
+// POST /api/users/me/blueprint/reset-for-upgrade — Allows an upgraded member (or Radiance member wanting to upload their photo)
+// to clear their previous Blueprint and take the full 10-step Radiance consultation quiz from Step 1.
+app.post('/api/users/me/blueprint/reset-for-upgrade', authenticateToken, async (req, res) => {
+  try {
+    const userTier = String(req.user.membershipTier || 'basic').toLowerCase().trim();
+    await archiveMemberBlueprintForUpgrade(req.user._id, userTier);
+    res.status(200).json({
+      success: true,
+      blueprintResetForUpgrade: true,
+      message: 'Your previous Beauty Blueprint has been archived. You now have full access to complete your new Beauty Blueprint and upload your skin photo ✧'
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reset blueprint for upgrade.' });
   }
 });
 
@@ -14484,24 +14845,35 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
       });
     }
 
-    // 2. Enforce one-time-only Blueprint Quiz per member account
-    const existingConsultation = await Consultation.findOne({ userId: req.user._id }).sort({ createdAt: -1 });
-    if (existingConsultation) {
-      if (!existingConsultation.blueprintAnalysis || !existingConsultation.blueprintAnalysis.archetypeTitle) {
-        existingConsultation.blueprintAnalysis = generateBlueprintAnalysis(existingConsultation);
-        await existingConsultation.save().catch(() => {});
-      }
-      return res.status(403).json({
-        error: 'Your Beauty Blueprint is a one-time personal curation and is permanently locked to your membership profile.',
-        blueprint: existingConsultation,
-        blueprintAnalysis: existingConsultation.blueprintAnalysis,
-        aiPhotoAnalysis: existingConsultation.aiPhotoAnalysis || null
-      });
-    }
-
     const rawBody = req.body || {};
     const userTier = String(req.user.membershipTier || '').toLowerCase().trim();
     const isRadianceOrAdmin = userTier === 'radiance' || userTier === 'admin' || req.user.role === 'admin';
+
+    // 2. Enforce one-time-only Blueprint Quiz per tier, but allow overwriting if upgraded to Radiance!
+    const existingConsultation = await Consultation.findOne({
+      userId: req.user._id,
+      archivedByUpgrade: { $ne: true }
+    }).sort({ createdAt: -1 });
+
+    if (existingConsultation) {
+      const prevTier = String(existingConsultation.completedUnderTier || 'luminary').toLowerCase().trim();
+      const upgradingToRadiance = isRadianceOrAdmin && (prevTier !== 'radiance' || (!existingConsultation.skinPhotoUrl && rawBody.skinPhotoDataUrl));
+      if (upgradingToRadiance || rawBody.forceUpgradeRetake) {
+        await archiveMemberBlueprintForUpgrade(req.user._id, userTier);
+      } else {
+        if (!existingConsultation.blueprintAnalysis || !existingConsultation.blueprintAnalysis.archetypeTitle) {
+          existingConsultation.blueprintAnalysis = generateBlueprintAnalysis(existingConsultation);
+          await existingConsultation.save().catch(() => {});
+        }
+        return res.status(403).json({
+          error: 'Your Beauty Blueprint is a one-time personal curation and is permanently locked to your membership profile.',
+          blueprint: existingConsultation,
+          blueprintAnalysis: existingConsultation.blueprintAnalysis,
+          aiPhotoAnalysis: existingConsultation.aiPhotoAnalysis || null
+        });
+      }
+    }
+
     const incomingPhotoUrl = isRadianceOrAdmin
       ? String(rawBody.skinPhotoDataUrl || rawBody.skinPhotoUrl || '').trim()
       : '';
@@ -14519,6 +14891,8 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
     const newConsultation = new Consultation({
       ...rawBody,
       userId: req.user._id,
+      completedUnderTier: isRadianceOrAdmin ? 'radiance' : 'luminary',
+      archivedByUpgrade: false,
       skinPhotoUrl: incomingPhotoUrl,
       aiPhotoAnalysis,
       blueprintAnalysis
@@ -14621,30 +14995,42 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
 
 app.post('/api/create-checkout-session', authenticateToken, async (req, res) => {
   try {
-    const { tier } = req.body;
-    const cleanRequestedTier = String(tier || req.user?.membershipTier || 'luminary').toLowerCase().trim();
-    let unit_amount = 4900; 
-    let productName = "The Luminary Circle Membership";
-    let productDescription = "3-piece skin care ritual box, quarterly 1-on-1 consultation, and 10% boutique discount.";
+    const { tier, promoCode } = req.body || {};
+    let cleanTier = String(tier || req.user?.pendingUpgradeTier || req.user?.membershipTier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+    let verifiedPromo = null;
+    const candidatePromoCode = String(promoCode || req.user?.pendingFoundingPromoCode || '').trim().toUpperCase();
 
-    if (cleanRequestedTier === 'radiance') {
-      unit_amount = 11900; 
-      productName = "The Radiance Elite Membership";
-      productDescription = "5-piece premium skin care ritual box, monthly 1-on-1 consultations, 25% off the boutique, and new product early updates.";
+    if (candidatePromoCode) {
+      const promoDoc = await PromoCode.findOne({ code: candidatePromoCode, isActive: true });
+      if (promoDoc && promoDoc.currentUses < promoDoc.maxUses) {
+        verifiedPromo = promoDoc;
+        cleanTier = String(promoDoc.tier || cleanTier).toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+      }
     }
 
-    // Honor Founding 50 lifetime locked tier price if applicable
-    if (req.user?.priceLockedForLife && req.user?.lockedTierPrice) {
+    let unit_amount = cleanTier === 'radiance' ? 11900 : 4900; 
+    let productName = cleanTier === 'radiance' ? "The Radiance Elite Membership" : "The Luminary Circle Membership";
+    let productDescription = cleanTier === 'radiance'
+      ? "5-piece premium skin care ritual box, monthly 1-on-1 consultations, 25% off the boutique, and new product early updates."
+      : "3-piece skin care ritual box, quarterly 1-on-1 consultation, and 10% boutique discount.";
+
+    if (verifiedPromo) {
+      unit_amount = Math.round(Number(verifiedPromo.lockedPrice) * 100);
+      productName += ` — Founding 50 Lifetime Lock (${verifiedPromo.code})`;
+      productDescription += ` Includes $${verifiedPromo.creditAmount} Store Credit Vault (1:1 Match)${verifiedPromo.includesMysteryBox ? ' + FREE 3pc VIP Mystery Box' : ''}.`;
+    } else if (req.user?.priceLockedForLife && req.user?.lockedTierPrice) {
       const userLockedTier = String(req.user.membershipTier || '').toLowerCase().trim();
-      if (!tier || userLockedTier === cleanRequestedTier) {
+      if (!tier || userLockedTier === cleanTier) {
         unit_amount = Math.round(Number(req.user.lockedTierPrice) * 100);
         productName += ` (Founding 50 Lifetime Lock #${req.user.foundingSlotNumber || ''})`;
       }
     }
 
-    const cleanTier = String(tier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
     await User.findByIdAndUpdate(req.user._id, {
-      $set: { pendingUpgradeTier: cleanTier }
+      $set: {
+        pendingUpgradeTier: cleanTier,
+        ...(verifiedPromo ? { pendingFoundingPromoCode: verifiedPromo.code } : {})
+      }
     }).catch(() => {});
 
     const session = await stripe.checkout.sessions.create({
@@ -14662,12 +15048,14 @@ app.post('/api/create-checkout-session', authenticateToken, async (req, res) => 
       }],
       metadata: {
         userId: req.user._id.toString(),
-        tier: cleanTier
+        tier: cleanTier,
+        ...(verifiedPromo ? { promoCode: verifiedPromo.code } : {})
       },
       subscription_data: {
         metadata: {
           userId: req.user._id.toString(),
-          tier: cleanTier
+          tier: cleanTier,
+          ...(verifiedPromo ? { promoCode: verifiedPromo.code } : {})
         }
       },
       success_url: `${req.headers.origin || 'http://localhost:3000'}/?success=true&tier=${cleanTier}&session_id={CHECKOUT_SESSION_ID}`,
@@ -16266,7 +16654,11 @@ async function dispatchOrderUpdate({ order, statusLabel, customMessage, sendEmai
   const subject = `Susan's Beauty Consulting — Order #${shortOrderId} Update: ${statusLabel}`;
 
   const effectiveTrackingNumber = order.trackingNumber || order.tracking_code || '';
-  const effectiveCarrier = order.carrier || order.logisticName || order.selectedLogisticName || 'Standard Carrier';
+  const effectiveCarrier = order.carrier || order.logisticName || order.selectedLogisticName || 'CJPacket Sensitive Pro';
+  const effectiveTrackingUrl = order.trackingUrl || buildCarrierTrackingUrl(effectiveCarrier, effectiveTrackingNumber);
+  if (effectiveTrackingUrl && !order.trackingUrl) {
+    order.trackingUrl = effectiveTrackingUrl;
+  }
 
   const trackingBlockHtml = effectiveTrackingNumber
     ? `
@@ -16350,7 +16742,7 @@ async function dispatchOrderUpdate({ order, statusLabel, customMessage, sendEmai
         orderStatus: statusLabel,
         trackingNumber: effectiveTrackingNumber || '',
         carrier: effectiveCarrier || '',
-        trackingUrl: order.trackingUrl || ''
+        trackingUrl: effectiveTrackingUrl || ''
       },
       isRead: false
     });
@@ -16442,66 +16834,124 @@ app.patch('/api/orders/:orderId/status', authenticateToken, async (req, res) => 
   }
 });
 
+// GET /api/orders/:orderId/tracking-live — Queries CJ Dropshipping's live tracking API (/logistic/getTrackInfo)
+// and returns real-time transit checkpoints, delivery stage, and clickable carrier URLs.
+app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res) => {
+  try {
+    const rawParam = String(req.params.orderId || '').trim();
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(rawParam)) {
+      order = await Order.findById(rawParam).lean();
+    }
+    if (!order && rawParam) {
+      order = await Order.findOne({
+        $or: [
+          { tracking_code: rawParam },
+          { trackingNumber: rawParam },
+          { cjOrderId: rawParam }
+        ]
+      }).lean();
+    }
+
+    const trackingNumber = String(
+      order?.trackingNumber || order?.tracking_code || (!mongoose.Types.ObjectId.isValid(rawParam) ? rawParam : '')
+    ).trim();
+    const carrier = String(
+      order?.carrier || order?.logisticName || order?.selectedLogisticName || 'CJPacket Sensitive Pro'
+    ).trim();
+    const trackingUrl = order?.trackingUrl || buildCarrierTrackingUrl(carrier, trackingNumber);
+    const cjPacketUrl = trackingNumber ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(trackingNumber)}` : '';
+
+    let liveCjData = null;
+    let checkpoints = [];
+    let trackingStatus = order?.status || 'PAID_PROCESSING';
+    let estimatedDelivery = '5–11 Business Days';
+
+    if (trackingNumber) {
+      try {
+        const cjTrackRes = await cjRequest('GET', '/logistic/getTrackInfo', {
+          params: { trackNumber: trackingNumber }
+        });
+        const rawData = cjTrackRes?.data;
+        const trackRecord = Array.isArray(rawData) ? rawData[0] : rawData;
+        if (trackRecord && typeof trackRecord === 'object') {
+          liveCjData = trackRecord;
+          if (trackRecord.trackingStatus) trackingStatus = trackRecord.trackingStatus;
+          if (trackRecord.deliveryTime || trackRecord.deliveryDay) {
+            estimatedDelivery = `${trackRecord.deliveryTime || trackRecord.deliveryDay} Days`;
+          }
+          const rawRoutes = Array.isArray(trackRecord.routes)
+            ? trackRecord.routes
+            : Array.isArray(trackRecord.trackDetailList)
+            ? trackRecord.trackDetailList
+            : Array.isArray(trackRecord.details)
+            ? trackRecord.details
+            : [];
+          checkpoints = rawRoutes.map((r) => ({
+            time: r.acceptTime || r.time || r.trackTime || '',
+            status: r.remark || r.status || r.description || 'In Transit',
+            location: r.acceptAddress || r.location || r.city || ''
+          }));
+        }
+      } catch (cjErr) {
+        // Fallback to deterministic order lifecycle checkpoints below
+      }
+    }
+
+    if (checkpoints.length === 0) {
+      const createdTime = order?.createdAt ? new Date(order.createdAt).toLocaleString() : new Date().toLocaleString();
+      const updatedTime = order?.updatedAt ? new Date(order.updatedAt).toLocaleString() : createdTime;
+      checkpoints.push({
+        time: createdTime,
+        status: 'Order Confirmed & Payment Verified — Ritual Essentials Queued for Fulfillment',
+        location: "Susan's Beauty Consulting Sanctuary"
+      });
+      if (order?.cjOrderId || String(order?.status || '').toUpperCase().includes('PAID') || trackingNumber) {
+        checkpoints.unshift({
+          time: updatedTime,
+          status: `Assigned to ${carrier} (${order?.cjOrderId ? `Dispatched to CJ Fulfillment #${order.cjOrderId}` : 'Preparing Parcel'})`,
+          location: 'Global Skincare Fulfillment Facility'
+        });
+      }
+      if (trackingNumber) {
+        checkpoints.unshift({
+          time: updatedTime,
+          status: `Tracking Number ${trackingNumber} Issued via ${carrier} — Parcel in Transit`,
+          location: carrier
+        });
+      }
+    }
+
+    const upperStatus = String(trackingStatus || order?.status || '').toUpperCase();
+    let stageIndex = 1; // 1: Confirmed, 2: Studio Processing, 3: In Transit, 4: Delivered
+    if (upperStatus.includes('DELIVERED')) stageIndex = 4;
+    else if (trackingNumber || upperStatus.includes('SHIPPED') || upperStatus.includes('TRANSIT')) stageIndex = 3;
+    else if (order?.cjOrderId || upperStatus.includes('PAID') || upperStatus.includes('PROCESSING')) stageIndex = 2;
+
+    res.json({
+      success: true,
+      orderId: order?._id ? String(order._id) : null,
+      shortId: order?._id ? String(order._id).slice(-6).toUpperCase() : rawParam.slice(-6).toUpperCase(),
+      status: order?.status || trackingStatus,
+      trackingStatus,
+      stageIndex,
+      trackingNumber,
+      carrier,
+      trackingUrl,
+      cjPacketUrl,
+      estimatedDelivery,
+      checkpoints,
+      shippingAddress: order?.shipping_address || order?.shippingAddress || {},
+      liveCjData
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to retrieve live tracking information', details: err.message });
+  }
+});
+
 // ============================================================================
 // FOUNDING 50 PROMO CODE ENGINE (25 LUMINARY @ $49, 25 RADIANCE @ $119)
 // ============================================================================
-const parseFounderCodeBlueprint = (rawCode = '') => {
-  const code = String(rawCode || '').trim().toUpperCase();
-
-  // Match LUM-FOUNDER-01..25 (or LUM-FOUNDER-1..25)
-  const lumMatch = code.match(/^LUM-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
-  if (lumMatch) {
-    const num = String(lumMatch[1]).padStart(2, '0');
-    return {
-      code: `LUM-FOUNDER-${num}`,
-      tier: 'Luminary',
-      creditAmount: 49,
-      lockedPrice: 49,
-      includesMysteryBox: false,
-      maxUses: 1
-    };
-  }
-
-  // Match RAD-FOUNDER-01..25 (or RAD-FOUNDER-1..25)
-  const radMatch = code.match(/^RAD-FOUNDER-0*([1-9]|1\d|2[0-5])$/);
-  if (radMatch) {
-    const num = String(radMatch[1]).padStart(2, '0');
-    return {
-      code: `RAD-FOUNDER-${num}`,
-      tier: 'Radiance',
-      creditAmount: 119,
-      lockedPrice: 119,
-      includesMysteryBox: true,
-      maxUses: 1
-    };
-  }
-
-  // Optional master codes (capped at 25 uses each)
-  if (code === 'RADIANCE50' || code === 'RAD-FOUNDER') {
-    return {
-      code,
-      tier: 'Radiance',
-      creditAmount: 119,
-      lockedPrice: 119,
-      includesMysteryBox: true,
-      maxUses: 25
-    };
-  }
-
-  if (code === 'LUMINARY50' || code === 'LUM-FOUNDER') {
-    return {
-      code,
-      tier: 'Luminary',
-      creditAmount: 49,
-      lockedPrice: 49,
-      includesMysteryBox: false,
-      maxUses: 25
-    };
-  }
-
-  return null;
-};
-
 const seedFounding50PromoCodes = async () => {
   const codesToInsert = [];
 
@@ -16559,7 +17009,6 @@ app.post('/api/admin/promos/seed-founding-50', authenticateToken, async (req, re
 // Admin / Public Endpoint: List Founding 50 Promo Code Status
 app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => {
   try {
-    await seedFounding50PromoCodes().catch(() => {});
     const codes = await PromoCode.find({}).sort({ code: 1 }).lean();
     const totalFoundersCount = await User.countDocuments({ isFoundingMember: true });
     res.json({
@@ -16573,14 +17022,15 @@ app.get('/api/admin/promos/founding-50', authenticateToken, async (req, res) => 
   }
 });
 
-// Customer Endpoint: Redeem a Founding 50 Promo Code (Self-Seeding & Self-Healing)
-const handleRedeemFoundingPromo = async (req, res) => {
+// Customer Endpoint: Redeem a Founding 50 Promo Code
+// STRICT GUARD: Free ('basic' / 'None') tier users CANNOT use a promo code to upgrade their membership tier for free!
+// They must either already have an active paid membership for that tier OR complete Stripe Subscription Checkout first.
+app.post('/api/promos/redeem-founding', authenticateToken, async (req, res) => {
   try {
     const { code } = req.body || {};
     if (!code) return res.status(400).json({ error: 'Please enter a valid promo code.' });
 
-    const blueprint = parseFounderCodeBlueprint(code);
-    const cleanCode = blueprint ? blueprint.code : String(code).trim().toUpperCase();
+    const cleanCode = String(code).trim().toUpperCase();
     const userId = req.user.id || req.user._id;
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User account not found.' });
@@ -16597,46 +17047,46 @@ const handleRedeemFoundingPromo = async (req, res) => {
       return res.status(400).json({ error: 'All 50 Founding Member spots have been claimed.' });
     }
 
-    // Look up code regardless of isActive first so we can auto-seed or heal orphaned test codes
-    let promo = await PromoCode.findOne({ code: cleanCode });
-
-    if (!promo && blueprint) {
-      promo = await PromoCode.create({
-        code: blueprint.code,
-        tier: blueprint.tier,
-        creditAmount: blueprint.creditAmount,
-        lockedPrice: blueprint.lockedPrice,
-        includesMysteryBox: blueprint.includesMysteryBox,
-        maxUses: blueprint.maxUses,
-        currentUses: 0,
-        isActive: true
-      });
-    }
-
+    const promo = await PromoCode.findOne({ code: cleanCode, isActive: true });
     if (!promo) {
       return res.status(404).json({ error: 'Invalid or expired Founding 50 promo code.' });
     }
 
-    // Self-heal if a code was marked used during testing but no active Founding Member holds it
-    if (!promo.isActive || promo.currentUses >= promo.maxUses) {
-      const activeHolders = await User.countDocuments({
-        redeemedPromoCode: cleanCode,
-        isFoundingMember: true
+    if (promo.currentUses >= promo.maxUses) {
+      return res.status(400).json({ error: 'This Founding 50 code has already been redeemed.' });
+    }
+
+    const currentTierLower = String(user.membershipTier || 'basic').toLowerCase().trim();
+    const promoTierLower = String(promo.tier || 'Luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+    const isAdminUser = user.role === 'admin' || currentTierLower === 'admin';
+    const isFreeTierUser = ['basic', 'none', 'free', ''].includes(currentTierLower) && !isAdminUser;
+    const isUpgradingFromLuminaryToRadiance = currentTierLower === 'luminary' && promoTierLower === 'radiance' && !isAdminUser;
+
+    // BLOCK FREE TIER (or unpaid Luminary -> Radiance upgrade) FROM UPGRADING FOR FREE:
+    // Reserve the promo code on the user's profile and require paid Stripe Subscription Checkout first!
+    if (isFreeTierUser || isUpgradingFromLuminaryToRadiance) {
+      user.pendingFoundingPromoCode = cleanCode;
+      user.pendingUpgradeTier = promoTierLower;
+      await user.save();
+
+      return res.status(402).json({
+        error: isFreeTierUser
+          ? `Free Membership accounts cannot use a promo code to upgrade for free. Code ${cleanCode} is valid and reserved for you — please complete your $${promo.lockedPrice}/mo ${promo.tier} Stripe Checkout to lock your lifetime rate and unlock your $${promo.creditAmount} Store Credit Vault!`
+          : `Code ${cleanCode} is reserved for your Radiance Elite upgrade! Complete your $${promo.lockedPrice}/mo Radiance Stripe Checkout to activate your $119 Store Credit Vault, 3pc VIP Mystery Box, and new Radiance Blueprint + AI Photo Scan.`,
+        requiresCheckout: true,
+        requiresPaidSubscription: true,
+        reservedPromoCode: cleanCode,
+        targetTier: promoTierLower,
+        lockedPrice: promo.lockedPrice,
+        creditAmount: promo.creditAmount
       });
-      if (activeHolders < promo.maxUses) {
-        promo.currentUses = activeHolders;
-        promo.isActive = true;
-        await promo.save();
-      } else {
-        return res.status(400).json({ error: `Code ${cleanCode} has already been claimed. Please try the next code number (e.g. RAD-FOUNDER-02).` });
-      }
     }
 
     const slotNumber = totalFoundersCount + 1;
 
-    // Apply Founding 50 Entitlements to User
+    // Apply Founding 50 Entitlements to verified paid member
     if (user.role !== 'admin' && user.membershipTier !== 'admin') {
-      user.membershipTier = promo.tier; // 'Luminary' or 'Radiance'
+      user.membershipTier = promoTierLower;
     }
     user.isFoundingMember = true;
     user.foundingSlotNumber = slotNumber;
@@ -16681,7 +17131,7 @@ const handleRedeemFoundingPromo = async (req, res) => {
       </div>
     `;
 
-    const createdInboxItem = await InboxItem.create({
+    await InboxItem.create({
       userId: user._id,
       userEmail: user.email,
       subject: welcomeSubject,
@@ -16699,27 +17149,20 @@ const handleRedeemFoundingPromo = async (req, res) => {
       success: true,
       message: `Founding 50 ${promo.tier} code redeemed! Slot #${slotNumber} locked for life.`,
       entitlements: {
-        isFoundingMember: true,
         foundingSlotNumber: user.foundingSlotNumber,
         membershipTier: user.membershipTier,
         lockedTierPrice: user.lockedTierPrice,
         priceLockedForLife: user.priceLockedForLife,
         storeCreditBalance: user.storeCreditBalance,
         aiBeautyRitualConsultation: user.aiBeautyRitualConsultation,
-        pendingVipMysteryBox: user.pendingVipMysteryBox,
-        redeemedPromoCode: user.redeemedPromoCode
+        pendingVipMysteryBox: user.pendingVipMysteryBox
       },
-      inboxItem: createdInboxItem,
       user: serializeMemberProfile(user)
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to redeem promo code', details: err.message });
   }
-};
-
-app.post('/api/promos/redeem-founding', authenticateToken, handleRedeemFoundingPromo);
-app.post('/api/promo/redeem', authenticateToken, handleRedeemFoundingPromo);
-
+});
 
 // ============================================================================
 // DOLLAR-FOR-DOLLAR STORE CREDIT MITIGATION & 3PC MYSTERY BOX AUTO-INJECTION
@@ -16952,6 +17395,919 @@ async function finalizeFoundingOrderAfterPayment(session, sendEmailFn = sendEmai
 
   return order;
 }
+
+
+// ============================================================================
+// LILY — CUSTOMER-FACING GOOGLE GEMINI AI CONCIERGE & HELP DESK ENGINE
+// ============================================================================
+// Helps customers:
+// 1. Interpret their Personalized Beauty Blueprint & Radiance AI Photo Scan
+// 2. Find & add matching Boutique products to their Ritual Bag
+// 3. Track their orders live via CJ Dropshipping (/logistic/getTrackInfo)
+// 4. Verify their Stripe payments, subscription status & 1:1 Store Credit Vault
+// 5. Check their 1-on-1 Consultation booking status & video room links
+// 6. Escalate questions or requests directly to Susan & Odie
+
+const resolveOptionalUserFromReq = async (req) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return null;
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+    if (!decoded?._id) return null;
+    return await User.findById(decoded._id).select('-password');
+  } catch {
+    return null;
+  }
+};
+
+// Tool 1: Fetch & Interpret Member's Beauty Blueprint
+const executeLilyBlueprintLookup = async (user) => {
+  if (!user) {
+    return {
+      found: false,
+      note: 'Customer is currently browsing as a guest or not signed in.'
+    };
+  }
+  const blueprint = await Consultation.findOne({
+    userId: user._id,
+    archivedByUpgrade: { $ne: true }
+  }).sort({ createdAt: -1 }).lean();
+
+  if (!blueprint) {
+    return {
+      found: false,
+      membershipTier: user.membershipTier || 'basic',
+      isFoundingMember: Boolean(user.isFoundingMember),
+      note: 'Member has not completed their current Beauty Blueprint quiz yet (or it was freshly unlocked after upgrading tiers).'
+    };
+  }
+
+  const analysis = blueprint.blueprintAnalysis && blueprint.blueprintAnalysis.archetypeTitle
+    ? blueprint.blueprintAnalysis
+    : generateBlueprintAnalysis(blueprint);
+
+  return {
+    found: true,
+    completedUnderTier: blueprint.completedUnderTier || user.membershipTier || 'luminary',
+    skinType: blueprint.skinType,
+    primaryGoal: blueprint.primaryGoal,
+    climate: blueprint.climate,
+    skinSensitivity: blueprint.skinSensitivity,
+    complexion: blueprint.complexion,
+    undertone: blueprint.undertone,
+    eyeColor: blueprint.eyeColor,
+    faceShape: blueprint.faceShape,
+    makeupVibe: blueprint.makeupVibe,
+    routineFocus: blueprint.routineFocus,
+    archetypeTitle: analysis?.archetypeTitle || `${blueprint.skinType} • ${blueprint.primaryGoal} Ritual`,
+    executiveSummary: analysis?.executiveSummary || '',
+    amRitual: analysis?.amRitual || [],
+    pmRitual: analysis?.pmRitual || [],
+    heroIngredients: analysis?.heroIngredients || [],
+    avoidIngredients: analysis?.avoidIngredients || [],
+    aiPhotoAnalysis: blueprint.aiPhotoAnalysis || analysis?.aiPhotoAnalysis || null
+  };
+};
+
+// Tool 2: Search Boutique Products Matching Blueprint or Query
+const executeLilyProductSearch = async ({
+  user = null,
+  skinType = '',
+  skinConcern = '',
+  ritualStep = '',
+  searchQuery = '',
+  onlySensitivitySafe = false,
+  maxPriceUsd = 0
+} = {}) => {
+  let targetSkinType = String(skinType || '').trim();
+  let targetConcern = String(skinConcern || '').trim();
+  let targetSafe = Boolean(onlySensitivitySafe);
+
+  if (user && (!targetSkinType || !targetConcern)) {
+    const bp = await Consultation.findOne({
+      userId: user._id,
+      archivedByUpgrade: { $ne: true }
+    }).sort({ createdAt: -1 }).lean();
+    if (bp) {
+      if (!targetSkinType && bp.skinType) targetSkinType = bp.skinType;
+      if (!targetConcern && bp.primaryGoal) targetConcern = bp.primaryGoal;
+      if (bp.skinSensitivity === 'High') targetSafe = true;
+    }
+  }
+
+  const allProducts = await Product.find({}).limit(200).lean();
+  const qLower = String(searchQuery || '').toLowerCase().trim();
+  const stepLower = String(ritualStep || '').toLowerCase().trim();
+
+  const scored = allProducts
+    .map((prod) => {
+      const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
+      if (maxPriceUsd > 0 && price > maxPriceUsd) return null;
+      if (targetSafe && prod.sensitivitySafe === false) return null;
+
+      let score = 0;
+      const stList = Array.isArray(prod.skinTypes) ? prod.skinTypes : [];
+      const scList = Array.isArray(prod.skinConcerns) ? prod.skinConcerns : [];
+      const titleLower = String(prod.title || '').toLowerCase();
+      const descLower = String(prod.description || '').toLowerCase();
+      const prodStepLower = String(prod.ritualStep || '').toLowerCase();
+
+      if (targetSkinType) {
+        if (stList.some((s) => s.toLowerCase() === targetSkinType.toLowerCase())) score += 5;
+        else if (stList.includes('All Skin Types')) score += 2;
+      }
+      if (targetConcern) {
+        if (scList.some((c) => c.toLowerCase().includes(targetConcern.toLowerCase()))) score += 6;
+      }
+      if (stepLower && prodStepLower.includes(stepLower)) {
+        score += 6;
+      }
+      if (qLower) {
+        if (titleLower.includes(qLower)) score += 8;
+        else if (descLower.includes(qLower) || prodStepLower.includes(qLower)) score += 4;
+      }
+      if (prod.sensitivitySafe !== false) score += 1;
+
+      return {
+        prod,
+        score,
+        price
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+
+  const topPicks = scored.slice(0, 4).map(({ prod, price }) => ({
+    _id: String(prod._id),
+    title: prod.title,
+    price: Number(price.toFixed(2)),
+    sku: prod.variants?.[0]?.sku || prod.cjSku || String(prod._id),
+    imageUrl: prod.imageUrl || prod.variants?.[0]?.imageUrl || '',
+    ritualStep: prod.ritualStep || 'Step 3: Serum & Essence',
+    skinTypes: prod.skinTypes || ['All Skin Types'],
+    skinConcerns: prod.skinConcerns || ['Hydration'],
+    sensitivityLabel: prod.sensitivityLabel || 'Gentle Formula',
+    variants: prod.variants || []
+  }));
+
+  return {
+    matchedSkinType: targetSkinType || 'All Skin Types',
+    matchedConcern: targetConcern || 'Luminous Glow',
+    products: topPicks
+  };
+};
+
+// Tool 3: Pull Live CJ Order & Package Tracking Info
+const executeLilyOrderTrackingLookup = async ({ user = null, orderIdOrTracking = '', customerEmail = '' } = {}) => {
+  const cleanParam = String(orderIdOrTracking || '').trim();
+  const orClauses = [];
+  if (user?._id) orClauses.push({ userId: user._id });
+  const emailToUse = normalizeEmail(user?.email || customerEmail || '');
+  if (emailToUse) {
+    orClauses.push({ customerEmail: new RegExp(`^${escapeRegex(emailToUse)}$`, 'i') });
+  }
+
+  let orders = [];
+  if (cleanParam) {
+    if (mongoose.Types.ObjectId.isValid(cleanParam)) {
+      const byId = await Order.findById(cleanParam).lean();
+      if (byId) orders = [byId];
+    }
+    if (orders.length === 0) {
+      const allUserOrders = orClauses.length > 0
+        ? await Order.find({ $or: orClauses }).sort({ createdAt: -1 }).limit(20).lean()
+        : await Order.find({}).sort({ createdAt: -1 }).limit(20).lean();
+      orders = allUserOrders.filter((o) => {
+        const shortId = String(o._id).slice(-6).toUpperCase();
+        const tCode = String(o.tracking_code || o.trackingNumber || '').toUpperCase();
+        const cleanUpper = cleanParam.replace(/^#/, '').toUpperCase();
+        return shortId === cleanUpper || tCode === cleanUpper || String(o.cjOrderId || '') === cleanParam;
+      });
+    }
+  } else if (orClauses.length > 0) {
+    orders = await Order.find({ $or: orClauses }).sort({ createdAt: -1 }).limit(3).lean();
+  }
+
+  if (orders.length === 0) {
+    return {
+      found: false,
+      orders: [],
+      note: 'No matching orders were found for this account.'
+    };
+  }
+
+  const enriched = [];
+  for (const ord of orders.slice(0, 3)) {
+    const trackingNumber = String(ord.trackingNumber || ord.tracking_code || '').trim();
+    const carrier = String(ord.carrier || ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive Pro').trim();
+    const trackingUrl = ord.trackingUrl || buildCarrierTrackingUrl(carrier, trackingNumber);
+    let checkpoints = [];
+    let liveStatus = ord.status || 'PAID_PROCESSING';
+    let estimatedDelivery = '5–11 Business Days';
+
+    if (trackingNumber) {
+      try {
+        const cjRes = await cjRequest('GET', '/logistic/getTrackInfo', {
+          params: { trackNumber: trackingNumber }
+        });
+        const rawData = cjRes?.data;
+        const trackRecord = Array.isArray(rawData) ? rawData[0] : rawData;
+        if (trackRecord && typeof trackRecord === 'object') {
+          if (trackRecord.trackingStatus) liveStatus = trackRecord.trackingStatus;
+          if (trackRecord.deliveryTime || trackRecord.deliveryDay) {
+            estimatedDelivery = `${trackRecord.deliveryTime || trackRecord.deliveryDay} Days`;
+          }
+          const routes = Array.isArray(trackRecord.routes)
+            ? trackRecord.routes
+            : Array.isArray(trackRecord.trackDetailList)
+            ? trackRecord.trackDetailList
+            : [];
+          checkpoints = routes.slice(0, 4).map((r) => ({
+            time: r.acceptTime || r.time || '',
+            status: r.remark || r.status || 'In Transit',
+            location: r.acceptAddress || r.location || ''
+          }));
+        }
+      } catch {}
+    }
+
+    if (checkpoints.length === 0) {
+      checkpoints.push({
+        time: ord.updatedAt ? new Date(ord.updatedAt).toLocaleDateString() : 'Recent',
+        status: trackingNumber
+          ? `Parcel in transit with ${carrier} (Tracking #${trackingNumber})`
+          : `Order confirmed & in preparation at our fulfillment studio (${carrier})`,
+        location: trackingNumber ? carrier : 'Fulfillment Studio'
+      });
+    }
+
+    enriched.push({
+      _id: String(ord._id),
+      orderId: String(ord._id),
+      shortId: String(ord._id).slice(-6).toUpperCase(),
+      createdAt: ord.createdAt,
+      totalAmount: Number(ord.totalAmount || 0),
+      storeCreditApplied: Number(ord.storeCreditApplied || 0),
+      includesVipMysteryBox: Boolean(ord.includesVipMysteryBox),
+      status: ord.status || 'PAID_PROCESSING',
+      liveStatus,
+      trackingNumber,
+      carrier,
+      trackingUrl,
+      estimatedDelivery,
+      latestCheckpoint: checkpoints[0] || null,
+      checkpoints,
+      items: (ord.items || []).map((i) => ({
+        title: i.title || i.name || 'Boutique Essential',
+        quantity: i.quantity || 1,
+        price: Number(i.price || 0)
+      }))
+    });
+  }
+
+  return {
+    found: true,
+    orders: enriched
+  };
+};
+
+// Tool 4: Verify Customer Stripe Payment, Subscription & Store Credit Vault
+const executeLilyStripePaymentCheck = async (user) => {
+  if (!user) {
+    return {
+      authenticated: false,
+      note: 'Please sign in so Lily can inspect your Stripe billing and Store Credit Vault.'
+    };
+  }
+
+  const cleanEmail = normalizeEmail(user.email);
+  const recentOrders = await Order.find({
+    $or: [
+      { userId: user._id },
+      ...(cleanEmail ? [{ customerEmail: new RegExp(`^${escapeRegex(cleanEmail)}$`, 'i') }] : [])
+    ]
+  }).sort({ createdAt: -1 }).limit(3).lean();
+
+  let liveStripeSubStatus = user.billingInfo?.subscriptionStatus || (['luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) ? 'active' : 'inactive');
+  let stripeNextRenewal = null;
+  const rawStripeKey = cleanEnv(process.env.STRIPE_SECRET_KEY);
+
+  if (rawStripeKey && user.billingInfo?.stripeCustomerId) {
+    try {
+      const subs = await stripe.subscriptions.list({
+        customer: String(user.billingInfo.stripeCustomerId),
+        limit: 1
+      });
+      const latestSub = subs?.data?.[0];
+      if (latestSub) {
+        liveStripeSubStatus = latestSub.status;
+        if (latestSub.current_period_end) {
+          stripeNextRenewal = new Date(latestSub.current_period_end * 1000).toLocaleDateString();
+        }
+      }
+    } catch {}
+  }
+
+  return {
+    authenticated: true,
+    membershipTier: user.membershipTier || 'basic',
+    isFoundingMember: Boolean(user.isFoundingMember),
+    foundingSlotNumber: user.foundingSlotNumber || null,
+    priceLockedForLife: Boolean(user.priceLockedForLife),
+    lockedTierPrice: user.lockedTierPrice || null,
+    storeCreditBalance: Number(user.storeCreditBalance || 0),
+    pendingVipMysteryBox: Boolean(user.pendingVipMysteryBox),
+    subscriptionStatus: liveStripeSubStatus,
+    nextRenewalDate: stripeNextRenewal,
+    cardOnFile: user.billingInfo?.cardLast4
+      ? `${user.billingInfo.cardBrand || 'Card'} ending in ${user.billingInfo.cardLast4}`
+      : 'Verified at Stripe Checkout',
+    recentOrderPayments: recentOrders.map((o) => ({
+      shortId: String(o._id).slice(-6).toUpperCase(),
+      totalAmount: Number(o.totalAmount || 0),
+      storeCreditApplied: Number(o.storeCreditApplied || 0),
+      paymentVerified: o.status !== 'Pending' || Boolean(o.stripeSessionId),
+      status: o.status || 'Pending',
+      date: o.createdAt ? new Date(o.createdAt).toLocaleDateString() : ''
+    }))
+  };
+};
+
+// Tool 5: Escalate Question / Request to Susan & Odie
+const executeLilyEscalationToSusanAndOdie = async ({
+  user = null,
+  customerName = '',
+  customerEmail = '',
+  category = 'General Help Desk',
+  subject = 'Customer Support Request via Lily',
+  customerMessage = '',
+  orderId = ''
+} = {}) => {
+  const resolvedName = user?.name || customerName || 'Valued Client';
+  const resolvedEmail = normalizeEmail(user?.email || customerEmail || '');
+  const resolvedTier = user?.membershipTier || 'guest';
+
+  const ticket = await LilySupportTicket.create({
+    userId: user?._id || null,
+    userName: resolvedName,
+    userEmail: resolvedEmail,
+    membershipTier: resolvedTier,
+    category: [
+      'Blueprint & Routine',
+      'Product Recommendation',
+      'Order & CJ Tracking',
+      'Stripe Billing & Credit',
+      'Consultation Request',
+      'General Help Desk'
+    ].includes(category)
+      ? category
+      : 'General Help Desk',
+    subject: String(subject || 'Customer Request via Lily').trim(),
+    customerMessage: String(customerMessage || '').trim(),
+    lilyAnalysis: `Escalated by Lily AI for ${resolvedName} (${resolvedEmail || 'Guest'} • Tier: ${resolvedTier})`,
+    orderId: String(orderId || ''),
+    status: 'open'
+  });
+
+  const shortTicketId = String(ticket._id).slice(-6).toUpperCase();
+
+  // Save directly into Odie's Long-Term Memory Bank so Odie can brief Susan immediately
+  await OdieMemory.findOneAndUpdate(
+    { key: `lily_ticket_${shortTicketId}` },
+    {
+      $set: {
+        category: 'vip_client',
+        key: `lily_ticket_${shortTicketId}`,
+        content: `[Lily Help Desk Ticket #${shortTicketId}] ${resolvedName} (${resolvedEmail || 'No email'}, ${resolvedTier} tier) asked regarding "${ticket.subject}": "${ticket.customerMessage}". Use replyToLilyCustomerTicket to answer them directly.`,
+        source: 'system_Fact',
+        pinned: true,
+        updatedAt: new Date()
+      }
+    },
+    { upsert: true, new: true }
+  ).catch(() => {});
+
+  // Also create an InboundEmail record so it appears in Susan's Admin Inbox tab immediately
+  await InboundEmail.create({
+    uid: Math.floor(Date.now() / 1000),
+    messageId: `<lily-ticket-${ticket._id}@susansbeautyconsulting.com>`,
+    fromName: `${resolvedName} (via Lily AI)`,
+    fromEmail: resolvedEmail || 'client@susansbeautyconsulting.com',
+    to: getPrimaryAdminEmail(),
+    subject: `🌸 [Lily Help Desk #${shortTicketId}] ${ticket.subject}`,
+    textBody: `Customer: ${resolvedName} (${resolvedEmail || 'Guest'})\nMembership Tier: ${resolvedTier}\nCategory: ${ticket.category}\n\nMessage:\n${ticket.customerMessage}`,
+    htmlBody: `<div style="font-family: Georgia, serif; padding: 20px; border: 1px solid #E8C5C8; border-radius: 12px;"><h3 style="color: #B38B8F; margin-top: 0;">🌸 Lily AI Customer Escalation #${shortTicketId}</h3><p><strong>Client:</strong> ${escapeHtml(resolvedName)} (${escapeHtml(resolvedEmail || 'Guest')}) • <strong>Tier:</strong> ${escapeHtml(resolvedTier)}</p><p><strong>Category:</strong> ${escapeHtml(ticket.category)}</p><p style="background: #FFF9F9; padding: 14px; border-radius: 8px; border-left: 4px solid #B38B8F;">${escapeHtml(ticket.customerMessage)}</p></div>`,
+    snippet: String(ticket.customerMessage || '').slice(0, 160),
+    folder: 'INBOX',
+    source: 'webhook',
+    isRead: false
+  }).catch(() => {});
+
+  // Dispatch email notification to Susan via IONOS SMTP
+  if (typeof sendEmail === 'function') {
+    const adminEmail = getPrimaryAdminEmail();
+    const html = `
+      <div style="font-family: Georgia, serif; padding: 24px; color: #2c1e18; border: 1px solid #E8C5C8; border-radius: 12px;">
+        <h3 style="color: #B38B8F; margin-top: 0;">🌸 New Customer Escalation from Lily AI (#${shortTicketId})</h3>
+        <p><strong>Customer:</strong> ${escapeHtml(resolvedName)} (${escapeHtml(resolvedEmail || 'Guest')})</p>
+        <p><strong>Membership Tier:</strong> ${escapeHtml(resolvedTier)}</p>
+        <p><strong>Subject:</strong> ${escapeHtml(ticket.subject)}</p>
+        <p style="background: #FFF9F9; padding: 14px; border-radius: 8px;">${escapeHtml(ticket.customerMessage)}</p>
+        <p style="font-size: 13px; color: #7a6356;">You can reply from your Admin Inbox or ask Odie: <em>"Reply to Lily ticket #${shortTicketId}"</em>.</p>
+      </div>
+    `;
+    sendEmail(adminEmail, `🌸 Lily Help Desk #${shortTicketId}: ${ticket.subject}`, html, ticket.customerMessage).catch(() => {});
+  }
+
+  return {
+    ticketId: String(ticket._id),
+    shortTicketId,
+    subject: ticket.subject,
+    category: ticket.category,
+    status: 'open',
+    message: `Ticket #${shortTicketId} has been delivered to Susan and Odie. Their reply will appear right here in your Lily chat, in your On-Site Inbox, and in your email.`
+  };
+};
+
+// GET /api/lily/history — Returns the customer's conversation history with Lily (plus any replies from Susan & Odie)
+app.get('/api/lily/history', async (req, res) => {
+  try {
+    const user = await resolveOptionalUserFromReq(req);
+    const sessionId = String(req.query.sessionId || '').trim();
+    const query = user ? { userId: user._id } : (sessionId ? { sessionId } : null);
+    if (!query) {
+      return res.json({ success: true, messages: [], tickets: [] });
+    }
+    const messages = await LilyChatHistory.find(query).sort({ createdAt: 1 }).limit(60).lean();
+    const tickets = user
+      ? await LilySupportTicket.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10).lean()
+      : [];
+    res.json({ success: true, messages, tickets });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load Lily chat history', details: err.message });
+  }
+});
+
+// DELETE /api/lily/history — Clears the customer's conversation history with Lily
+app.delete('/api/lily/history', async (req, res) => {
+  try {
+    const user = await resolveOptionalUserFromReq(req);
+    const sessionId = String(req.query.sessionId || req.body?.sessionId || '').trim();
+    if (user) {
+      await LilyChatHistory.deleteMany({ userId: user._id });
+    } else if (sessionId) {
+      await LilyChatHistory.deleteMany({ sessionId });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to clear Lily chat history', details: err.message });
+  }
+});
+
+// Admin Endpoints to View & Reply to Lily Customer Tickets
+app.get('/api/admin/lily-tickets', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const tickets = await LilySupportTicket.find({}).sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ success: true, tickets });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch Lily support tickets', details: err.message });
+  }
+});
+
+app.post('/api/admin/lily-tickets/:id/reply', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { replyMessage } = req.body || {};
+    if (!replyMessage || !String(replyMessage).trim()) {
+      return res.status(400).json({ error: 'Please provide a reply message.' });
+    }
+    const ticket = await LilySupportTicket.findById(req.params.id);
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+
+    const cleanReply = String(replyMessage).trim();
+    ticket.susanOrOdieReply = cleanReply;
+    ticket.status = 'resolved';
+    ticket.repliedBy = 'Susan';
+    ticket.repliedAt = new Date();
+    ticket.updatedAt = new Date();
+    await ticket.save();
+
+    if (ticket.userId) {
+      await LilyChatHistory.create({
+        userId: ticket.userId,
+        userEmail: ticket.userEmail || '',
+        role: 'susan',
+        text: `💌 Personal Reply from Susan regarding "${ticket.subject}":\n${cleanReply}`,
+        actionCards: [{
+          type: 'ticket_reply',
+          ticketId: String(ticket._id),
+          subject: ticket.subject,
+          reply: cleanReply,
+          repliedBy: 'Susan'
+        }]
+      }).catch(() => {});
+
+      await InboxItem.create({
+        userId: ticket.userId,
+        userEmail: ticket.userEmail || '',
+        subject: `💌 Susan Replied: ${ticket.subject}`,
+        category: 'System',
+        message: cleanReply,
+        bodyText: cleanReply,
+        bodyHtml: `<div style="font-family: Georgia, serif; padding: 20px; border: 1px solid #E8C5C8; border-radius: 12px; background: #FFF9F9;"><h3 style="color: #B38B8F; margin-top: 0;">Personal Reply from Susan ✧</h3><p style="font-size: 15px; color: #5C5454; line-height: 1.6;">${escapeHtml(cleanReply)}</p></div>`
+      }).catch(() => {});
+    }
+
+    if (ticket.userEmail && typeof sendEmail === 'function') {
+      const html = `<div style="font-family: Georgia, serif; padding: 24px; border: 1px solid #E8C5C8; border-radius: 12px;"><h3 style="color: #B38B8F;">Personal Reply from Susan ✧</h3><p>${escapeHtml(cleanReply)}</p></div>`;
+      await sendEmail(ticket.userEmail, `Re: ${ticket.subject} — Susan's Beauty Consulting`, html, cleanReply).catch(() => {});
+    }
+
+    res.json({ success: true, ticket });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reply to Lily ticket', details: err.message });
+  }
+});
+
+// POST /api/lily/chat — Customer-facing Gemini AI Concierge & Help Desk
+app.post('/api/lily/chat', async (req, res) => {
+  try {
+    const { message, sessionId = '' } = req.body || {};
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ error: 'Please enter a message for Lily.' });
+    }
+
+    const cleanMessage = String(message).trim();
+    const user = await resolveOptionalUserFromReq(req);
+
+    // Save incoming customer message to LilyChatHistory
+    await LilyChatHistory.create({
+      userId: user?._id || null,
+      sessionId: String(sessionId || ''),
+      userEmail: user?.email || '',
+      role: 'user',
+      text: cleanMessage,
+      actionCards: []
+    }).catch(() => {});
+
+    // Gather live customer context snapshot
+    const [blueprintContext, orderContext, paymentContext, quotaContext] = await Promise.all([
+      executeLilyBlueprintLookup(user),
+      executeLilyOrderTrackingLookup({ user }),
+      executeLilyStripePaymentCheck(user),
+      user ? computeMemberConsultationQuota(user).catch(() => null) : Promise.resolve(null)
+    ]);
+
+    const actionCards = [];
+    let replyText = '';
+
+    const hasGeminiKey = Boolean(cleanEnv(process.env.GEMINI_API_KEY));
+
+    if (hasGeminiKey) {
+      try {
+        const { ai, Type } = getGeminiClient();
+
+        const lilyTools = {
+          functionDeclarations: [
+            {
+              name: 'getMemberBlueprintAndRoutine',
+              description: "Fetches and interprets the customer's Personalized Beauty Blueprint, AM/PM ritual steps, hero actives, ingredients to avoid, and Radiance AI photo scan.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {}
+              }
+            },
+            {
+              name: 'searchBoutiqueForBlueprint',
+              description: "Finds matching skincare and beauty products from Susan's Boutique catalog tailored to the customer's Beauty Blueprint or search criteria.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  skinType: { type: Type.STRING, description: 'Optional Skin Type filter: Dry, Oily, Combination, Normal, All Skin Types' },
+                  skinConcern: { type: Type.STRING, description: 'Optional Skin Concern filter: Hydration, Anti-Aging, Acne/Texture, Brightening, Barrier & Soothing, Luminous Makeup' },
+                  ritualStep: { type: Type.STRING, description: 'Optional Ritual Step filter (e.g. Cleanser, Toner, Serum, Moisturizer, Eye, Makeup, Tool)' },
+                  searchQuery: { type: Type.STRING, description: 'Optional keyword search (e.g. vitamin c, retinol, lip oil, gua sha)' },
+                  onlySensitivitySafe: { type: Type.BOOLEAN, description: 'Set true to filter only high-sensitivity safe products' },
+                  maxPriceUsd: { type: Type.NUMBER, description: 'Optional maximum price in USD' }
+                }
+              }
+            },
+            {
+              name: 'trackOrderLiveOnCj',
+              description: "Pulls live order status and CJ Dropshipping package tracking checkpoints (where the customer's package is and carrier tracking URL).",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  orderIdOrTracking: {
+                    type: Type.STRING,
+                    description: 'Optional 6-character short order ID, MongoDB orderId, or tracking number. Omit to check the customer’s most recent orders.'
+                  }
+                }
+              }
+            },
+            {
+              name: 'checkStripePaymentAndVault',
+              description: "Verifies the customer's Stripe payment confirmations, membership subscription status, Founding 50 lifetime rate lock, and 1:1 Store Credit Vault balance.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {}
+              }
+            },
+            {
+              name: 'checkConsultationSchedule',
+              description: "Checks the customer's 1-on-1 live video consultation quota and any upcoming scheduled appointments with Susan.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {}
+              }
+            },
+            {
+              name: 'escalateToSusanAndOdie',
+              description: 'Sends a help-desk ticket, question, or special request from the customer directly to Susan and Odie (her executive AI) and logs it for priority follow-up.',
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  category: {
+                    type: Type.STRING,
+                    description: 'One of: "Blueprint & Routine", "Product Recommendation", "Order & CJ Tracking", "Stripe Billing & Credit", "Consultation Request", "General Help Desk"'
+                  },
+                  subject: {
+                    type: Type.STRING,
+                    description: 'Concise subject line summarizing the customer request'
+                  },
+                  customerMessage: {
+                    type: Type.STRING,
+                    description: 'Full details of what the customer needs from Susan and Odie'
+                  },
+                  orderId: {
+                    type: Type.STRING,
+                    description: 'Optional related order ID'
+                  }
+                },
+                required: ['subject', 'customerMessage']
+              }
+            }
+          ]
+        };
+
+        const lilySystemInstruction = `Your name is Lily. You are the warm, knowledgeable, and refined Customer Beauty Concierge & Help Desk AI for "Susan's Beauty Consulting" (susansbeautyconsulting.com).
+You work alongside Susan (Master Beauty Consultant & Founder) and Odie (Susan's Executive Backend AI).
+Always identify yourself as Lily.
+
+Your capabilities:
+1. Interpret the customer's Personalized Beauty Blueprint (skin temperament, primary vision, AM/PM ritual architecture, hero actives, ingredients to avoid, and Radiance AI photo scan). If a customer upgraded from Luminary to Radiance, their previous blueprint is automatically unlocked so they can take the new 10-step Radiance quiz and upload their skin photo on Step 10!
+2. Recommend matching Boutique skincare & makeup products using searchBoutiqueForBlueprint so the customer gets interactive product cards they can add to their Ritual Bag in one click.
+3. Track packages live on CJ Dropshipping using trackOrderLiveOnCj and tell the customer exactly where their order is, the carrier name, tracking number, and clickable tracking link.
+4. Check Stripe payment confirmations, membership tier status, Founding 50 lifetime locked pricing ($49 Luminary / $119 Radiance), and 1:1 Dollar-for-Dollar Store Credit Vault balances using checkStripePaymentAndVault. Remind Free ('basic') tier users that Founding 50 promo codes require completing paid Stripe membership checkout first and cannot be used to upgrade for free.
+5. Check 1-on-1 video consultation eligibility and upcoming appointments with Susan using checkConsultationSchedule.
+6. Escalate any complex customer service request, custom curation request, or message to Susan and Odie using escalateToSusanAndOdie.
+
+Live Customer Context:
+- Customer Name: ${user?.name || 'Guest Visitor'}
+- Customer Email: ${user?.email || 'Not signed in'}
+- Membership Tier: ${user?.membershipTier || 'basic'} ${user?.isFoundingMember ? `(Founding 50 Member #${user.foundingSlotNumber} • Locked at $${user.lockedTierPrice}/mo)` : ''}
+- Store Credit Vault Balance: $${Number(user?.storeCreditBalance || 0).toFixed(2)} (1:1 Dollar-for-Dollar match up to 50% of cart subtotal)
+- Beauty Blueprint Snapshot: ${JSON.stringify(blueprintContext)}
+- Recent Orders & Live CJ Tracking Snapshot: ${JSON.stringify(orderContext)}
+- Stripe Payment & Billing Snapshot: ${JSON.stringify(paymentContext)}
+- Consultation Quota Snapshot: ${JSON.stringify(quotaContext)}
+
+Always call the relevant tool(s) when the customer asks about their blueprint, product recommendations, package tracking/orders, Stripe payments/credit, consultations, or contacting Susan/Odie. Keep your tone warm, encouraging, clear, and helpful.`;
+
+        const recentHistory = await LilyChatHistory.find(
+          user ? { userId: user._id } : { sessionId: String(sessionId || '') }
+        )
+          .sort({ createdAt: -1 })
+          .limit(12)
+          .lean();
+
+        const contents = [];
+        for (const msg of recentHistory.slice().reverse()) {
+          if (!msg || !msg.text) continue;
+          const r = msg.role === 'user' ? 'user' : 'model';
+          if (contents.length === 0 && r === 'model') continue;
+          if (contents.length > 0 && contents[contents.length - 1].role === r) {
+            contents[contents.length - 1].parts[0].text += `\n\n${msg.text}`;
+          } else {
+            contents.push({ role: r, parts: [{ text: msg.text }] });
+          }
+        }
+        if (contents.length === 0 || contents[contents.length - 1].role !== 'user') {
+          contents.push({ role: 'user', parts: [{ text: cleanMessage }] });
+        }
+
+        const aiRes = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents,
+          config: {
+            systemInstruction: lilySystemInstruction,
+            tools: [lilyTools],
+            temperature: 0.25
+          }
+        });
+
+        const toolSummaries = [];
+
+        if (aiRes.functionCalls && aiRes.functionCalls.length > 0) {
+          for (const call of aiRes.functionCalls) {
+            const args = call.args || {};
+
+            if (call.name === 'getMemberBlueprintAndRoutine') {
+              const bpRes = await executeLilyBlueprintLookup(user);
+              if (bpRes.found) {
+                actionCards.push({ type: 'blueprint', data: bpRes });
+                toolSummaries.push(
+                  `🌸 **Your Beauty Blueprint (${bpRes.archetypeTitle})**:\n${bpRes.executiveSummary}\n\n• **Morning Ritual**: ${(bpRes.amRitual || []).map((s) => `Step ${s.stepNumber}: ${s.title}`).join(' → ')}\n• **Evening Ritual**: ${(bpRes.pmRitual || []).map((s) => `Step ${s.stepNumber}: ${s.title}`).join(' → ')}\n• **Hero Actives to Seek**: ${(bpRes.heroIngredients || []).map((h) => h.name).join(', ')}`
+                );
+              } else {
+                toolSummaries.push(
+                  `🌸 Your Beauty Blueprint is currently unlocked and ready for you to take! Go to the **Blueprint** tab and click **Start the Consultation** to complete all 10 steps${String(user?.membershipTier || '').toLowerCase() === 'radiance' ? ' (including your Step 10 Radiance AI Skin Photo Upload)' : ''}.`
+                );
+              }
+            } else if (call.name === 'searchBoutiqueForBlueprint') {
+              const searchRes = await executeLilyProductSearch({
+                user,
+                skinType: args.skinType,
+                skinConcern: args.skinConcern,
+                ritualStep: args.ritualStep,
+                searchQuery: args.searchQuery,
+                onlySensitivitySafe: args.onlySensitivitySafe,
+                maxPriceUsd: args.maxPriceUsd
+              });
+              if (searchRes.products.length > 0) {
+                actionCards.push({
+                  type: 'products',
+                  matchedSkinType: searchRes.matchedSkinType,
+                  matchedConcern: searchRes.matchedConcern,
+                  products: searchRes.products
+                });
+                toolSummaries.push(
+                  `🛍️ I curated **${searchRes.products.length} Boutique essentials** tailored to **${searchRes.matchedSkinType}** skin and **${searchRes.matchedConcern}**. You can click **+ Add to Ritual Bag** on any card below:`
+                );
+              } else {
+                toolSummaries.push(`🛍️ I couldn't find an exact match for that filter, so let me show you our top hydrating and barrier-safe essentials in the Boutique tab.`);
+              }
+            } else if (call.name === 'trackOrderLiveOnCj') {
+              const trackRes = await executeLilyOrderTrackingLookup({
+                user,
+                orderIdOrTracking: args.orderIdOrTracking
+              });
+              if (trackRes.found && trackRes.orders.length > 0) {
+                actionCards.push({ type: 'tracking', orders: trackRes.orders });
+                const lines = trackRes.orders.map(
+                  (o) =>
+                    `• **Order #${o.shortId}** ($${o.totalAmount.toFixed(2)}) — Status: **${o.liveStatus}** | Carrier: **${o.carrier}**${
+                      o.trackingNumber
+                        ? ` | Tracking #: **${o.trackingNumber}** (Click the tracking card below to view live checkpoints or open the carrier map)`
+                        : ' (Preparing in fulfillment studio — tracking number will post upon dispatch)'
+                    }`
+                );
+                toolSummaries.push(`📦 **Live CJ Package Tracking Update**:\n` + lines.join('\n'));
+              } else {
+                toolSummaries.push(`📦 I didn't find any orders under your account yet. Once you place an order in the Boutique, you can ask me *"Where is my package?"* anytime for live CJ tracking!`);
+              }
+            } else if (call.name === 'checkStripePaymentAndVault') {
+              const payRes = await executeLilyStripePaymentCheck(user);
+              actionCards.push({ type: 'payment', data: payRes });
+              if (payRes.authenticated) {
+                const ordLines = (payRes.recentOrderPayments || []).map(
+                  (o) => `• Order #${o.shortId}: **$${o.totalAmount.toFixed(2)}** — ${o.paymentVerified ? '✓ Stripe Payment Confirmed' : 'Pending'} (${o.status})`
+                );
+                toolSummaries.push(
+                  `💳 **Stripe Billing & Store Credit Vault Summary**:\n• **Membership Tier**: ${String(payRes.membershipTier).toUpperCase()} (${payRes.subscriptionStatus})\n${
+                    payRes.isFoundingMember ? `• **Founding 50 Lock**: Slot #${payRes.foundingSlotNumber} locked at $${payRes.lockedTierPrice}/mo for life\n` : ''
+                  }• **Store Credit Vault Balance**: **$${payRes.storeCreditBalance.toFixed(2)}** (applies 1:1 dollar-for-dollar up to 50% of your cart subtotal)\n• **Payment Method**: ${payRes.cardOnFile}${
+                    ordLines.length > 0 ? `\n\n**Recent Order Payments**:\n${ordLines.join('\n')}` : ''
+                  }`
+                );
+              } else {
+                toolSummaries.push(`💳 Please sign in to your account so I can verify your live Stripe payment history and Store Credit Vault balance.`);
+              }
+            } else if (call.name === 'checkConsultationSchedule') {
+              if (!user) {
+                toolSummaries.push(`🎥 Please sign in to check your 1-on-1 Consultation schedule with Susan.`);
+              } else {
+                const appts = await Appointment.find({
+                  clientId: user._id,
+                  status: { $ne: 'cancelled' }
+                }).sort({ startTime: 1 }).limit(5).lean();
+                actionCards.push({
+                  type: 'consultation',
+                  quota: quotaContext,
+                  appointments: appts
+                });
+                toolSummaries.push(
+                  `🎥 **1-on-1 Consultation Status**:\n• **Quota**: ${quotaContext?.limitLabel || 'Paid Membership Feature'}\n• **Remaining Bookings in Window**: ${quotaContext?.remainingCount ?? 0}\n• **Upcoming Scheduled Sessions**: ${
+                    appts.length > 0
+                      ? appts.map((a) => `${new Date(a.startTime).toLocaleString()} (${a.status})`).join(', ')
+                      : 'None currently booked — visit the Consultations tab to select a time on Susan’s calendar!'
+                  }`
+                );
+              }
+            } else if (call.name === 'escalateToSusanAndOdie') {
+              const ticketRes = await executeLilyEscalationToSusanAndOdie({
+                user,
+                category: args.category,
+                subject: args.subject,
+                customerMessage: args.customerMessage || cleanMessage,
+                orderId: args.orderId
+              });
+              actionCards.push({ type: 'ticket', data: ticketRes });
+              toolSummaries.push(`💌 **${ticketRes.message}**`);
+            }
+          }
+        }
+
+        const directText = aiRes.text && typeof aiRes.text === 'string' ? aiRes.text.trim() : '';
+        replyText = [directText, ...toolSummaries].filter(Boolean).join('\n\n');
+      } catch (geminiErr) {
+        console.warn('[Lily AI] Gemini call fallback triggered:', geminiErr.message);
+      }
+    }
+
+    // Deterministic Smart Fallback if Gemini text is empty or API key is unconfigured
+    if (!replyText) {
+      const lower = cleanMessage.toLowerCase();
+      if (/track|package|where is my|order|ship|cj/i.test(lower)) {
+        if (orderContext.found && orderContext.orders.length > 0) {
+          actionCards.push({ type: 'tracking', orders: orderContext.orders });
+          replyText =
+            `🌸 Here is the live tracking status for your recent order(s):\n\n` +
+            orderContext.orders
+              .map(
+                (o) =>
+                  `• **Order #${o.shortId}** ($${o.totalAmount.toFixed(2)}) — **${o.liveStatus}** via **${o.carrier}**${
+                    o.trackingNumber ? ` | Tracking #: **${o.trackingNumber}**` : ''
+                  }`
+              )
+              .join('\n') +
+            `\n\nClick any tracking number card below to open the live checkpoint map!`;
+        } else {
+          replyText = `🌸 I checked your account and didn't see any active orders yet. As soon as you place an order, I can pull live CJ Dropshipping tracking checkpoints for you right here!`;
+        }
+      } else if (/stripe|payment|paid|charge|credit|vault|billing|promo|upgrade/i.test(lower)) {
+        actionCards.push({ type: 'payment', data: paymentContext });
+        replyText = paymentContext.authenticated
+          ? `🌸 I verified your billing & Store Credit profile:\n• **Membership Tier**: ${String(paymentContext.membershipTier).toUpperCase()} (${paymentContext.subscriptionStatus})\n• **Store Credit Vault**: **$${Number(paymentContext.storeCreditBalance || 0).toFixed(2)}** (redeemable 1:1 dollar-for-dollar at checkout)\n• **Payment Method**: ${paymentContext.cardOnFile}`
+          : `🌸 Please sign in so I can pull your live Stripe payment confirmations and Store Credit Vault balance.`;
+      } else if (/susan|odie|help|human|support|contact|message|agent/i.test(lower)) {
+        const ticketRes = await executeLilyEscalationToSusanAndOdie({
+          user,
+          category: 'General Help Desk',
+          subject: cleanMessage.slice(0, 60),
+          customerMessage: cleanMessage
+        });
+        actionCards.push({ type: 'ticket', data: ticketRes });
+        replyText = `🌸 I've forwarded your message directly to **Susan** and **Odie** (Ticket **#${ticketRes.shortTicketId}**). You'll receive their reply right here in our chat, in your On-Site Inbox, and via email!`;
+      } else if (/product|recommend|serum|cream|cleanser|moisturizer|match|shop|routine/i.test(lower)) {
+        const prodSearch = await executeLilyProductSearch({ user });
+        actionCards.push({
+          type: 'products',
+          matchedSkinType: prodSearch.matchedSkinType,
+          matchedConcern: prodSearch.matchedConcern,
+          products: prodSearch.products
+        });
+        replyText = `🌸 Based on your **${prodSearch.matchedSkinType}** skin profile and **${prodSearch.matchedConcern}** focus, here are my top recommended Boutique essentials. Click **+ Add to Ritual Bag** on any item below:`;
+      } else {
+        if (blueprintContext.found) {
+          actionCards.push({ type: 'blueprint', data: blueprintContext });
+          const prodSearch = await executeLilyProductSearch({ user });
+          if (prodSearch.products.length > 0) {
+            actionCards.push({
+              type: 'products',
+              matchedSkinType: prodSearch.matchedSkinType,
+              matchedConcern: prodSearch.matchedConcern,
+              products: prodSearch.products
+            });
+          }
+          replyText = `🌸 Hello ${user?.name || 'there'}! I'm **Lily**, your personal Beauty & Order Concierge.\n\nYour Beauty Blueprint is **${blueprintContext.archetypeTitle}** (${blueprintContext.skinType} skin • ${blueprintContext.primaryGoal} focus). ${blueprintContext.executiveSummary}\n\nHow can I help you today? You can ask me to explain your AM/PM ritual, match products to your skin, track your CJ package, verify a Stripe payment, or send a note to Susan & Odie!`;
+        } else {
+          replyText = `🌸 Hello ${user?.name || 'there'}! I'm **Lily**, your personal AI Beauty & Customer Care Concierge at Susan's Beauty Consulting.\n\nI can help you:\n• **Interpret your Beauty Blueprint** & match products to your skin\n• **Track your packages live** from CJ Dropshipping\n• **Verify your Stripe payments** & 1:1 Store Credit Vault\n• **Connect directly with Susan & Odie** for personal assistance\n\nWhat would you like to explore first?`;
+        }
+      }
+    }
+
+    const savedLilyMsg = await LilyChatHistory.create({
+      userId: user?._id || null,
+      sessionId: String(sessionId || ''),
+      userEmail: user?.email || '',
+      role: 'lily',
+      text: replyText,
+      actionCards
+    });
+
+    res.json({
+      success: true,
+      assistantName: 'Lily',
+      reply: replyText,
+      actionCards,
+      messageDoc: savedLilyMsg
+    });
+  } catch (err) {
+    console.error('Lily AI Chat Error:', err);
+    res.status(500).json({ error: 'Lily encountered a temporary issue. Please try again.', details: err.message });
+  }
+});
 
 // POST /api/cart/shipping-rates — Dynamically calculates all available CJ shipping methods & varying prices for the cart items
 // and automatically selects the Least Expensive & Most Efficient CJ shipping method (`optimalCarrier`).
@@ -17460,6 +18816,7 @@ app.post(
                 }
               }
 
+              const prevTierInWebhook = String(user.membershipTier || 'basic').toLowerCase().trim();
               if (user.role !== 'admin' && user.membershipTier !== 'admin') {
                 user.membershipTier = resolvedTier;
               }
@@ -17475,6 +18832,17 @@ app.post(
               };
               user.markModified('billingInfo');
               await user.save();
+
+              // Apply any reserved Founding 50 promo code now that Stripe subscription payment is verified
+              const webhookPromo = session.metadata?.promoCode || user.pendingFoundingPromoCode || '';
+              if (webhookPromo) {
+                await applyVerifiedFoundingPromoToPaidUser(user, webhookPromo).catch(() => {});
+              }
+
+              // Archive previous Blueprint if upgrading tiers so member gets a fresh Blueprint & AI Photo Scan
+              if (prevTierInWebhook !== resolvedTier || resolvedTier === 'radiance') {
+                await archiveMemberBlueprintForUpgrade(user._id, resolvedTier);
+              }
               webhookSummary = `Upgraded ${user.email} to ${resolvedTier} tier`;
               console.log(`✨ Successfully upgraded user ${user.email} to ${resolvedTier} tier.`);
 
@@ -18214,12 +19582,11 @@ mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✧ Connected securely to MongoDB');
     await ensureDefaultOdieMemories();
-    await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
     await backfillProductBlueprintLabels(false);
     await backfillProductShippingAndCustomLabelMeta(false);
     await backfillConsultationAnalyses();
     await backfillAnalyticsBaseline();
-
+    
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
     } else {
