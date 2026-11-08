@@ -12343,6 +12343,554 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
 
 // ---------------- MAIN APP ---------------- //
 
+
+// ============================================================================
+// UPGRADE MODULE 1 & 2: FOUNDING 50 PROMO ENGINE, SMART CART PREVIEW & ON-SITE INBOX
+// ============================================================================
+
+export function computeClientSideFoundingBreakdown(rawItems = [], user = null, applyStoreCredit = true) {
+  const VIP_BOX = {
+    productId: 'VIP-RADIANCE-3PC-BOX',
+    cjVariantId: 'CJ-VIP-3PC-SET',
+    sku: 'CJ-VIP-3PC-SET',
+    name: 'Founders 3pc VIP Mystery Box Set (Radiance Exclusive)',
+    title: 'Founders 3pc VIP Mystery Box Set (Radiance Exclusive)',
+    price: 0.0,
+    quantity: 1,
+    isVipBonus: true
+  };
+
+  const paidItems = (Array.isArray(rawItems) ? rawItems : [])
+    .filter((i) => !i.isVipBonus && i.productId !== VIP_BOX.productId)
+    .map((item) => ({
+      ...item,
+      productId: item.productId || item._id || item.sku,
+      name: item.name || item.title || 'Boutique Essential',
+      title: item.title || item.name || 'Boutique Essential',
+      price: Math.max(0, Number(item.price || 0)),
+      quantity: Math.max(1, Number(item.quantity || 1)),
+      isVipBonus: false
+    }));
+
+  const merchandiseSubtotal = Number(
+    paidItems.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2)
+  );
+
+  const availableCredit = user ? Math.max(0, Number(user.storeCreditBalance || 0)) : 0;
+  const maxAllowedByDollarForDollarRule = Number((merchandiseSubtotal * 0.5).toFixed(2));
+  const storeCreditApplied = applyStoreCredit
+    ? Number(Math.min(availableCredit, maxAllowedByDollarForDollarRule).toFixed(2))
+    : 0;
+  const cashDueAfterCredit = Number(Math.max(0, merchandiseSubtotal - storeCreditApplied).toFixed(2));
+  const remainingStoreCreditAfterOrder = Number(Math.max(0, availableCredit - storeCreditApplied).toFixed(2));
+
+  const finalItems = [...paidItems];
+  let includesVipMysteryBox = false;
+  if (user && user.pendingVipMysteryBox && paidItems.length > 0) {
+    finalItems.push(VIP_BOX);
+    includesVipMysteryBox = true;
+  }
+
+  return {
+    items: finalItems,
+    merchandiseSubtotal,
+    storeCreditApplied,
+    remainingStoreCreditAfterOrder,
+    cashDueAfterCredit,
+    includesVipMysteryBox,
+    creditRuleExplanation:
+      storeCreditApplied > 0
+        ? `Dollar-for-Dollar Match applied: -$${storeCreditApplied.toFixed(2)} store credit matched with $${cashDueAfterCredit.toFixed(2)} cash.`
+        : 'Add items to unlock your 1:1 Dollar-for-Dollar Store Credit match.'
+  };
+}
+
+export function FoundingMemberPromoAndCartModule({
+  authToken,
+  currentUser,
+  onUserUpdated,
+  cartItems = [],
+  onUpdateCartQty,
+  onRemoveCartItem,
+  compact = false
+}) {
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [promoStatus, setPromoStatus] = useState({ loading: false, error: null, success: null });
+  const [applyStoreCredit, setApplyStoreCredit] = useState(true);
+  const [cartBreakdown, setCartBreakdown] = useState(() =>
+    computeClientSideFoundingBreakdown(cartItems, currentUser, true)
+  );
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  const activeToken = authToken || (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
+  useEffect(() => {
+    const localFallback = computeClientSideFoundingBreakdown(cartItems, currentUser, applyStoreCredit);
+    setCartBreakdown(localFallback);
+
+    if (!activeToken) return;
+    let isMounted = true;
+    async function fetchPreview() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/checkout/calculate-preview`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeToken}`
+          },
+          body: JSON.stringify({ items: cartItems, applyStoreCredit })
+        });
+        const data = await res.json();
+        if (isMounted && res.ok && data.breakdown) {
+          setCartBreakdown(data.breakdown);
+        }
+      } catch (err) {
+        // Fallback already set
+      }
+    }
+    fetchPreview();
+    return () => {
+      isMounted = false;
+    };
+  }, [cartItems, applyStoreCredit, activeToken, currentUser?.storeCreditBalance, currentUser?.pendingVipMysteryBox]);
+
+  const handleRedeemPromo = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!promoCodeInput.trim()) return;
+    if (!activeToken) {
+      setPromoStatus({ loading: false, error: 'Please sign in to your account first to redeem a Founding 50 code.', success: null });
+      return;
+    }
+    setPromoStatus({ loading: true, error: null, success: null });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/promos/redeem-founding`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeToken}`
+        },
+        body: JSON.stringify({ code: promoCodeInput.trim().toUpperCase() })
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Could not redeem promo code.');
+      }
+
+      setPromoStatus({ loading: false, error: null, success: data.message });
+      setPromoCodeInput('');
+      if (onUserUpdated) {
+        onUserUpdated(data.user || data.entitlements);
+      }
+    } catch (err) {
+      setPromoStatus({ loading: false, error: err.message, success: null });
+    }
+  };
+
+  const handleProceedToCheckout = async () => {
+    if (!activeToken) {
+      alert('Please sign in to complete your Founding Member checkout.');
+      return;
+    }
+    setCheckoutLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/checkout/create-session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeToken}`
+        },
+        body: JSON.stringify({
+          items: cartItems,
+          applyStoreCredit
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.checkoutUrl || data.url) {
+        window.location.href = data.checkoutUrl || data.url;
+      } else {
+        alert(data.error || 'Unable to start checkout.');
+      }
+    } catch (err) {
+      alert('Checkout error: ' + err.message);
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: compact ? '100%' : '960px', margin: '0 auto 24px auto', textAlign: 'left', fontFamily: 'sans-serif' }}>
+      {/* 1. FOUNDING 50 PROMO CODE REDEMPTION & VIP STATUS BANNER */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, #2c1e18 0%, #3d2a22 55%, #2c1e18 100%)',
+          color: '#fdf8f5',
+          borderRadius: '18px',
+          padding: compact ? '16px 18px' : '22px 26px',
+          border: '1.5px solid rgba(212, 175, 55, 0.55)',
+          boxShadow: '0 10px 28px rgba(44, 30, 24, 0.18)'
+        }}
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+          <div style={{ flex: '1 1 280px' }}>
+            <span
+              style={{
+                display: 'inline-block',
+                fontSize: '0.72rem',
+                textTransform: 'uppercase',
+                letterSpacing: '1.6px',
+                color: '#d4af37',
+                fontWeight: 'bold'
+              }}
+            >
+              👑 Limited to First 50 Members • Lifetime Rate Lock
+            </span>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: compact ? '1.45rem' : '1.85rem', margin: '4px 0 6px 0', color: '#ffffff' }}>
+              Founding 50 VIP Membership &amp; Store Credit Vault
+            </h3>
+            <p style={{ fontSize: '0.86rem', color: '#e6dad2', margin: 0, lineHeight: '1.5' }}>
+              Lock in <strong>$49 Luminary</strong> or <strong>$119 Radiance</strong> pricing for life, receive{' '}
+              <strong>100% back in Store Credit</strong> (redeemable dollar-for-dollar on orders), unlock the{' '}
+              <strong>AI Beauty &amp; Ritual Consultation</strong>, plus Radiance Founders receive a{' '}
+              <strong>FREE 3pc VIP Mystery Box</strong> on their first order.
+            </p>
+          </div>
+
+          {currentUser?.isFoundingMember ? (
+            <div
+              style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(212, 175, 55, 0.65)',
+                borderRadius: '14px',
+                padding: '12px 18px',
+                fontSize: '0.84rem',
+                minWidth: '240px'
+              }}
+            >
+              <div style={{ color: '#d4af37', fontWeight: 'bold', marginBottom: '4px', fontSize: '0.92rem' }}>
+                ✓ Founding Member #{currentUser.foundingSlotNumber || 1} ({String(currentUser.membershipTier || 'VIP').toUpperCase()})
+              </div>
+              <div style={{ color: '#fdf8f5', marginBottom: '2px' }}>
+                Lifetime Locked Rate: <strong>${currentUser.lockedTierPrice || (String(currentUser.membershipTier).toLowerCase() === 'radiance' ? 119 : 49)}/mo</strong>
+              </div>
+              <div style={{ color: '#81c784', fontWeight: 'bold' }}>
+                Store Credit Vault: ${Number(currentUser.storeCreditBalance || 0).toFixed(2)}
+              </div>
+              <div style={{ color: '#e6dad2', fontSize: '0.78rem', marginTop: '3px' }}>
+                ✨ AI Beauty &amp; Ritual Consultation: <strong>Unlocked</strong>
+              </div>
+              {currentUser.pendingVipMysteryBox && (
+                <div style={{ marginTop: '5px', color: '#ffe082', fontSize: '0.78rem', fontWeight: 'bold' }}>
+                  🎁 3pc VIP Mystery Box Pending (Auto-attaches FREE on 1st order)
+                </div>
+              )}
+            </div>
+          ) : (
+            <form onSubmit={handleRedeemPromo} style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', flex: '0 1 auto' }}>
+              <input
+                type="text"
+                value={promoCodeInput}
+                onChange={(e) => setPromoCodeInput(e.target.value)}
+                placeholder="Enter Code (e.g. RAD-FOUNDER-01)"
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  backgroundColor: 'rgba(255,255,255,0.95)',
+                  color: '#2c1e18',
+                  border: '1px solid #d4af37',
+                  fontSize: '0.86rem',
+                  fontFamily: 'monospace',
+                  textTransform: 'uppercase',
+                  minWidth: compact ? '170px' : '215px',
+                  outline: 'none'
+                }}
+              />
+              <button
+                type="submit"
+                disabled={promoStatus.loading}
+                style={{
+                  padding: '10px 18px',
+                  backgroundColor: '#d4af37',
+                  color: '#2c1e18',
+                  fontWeight: 'bold',
+                  borderRadius: '10px',
+                  border: 'none',
+                  fontSize: '0.86rem',
+                  cursor: promoStatus.loading ? 'wait' : 'pointer',
+                  boxShadow: '0 4px 12px rgba(212, 175, 55, 0.35)'
+                }}
+              >
+                {promoStatus.loading ? 'Unlocking...' : 'Redeem Founder Code'}
+              </button>
+            </form>
+          )}
+        </div>
+
+        {promoStatus.error && (
+          <div style={{ marginTop: '10px', padding: '8px 12px', backgroundColor: 'rgba(183, 28, 28, 0.35)', border: '1px solid #ef9a9a', borderRadius: '8px', color: '#ffcdd2', fontSize: '0.82rem' }}>
+            ⚠️ {promoStatus.error}
+          </div>
+        )}
+        {promoStatus.success && (
+          <div style={{ marginTop: '10px', padding: '8px 12px', backgroundColor: 'rgba(27, 94, 32, 0.35)', border: '1px solid #a5d6a7', borderRadius: '8px', color: '#c8e6c9', fontSize: '0.82rem' }}>
+            ✨ {promoStatus.success}
+          </div>
+        )}
+      </div>
+
+      {/* Optional standalone Smart Cart view when compact === false and showStandaloneCart is passed */}
+      {!compact && cartBreakdown && Array.isArray(cartBreakdown.items) && cartBreakdown.items.length > 0 && onUpdateCartQty && (
+        <div style={{ marginTop: '18px', backgroundColor: '#ffffff', borderRadius: '16px', padding: '20px', border: '1px solid #efe6dd', boxShadow: '0 4px 14px rgba(0,0,0,0.04)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <strong style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#2c1e18' }}>
+              Active Ritual Bag &amp; 1:1 Store Credit Preview
+            </strong>
+            <span style={{ fontSize: '0.82rem', color: '#2e7d32', fontWeight: 'bold' }}>
+              Cash Due: ${Number(cartBreakdown.cashDueAfterCredit || 0).toFixed(2)}
+            </span>
+          </div>
+          {cartBreakdown.includesVipMysteryBox && (
+            <div style={{ padding: '10px 14px', backgroundColor: '#fffdf5', border: '1px solid #d4af37', borderRadius: '10px', fontSize: '0.85rem', color: '#7a5901', marginBottom: '10px' }}>
+              🎁 <strong>Founders 3pc VIP Mystery Box Set (Radiance Exclusive)</strong> — Auto-Included FREE ($0.00) on your first order!
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <span style={{ fontSize: '0.82rem', color: '#6e5a4f' }}>{cartBreakdown.creditRuleExplanation}</span>
+            <button
+              type="button"
+              onClick={handleProceedToCheckout}
+              disabled={checkoutLoading}
+              style={{ backgroundColor: '#2c1e18', color: '#ffffff', border: 'none', borderRadius: '10px', padding: '9px 18px', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {checkoutLoading ? 'Preparing Checkout...' : `Checkout ($${Number(cartBreakdown.cashDueAfterCredit || 0).toFixed(2)})`}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CustomerOnSiteInbox({
+  authToken,
+  fallbackItems = [],
+  onAddToCart,
+  onCardClick,
+  userBlueprint,
+  hasCompletedQuiz
+}) {
+  const [messages, setMessages] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [selectedMsg, setSelectedMsg] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const activeToken = authToken || (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
+  const fetchInbox = async () => {
+    if (!activeToken) {
+      setMessages(Array.isArray(fallbackItems) ? fallbackItems : []);
+      setLoading(false);
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/inbox`, {
+        headers: { Authorization: `Bearer ${activeToken}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && Array.isArray(data.items)) {
+        setMessages(data.items);
+        setUnreadCount(Number(data.unreadCount || 0));
+      } else if (Array.isArray(fallbackItems)) {
+        setMessages(fallbackItems);
+      }
+    } catch (err) {
+      if (Array.isArray(fallbackItems)) setMessages(fallbackItems);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchInbox();
+    // eslint-disable-next-line
+  }, [activeToken, fallbackItems?.length]);
+
+  const handleOpenMessage = async (msg) => {
+    setSelectedMsg(msg);
+    if (!msg.isRead && activeToken && msg._id) {
+      try {
+        await fetch(`${API_BASE_URL}/api/inbox/${msg._id}/read`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${activeToken}` }
+        });
+        setMessages((prev) => prev.map((m) => (m._id === msg._id ? { ...m, isRead: true } : m)));
+        setUnreadCount((c) => Math.max(0, c - 1));
+      } catch (err) {}
+    }
+  };
+
+  const orderAndVipMessages = messages.filter((m) => m.subject || m.bodyHtml || m.bodyText);
+  const productCurations = messages.filter((m) => m.productId);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px', textAlign: 'left' }}>
+      {/* Dual-Channel Order Updates, Shipping Alerts & Founding 50 VIP Messages */}
+      <div style={{ backgroundColor: '#ffffff', borderRadius: '18px', border: '1px solid #E8C5C8', padding: '26px', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.15)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid #efe6dd', paddingBottom: '14px', marginBottom: '18px' }}>
+          <div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.9rem', color: '#2c1e18', margin: 0 }}>
+              On-Site Order &amp; VIP Sanctuary Inbox
+            </h3>
+            <p style={{ fontSize: '0.86rem', color: '#7a6356', margin: '4px 0 0 0', fontFamily: 'sans-serif' }}>
+              Every order confirmation, live CJ tracking number, and Founding 50 VIP alert is delivered both to your email and directly here.
+            </p>
+          </div>
+          {unreadCount > 0 && (
+            <span style={{ backgroundColor: '#d4af37', color: '#2c1e18', fontSize: '0.78rem', fontWeight: 'bold', padding: '5px 14px', borderRadius: '20px', fontFamily: 'sans-serif' }}>
+              {unreadCount} Unread Update{unreadCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <p style={{ fontSize: '0.95rem', color: '#8c766a', fontFamily: 'sans-serif' }}>Loading your sanctuary messages...</p>
+        ) : orderAndVipMessages.length === 0 ? (
+          <p style={{ color: '#8c766a', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', margin: 0 }}>
+            No order or VIP system messages yet. When you redeem a Founding 50 code or place an order, instant dual-channel updates will appear here.
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '18px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+              {orderAndVipMessages.map((msg) => {
+                const isSelected = selectedMsg?._id === msg._id;
+                return (
+                  <button
+                    key={msg._id}
+                    type="button"
+                    onClick={() => handleOpenMessage(msg)}
+                    style={{
+                      textAlign: 'left',
+                      padding: '13px 15px',
+                      borderRadius: '12px',
+                      border: isSelected ? '1.5px solid #B38B8F' : !msg.isRead ? '1.5px solid #d4af37' : '1px solid #efe6dd',
+                      backgroundColor: isSelected ? '#FFF0F2' : !msg.isRead ? '#fffdf7' : '#ffffff',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 'bold', color: '#b8860b', fontFamily: 'sans-serif' }}>
+                        {msg.category || 'Order Update'}
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: '#9e897d', fontFamily: 'sans-serif' }}>
+                        {new Date(msg.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.92rem', fontWeight: !msg.isRead ? 'bold' : '600', color: '#2c1e18', fontFamily: 'sans-serif', marginBottom: '4px' }}>
+                      {!msg.isRead && <span style={{ color: '#d4af37', marginRight: '5px' }}>●</span>}
+                      {msg.subject || "Susan's Beauty Consulting Update"}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#6e5a4f', fontFamily: 'sans-serif', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {msg.bodyText || msg.message}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ backgroundColor: '#FAF6F3', borderRadius: '14px', padding: '18px', border: '1px solid #efe6dd', minHeight: '240px' }}>
+              {selectedMsg ? (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #e2d5c8', paddingBottom: '10px', marginBottom: '14px', gap: '8px' }}>
+                    <div>
+                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: '#b8860b', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                        {selectedMsg.category || 'Order Update'}
+                      </span>
+                      <h4 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#2c1e18', margin: '3px 0 0 0', fontFamily: "'Cormorant Garamond', serif" }}>
+                        {selectedMsg.subject}
+                      </h4>
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: '#8c766a', fontFamily: 'sans-serif' }}>
+                      {new Date(selectedMsg.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+
+                  {selectedMsg.metadata?.trackingNumber && (
+                    <div style={{ marginBottom: '14px', padding: '12px', backgroundColor: '#ffffff', borderLeft: '4px solid #d4af37', borderRadius: '8px', fontSize: '0.85rem', fontFamily: 'sans-serif' }}>
+                      <div>
+                        <strong>Carrier:</strong> {selectedMsg.metadata.carrier || 'Standard Carrier'}
+                      </div>
+                      <div>
+                        <strong>Tracking #:</strong>{' '}
+                        <span style={{ fontFamily: 'monospace', color: '#B38B8F', fontWeight: 'bold' }}>
+                          {selectedMsg.metadata.trackingNumber}
+                        </span>
+                      </div>
+                      {selectedMsg.metadata.trackingUrl && (
+                        <a
+                          href={selectedMsg.metadata.trackingUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ display: 'inline-block', marginTop: '6px', color: '#b8860b', fontWeight: 'bold', textDecoration: 'underline' }}
+                        >
+                          Track Package Live →
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {selectedMsg.bodyHtml ? (
+                    <div
+                      style={{ fontSize: '0.9rem', color: '#2c1e18', lineHeight: '1.6', fontFamily: 'sans-serif' }}
+                      dangerouslySetInnerHTML={{ __html: selectedMsg.bodyHtml }}
+                    />
+                  ) : (
+                    <p style={{ fontSize: '0.95rem', color: '#2c1e18', lineHeight: '1.6', fontFamily: 'sans-serif' }}>
+                      {selectedMsg.bodyText || selectedMsg.message}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9e897d', fontSize: '0.92rem', fontFamily: 'sans-serif' }}>
+                  Select a message on the left to view full order &amp; tracking details.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Susan's Bespoke Product Curations */}
+      {productCurations.length > 0 && (
+        <div>
+          <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.8rem', color: '#5C5454', margin: '0 0 14px 0' }}>
+            💌 Susan&apos;s Personal Product Curations For You
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            {productCurations.map((item) => (
+              <div key={item._id} style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '15px', border: '1px solid #E8C5C8', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
+                <div style={{ flex: '1 1 250px', maxWidth: '300px' }}>
+                  {item.productId && typeof item.productId === 'object' ? (
+                    <ProductCard product={item.productId} onAddToCart={onAddToCart} onCardClick={onCardClick} userBlueprint={userBlueprint} hasCompletedQuiz={hasCompletedQuiz} />
+                  ) : (
+                    <p style={{ color: '#A89999', fontStyle: 'italic' }}>Product details attached in message.</p>
+                  )}
+                </div>
+                <div style={{ flex: '2 1 300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', backgroundColor: '#FFF9F9', padding: '25px', borderRadius: '12px', border: '1px dashed #E8C5C8' }}>
+                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#B38B8F', fontStyle: 'italic', margin: '0 0 15px 0' }}>Received: {new Date(item.createdAt).toLocaleDateString()}</p>
+                  <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#5C5454', lineHeight: '1.6', margin: 0 }}>"{item.message || item.bodyText}"</p>
+                  <p style={{ fontFamily: "'Alex Brush', cursive", fontSize: '1.8rem', color: '#B38B8F', margin: '20px 0 0 0' }}>Warmly, Susan</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [step, setStep] = useState(() => {
     try {
@@ -12400,8 +12948,11 @@ function App() {
   const effectiveMemberTier = String(userDetails?.membershipTier || 'basic').toLowerCase().trim();
   const isPaidMemberOrAdmin =
     userDetails?.role === 'admin' ||
+    Boolean(userDetails?.isFoundingMember) ||
+    Boolean(userDetails?.aiBeautyRitualConsultation) ||
     ['luminary', 'radiance', 'admin'].includes(effectiveMemberTier);
   const isFreeBasicMember = !isPaidMemberOrAdmin;
+  const [applyStoreCreditInBag, setApplyStoreCreditInBag] = useState(true);
 
   const [accountForm, setAccountForm] = useState({
     name: userDetails?.name || '',
@@ -13138,10 +13689,22 @@ function App() {
         });
         if (resOrders.ok) setUserOrders(await resOrders.json());
 
-        const resInbox = await fetch(`${API_BASE_URL}/api/users/me/inbox`, {
+        const resInbox = await fetch(`${API_BASE_URL}/api/inbox`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (resInbox.ok) setInboxItems(await resInbox.json());
+        if (resInbox.ok) {
+          const inboxData = await resInbox.json();
+          if (Array.isArray(inboxData?.items)) {
+            setInboxItems(inboxData.items);
+          } else if (Array.isArray(inboxData)) {
+            setInboxItems(inboxData);
+          }
+        } else {
+          const resLegacyInbox = await fetch(`${API_BASE_URL}/api/users/me/inbox`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (resLegacyInbox.ok) setInboxItems(await resLegacyInbox.json());
+        }
 
       } catch (err) {
         console.error('Failed to fetch dashboard data', err);
@@ -13513,6 +14076,7 @@ function App() {
         },
         body: JSON.stringify({
           items: cart,
+          applyStoreCredit: applyStoreCreditInBag,
           selectedLogisticName: cartShippingInfo.selectedLogisticName || 'CJPacket Sensitive Pro',
           ...(userDetails.email ? { customerEmail: userDetails.email } : {}),
           ...(activeTier ? { membershipTier: activeTier } : {})
@@ -14040,8 +14604,34 @@ function App() {
               const subtotal = calculateCartSubtotal();
               const { rate, label } = getActiveMemberDiscount();
               const discountAmount = subtotal * rate;
+              const postDiscountTotal = Number(calculateCartTotal()) || 0;
+              const foundingPreview = computeClientSideFoundingBreakdown(
+                cart.map(it => ({ ...it, price: Number(it.price || 0) })),
+                userDetails,
+                applyStoreCreditInBag
+              );
+              const availableVaultCredit = Number(userDetails?.storeCreditBalance || 0);
+              const maxDollarForDollarCredit = Number((postDiscountTotal * 0.5).toFixed(2));
+              const appliedCreditUsd = applyStoreCreditInBag
+                ? Number(Math.min(availableVaultCredit, maxDollarForDollarCredit).toFixed(2))
+                : 0;
+              const finalCashDueUsd = Number(Math.max(0, postDiscountTotal - appliedCreditUsd).toFixed(2));
+              const remainingVaultUsd = Number(Math.max(0, availableVaultCredit - appliedCreditUsd).toFixed(2));
+
               return (
                 <>
+                  {foundingPreview.includesVipMysteryBox && cart.length > 0 && (
+                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#FFFDF5', borderRadius: '10px', border: '1.5px solid #D4AF37', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C4308' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold' }}>
+                        <span>🎁 Founders 3pc VIP Mystery Box Set</span>
+                        <span style={{ backgroundColor: '#D4AF37', color: '#2C1E18', padding: '2px 7px', borderRadius: '6px', fontSize: '0.72rem' }}>FREE ($0.00)</span>
+                      </div>
+                      <div style={{ fontSize: '0.73rem', color: '#7A6356', marginTop: '3px' }}>
+                        Radiance Founder Exclusive • Auto-injected into your first shipment
+                      </div>
+                    </div>
+                  )}
+
                   {rate > 0 && cart.length > 0 && (
                     <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#FFF0F2', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: '#736A6A', marginBottom: '4px' }}>
@@ -14054,9 +14644,33 @@ function App() {
                       </div>
                     </div>
                   )}
+
+                  {availableVaultCredit > 0 && cart.length > 0 && (
+                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#F4FBF5', borderRadius: '10px', border: '1px solid #A5D6A7', fontFamily: 'sans-serif', fontSize: '0.8rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', fontWeight: 'bold', color: '#2E7D32', marginBottom: '6px' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <input
+                            type="checkbox"
+                            checked={applyStoreCreditInBag}
+                            onChange={(e) => setApplyStoreCreditInBag(e.target.checked)}
+                          />
+                          Apply Store Credit (1:1 Match)
+                        </span>
+                        <span>-${appliedCreditUsd.toFixed(2)}</span>
+                      </label>
+                      <div style={{ fontSize: '0.72rem', color: '#4A6B4D', lineHeight: '1.4' }}>
+                        Dollar-for-Dollar Rule: Up to 50% of cart matched with Store Credit. Vault remaining after order: <strong>${remainingVaultUsd.toFixed(2)}</strong>
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>Total:</span>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>${calculateCartTotal()}</span>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>
+                      {appliedCreditUsd > 0 ? 'Cash Due Today:' : 'Total:'}
+                    </span>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>
+                      ${finalCashDueUsd.toFixed(2)}
+                    </span>
                   </div>
                   {cart.length > 0 && (
                     <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '9px 11px', marginBottom: '12px', fontFamily: 'sans-serif', fontSize: '0.76rem', color: '#5C5454' }}>
@@ -14474,6 +15088,11 @@ function App() {
                           🔒
                         </span>
                       )}
+                      {tab === 'Inbox' && inboxItems.length > 0 && (
+                        <span style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFFDF5', color: '#B8860B', border: '1px solid #D4AF37', borderRadius: '12px', padding: '2px 8px', fontWeight: 'bold' }}>
+                          {inboxItems.filter(i => !i.isRead).length || inboxItems.length}
+                        </span>
+                      )}
                       {tab === 'Order History' && userOrders.length > 0 && (
                         <span style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '12px', padding: '2px 8px', fontWeight: 'bold' }}>
                           {userOrders.length}
@@ -14597,6 +15216,26 @@ function App() {
                   </button>
                 </div>
               </div>
+
+              {/* FOUNDING 50 PROMO CODE & VIP ENTITLEMENT BAR */}
+              <FoundingMemberPromoAndCartModule
+                authToken={localStorage.getItem('token')}
+                currentUser={userDetails}
+                onUserUpdated={(updatedUser) => {
+                  if (updatedUser) {
+                    setUserDetails((prev) => ({
+                      ...prev,
+                      ...updatedUser,
+                      password: ''
+                    }));
+                    if (updatedUser.membershipTier) {
+                      setSelectedTier(String(updatedUser.membershipTier).toLowerCase());
+                    }
+                  }
+                }}
+                cartItems={cart}
+                compact={true}
+              />
 
               {/* TABS CONTENT */}
               
@@ -15220,35 +15859,17 @@ function App() {
                 </div>
               )}
 
-              {/* 2. INBOX TAB */}
+              {/* 2. INBOX TAB (DUAL-CHANNEL ORDER/VIP UPDATES + SUSAN'S CURATIONS) */}
               {activeMemberTab === 'Inbox' && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
-                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', color: '#8A797A', fontStyle: 'italic', marginBottom: '30px' }}>Your private messages and hand-selected curations from Susan.</p>
-                  
-                  {inboxItems.length > 0 ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                      {inboxItems.map((item) => (
-                        <div key={item._id} style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '15px', border: '1px solid #E8C5C8', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.1)' }}>
-                          <div style={{ flex: '1 1 250px', maxWidth: '300px' }}>
-                            {item.productId ? (
-                              <ProductCard product={item.productId} onAddToCart={handleAddToCart} onCardClick={setSelectedProduct} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} />
-                            ) : (
-                              <p style={{ color: '#A89999', fontStyle: 'italic' }}>Product no longer available.</p>
-                            )}
-                          </div>
-                          <div style={{ flex: '2 1 300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', backgroundColor: '#FFF9F9', padding: '25px', borderRadius: '12px', border: '1px dashed #E8C5C8' }}>
-                            <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#B38B8F', fontStyle: 'italic', margin: '0 0 15px 0' }}>Received: {new Date(item.createdAt).toLocaleDateString()}</p>
-                            <p style={{ fontFamily: 'sans-serif', fontSize: '1.1rem', color: '#5C5454', lineHeight: '1.6', margin: 0 }}>"{item.message}"</p>
-                            <p style={{ fontFamily: "'Alex Brush', cursive", fontSize: '1.8rem', color: '#B38B8F', margin: '20px 0 0 0' }}>Warmly, Susan</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ padding: '50px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px dashed #E8C5C8', borderRadius: '15px' }}>
-                      <p style={{ color: '#8A797A', fontStyle: 'italic', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem' }}>Your inbox is currently empty. Complete your Blueprint to receive Susan's exclusive curations.</p>
-                    </div>
-                  )}
+                  <CustomerOnSiteInbox
+                    authToken={localStorage.getItem('token')}
+                    fallbackItems={inboxItems}
+                    onAddToCart={handleAddToCart}
+                    onCardClick={setSelectedProduct}
+                    userBlueprint={quizAnswers}
+                    hasCompletedQuiz={hasCompletedQuiz}
+                  />
                 </div>
               )}
 
