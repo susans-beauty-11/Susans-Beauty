@@ -29,6 +29,7 @@ const isAllowedCorsOrigin = (origin) => {
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
   if (/^https?:\/\/([a-z0-9-]+\.)?susansbeautyconsulting\.com$/i.test(origin)) return true;
   if (/\.onrender\.com$/i.test(origin)) return true;
+  if (/\.vercel\.app$/i.test(origin)) return true;
   return false;
 };
 
@@ -19224,21 +19225,32 @@ app.post(
 
 // ---------------- PUBLIC HEALTH & ADMIN WEBHOOK DIAGNOSTICS ROUTES ---------------- //
 
-app.get('/api/health', async (req, res) => {
+const handleHealthCheck = async (req, res) => {
   try {
     const dbReady = mongoose.connection.readyState === 1;
-    const productCount = dbReady ? await Product.countDocuments() : 0;
+    const productCount = dbReady ? await Product.countDocuments().catch(() => 0) : 0;
     res.status(200).json({
       status: 'ok',
       timezone: CENTRAL_TIMEZONE,
       dbConnected: dbReady,
       productCount,
+      frontendBuildServed: Boolean(global.__sbcResolvedBuildDir),
+      frontendBuildDir: global.__sbcResolvedBuildDir || null,
+      uptimeSeconds: Math.round(process.uptime()),
       timestamp: new Date().toISOString()
     });
   } catch (err) {
-    res.status(500).json({ status: 'error', error: err.message });
+    res.status(200).json({
+      status: 'degraded',
+      dbConnected: mongoose.connection.readyState === 1,
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
   }
-});
+};
+
+app.get('/api/health', handleHealthCheck);
+app.get('/healthz', handleHealthCheck);
 
 // Unified 6-Point System Diagnostics Suite (used by both the 🧪 Diagnostics Tab and Odie's runSystemDiagnostics tool)
 const runFullSystemDiagnosticsSuite = async ({ sendLiveTestEmail = false, testEmailRecipient = '' } = {}) => {
@@ -19694,96 +19706,200 @@ app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, a
   }
 });
 
-// ---------------- SERVER INITIALIZATION ---------------- //
+// ============================================================================
+// BUILT-IN REACT FRONTEND STATIC SERVING & SPA CATCH-ALL (ELIMINATES VERCEL)
+// ============================================================================
+const candidateFrontendBuildDirs = [
+  process.env.FRONTEND_BUILD_PATH ? path.resolve(process.env.FRONTEND_BUILD_PATH) : null,
+  path.join(__dirname, 'client', 'build'),
+  path.join(__dirname, 'build'),
+  path.join(__dirname, 'dist'),
+  path.join(__dirname, '..', 'client', 'build'),
+  path.join(__dirname, '..', 'build')
+].filter(Boolean);
+
+let resolvedFrontendBuildDir = null;
+for (const candidateDir of candidateFrontendBuildDirs) {
+  try {
+    if (fs.existsSync(path.join(candidateDir, 'index.html'))) {
+      resolvedFrontendBuildDir = candidateDir;
+      break;
+    }
+  } catch (e) {}
+}
+global.__sbcResolvedBuildDir = resolvedFrontendBuildDir;
+
+if (resolvedFrontendBuildDir) {
+  console.log(`✧ Serving compiled React frontend directly from: ${resolvedFrontendBuildDir}`);
+  app.use(express.static(resolvedFrontendBuildDir, { index: false, maxAge: '1h' }));
+} else {
+  console.log('ℹ️ No local React build folder detected yet (API-only mode active until client/build or build is compiled).');
+}
+
+// Serve static assets from ./public or ./client/public if present (e.g. susans-logo.png)
+for (const pubDir of [path.join(__dirname, 'public'), path.join(__dirname, 'client', 'public')]) {
+  try {
+    if (fs.existsSync(pubDir)) {
+      app.use(express.static(pubDir, { index: false }));
+    }
+  } catch (e) {}
+}
+
+// Express 4 & Express 5 compatible SPA catch-all route for all non-API, non-webhook GET requests
+app.get(/^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(?:\/|$)|\/terms-of-service(?:\/|$)).*/, (req, res, next) => {
+  if (req.method !== 'GET') return next();
+
+  // Re-check dynamically in case build finished after server boot
+  let buildDirToUse = global.__sbcResolvedBuildDir;
+  if (!buildDirToUse) {
+    for (const candidateDir of candidateFrontendBuildDirs) {
+      try {
+        if (fs.existsSync(path.join(candidateDir, 'index.html'))) {
+          buildDirToUse = candidateDir;
+          global.__sbcResolvedBuildDir = candidateDir;
+          break;
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (buildDirToUse) {
+    return res.sendFile(path.join(buildDirToUse, 'index.html'));
+  }
+
+  // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
+  res.status(200).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Susan's Beauty Consulting — Sanctuary Server Active</title>
+  <style>
+    body { font-family: Georgia, serif; background: #FAF6F3; color: #2C1E18; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
+    .card { max-width: 600px; background: #FFFFFF; border: 1.5px solid #D4AF37; border-radius: 20px; padding: 32px; text-align: center; box-shadow: 0 12px 35px rgba(44,30,24,0.1); }
+    h1 { color: #B38B8F; margin-top: 0; }
+    .badge { display: inline-block; background: #E8F5E9; color: #2E7D32; font-family: sans-serif; font-size: 0.82rem; font-weight: bold; padding: 5px 14px; border-radius: 16px; margin-bottom: 14px; }
+    a.btn { display: inline-block; margin-top: 16px; background: #2C1E18; color: #FFFFFF; text-decoration: none; padding: 12px 24px; border-radius: 24px; font-family: sans-serif; font-size: 0.9rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✓ Backend API &amp; Lily/Odie AI Online</div>
+    <h1>Susan's Beauty Consulting ✧</h1>
+    <p>Your Node.js &amp; Express Sanctuary server is live and healthy.</p>
+    <p style="font-family: sans-serif; font-size: 0.88rem; color: #6E5A4F;">
+      To serve the full React frontend directly from this server (without Vercel), run <code>npm run build</code> so <code>build/index.html</code> is present.
+    </p>
+    <a class="btn" href="/api/health">View Live /api/health Status →</a>
+  </div>
+</body>
+</html>`);
+});
+
+// ---------------- SERVER INITIALIZATION (INSTANT PORT BINDING) ---------------- //
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/beauty_app';
 
-mongoose.connect(MONGO_URI)
-  .then(async () => {
-    console.log('✧ Connected securely to MongoDB');
-    await ensureDefaultOdieMemories();
-    await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
-    await backfillProductBlueprintLabels(false);
-    await backfillProductShippingAndCustomLabelMeta(false);
-    await backfillConsultationAnalyses();
-    await backfillAnalyticsBaseline();
+// 1. Bind port IMMEDIATELY so Render / cloud health checks never time out or return 502 Bad Gateway
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✧ Backend API & Sanctuary Server listening immediately on port ${PORT}`);
+});
 
-    if (!smtpUser || !smtpPass) {
-      console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
-    } else {
-      await verifySmtpConnection();
-    }
-
-    app.listen(PORT, () => {
-      console.log(`✧ Backend API running gracefully on port ${PORT}`);
-      
-      // On boot: immediately sanitize & deduplicate MongoDB so there are zero duplicates.
-      // Only trigger an external CJ pull on boot if the catalog is completely empty; otherwise let the 3:00 AM CST daily schedule handle re-syncs.
-      (async () => {
-        try {
-          const bootSanitize = await sanitizeAndDeduplicateCatalog();
-          if ((bootSanitize.activeCatalogTotal || 0) === 0) {
-            console.log('🌱 Catalog is empty on startup — initiating initial CJ Beauty & Skincare harvest...');
-            await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true });
-          } else {
-            console.log(
-              `✨ Startup catalog sanitization complete (${bootSanitize.activeCatalogTotal} unique products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next full CJ re-sync scheduled for 3:00 AM CST.`
-            );
-          }
-        } catch (error) {
-          console.error('❌ Startup catalog sanitization/sync error:', error?.response?.data || error.message);
-        }
-      })();
-
-      // Sync incoming IONOS emails (imap.ionos.com:993) shortly after boot and every 2 minutes
-      setTimeout(() => {
-        syncIonosImapInbox({ maxFetch: 45 }).catch((err) => {
-          console.warn('⚠️ Initial IONOS IMAP sync note:', err.message);
-        });
-      }, 6000);
-
-      cron.schedule('*/2 * * * *', () => {
-        syncIonosImapInbox({ maxFetch: 35 }).catch((err) => {
-          console.warn('⚠️ Scheduled IONOS IMAP sync note:', err.message);
-        });
-      });
-
-      // Automatically sweep and confirm any active CJ orders (including Order #9BC16E) shortly after boot and every 5 minutes
-      setTimeout(() => {
-        autoSweepAndConfirmPendingCjOrders()
-          .then(r => {
-            if (r.sweptCount > 0) {
-              console.log(`⚡ Startup CJ Order Auto-Confirm Sweep: ${r.message}`);
-            }
-          })
-          .catch(() => {});
-      }, 8000);
-
-      cron.schedule('*/5 * * * *', () => {
-        autoSweepAndConfirmPendingCjOrders().catch(() => {});
-      });
-
-      // Check for upcoming 24-hour consultation reminders shortly after boot and every 15 minutes
-      setTimeout(() => {
-        runUpcomingAppointmentReminders().catch(() => {});
-      }, 10000);
-
-      cron.schedule('*/15 * * * *', () => {
-        runUpcomingAppointmentReminders().catch((err) => {
-          console.error('❌ Scheduled consultation reminder check failed:', err.message);
-        });
-      });
-
-      cron.schedule(
-        '0 3 * * *',
-        () => {
-          console.log('⏰ Running scheduled daily CJ Beauty & Skincare full sync and MongoDB sanitization at 3:00 AM CST...');
-          syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((error) => {
-            console.error('❌ Scheduled 3:00 AM CST CJ catalog sync failure:', error?.response?.data || error.message);
-          });
-        },
-        { timezone: 'America/Chicago' }
-      );
+// 2. Connect to MongoDB & run startup backfills/cron jobs asynchronously in the background
+const startDatabaseAndBackgroundServices = async () => {
+  try {
+    await mongoose.connect(MONGO_URI, {
+      serverSelectionTimeoutMS: 15000
     });
-  })
-  .catch((err) => console.error('Failed to connect to MongoDB:', err));
+    console.log('✧ Connected securely to MongoDB');
+
+    // Run non-blocking startup migrations & verifications safely in background
+    (async () => {
+      try {
+        await ensureDefaultOdieMemories();
+        await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
+        await backfillProductBlueprintLabels(false);
+        await backfillProductShippingAndCustomLabelMeta(false);
+        await backfillConsultationAnalyses();
+        await backfillAnalyticsBaseline();
+      } catch (bgErr) {
+        console.warn('⚠️ Background startup backfill notice:', bgErr.message);
+      }
+
+      if (!smtpUser || !smtpPass) {
+        console.warn('⚠️ SMTP_USER or SMTP_PASS is not set in .env. Email dispatch is disabled until configured.');
+      } else {
+        await verifySmtpConnection().catch((err) => console.warn('⚠️ Startup SMTP check notice:', err.message));
+      }
+
+      try {
+        const bootSanitize = await sanitizeAndDeduplicateCatalog();
+        if ((bootSanitize.activeCatalogTotal || 0) === 0) {
+          console.log('🌱 Catalog is empty on startup — initiating initial CJ Beauty & Skincare harvest...');
+          await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true });
+        } else {
+          console.log(
+            `✨ Startup catalog sanitization complete (${bootSanitize.activeCatalogTotal} unique products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next full CJ re-sync scheduled for 3:00 AM CST.`
+          );
+        }
+      } catch (error) {
+        console.error('❌ Startup catalog sanitization/sync error:', error?.response?.data || error.message);
+      }
+    })();
+
+    // Sync incoming IONOS emails (imap.ionos.com:993) shortly after boot and every 2 minutes
+    setTimeout(() => {
+      syncIonosImapInbox({ maxFetch: 45 }).catch((err) => {
+        console.warn('⚠️ Initial IONOS IMAP sync note:', err.message);
+      });
+    }, 6000);
+
+    cron.schedule('*/2 * * * *', () => {
+      syncIonosImapInbox({ maxFetch: 35 }).catch((err) => {
+        console.warn('⚠️ Scheduled IONOS IMAP sync note:', err.message);
+      });
+    });
+
+    // Automatically sweep and confirm any active CJ orders shortly after boot and every 5 minutes
+    setTimeout(() => {
+      autoSweepAndConfirmPendingCjOrders()
+        .then((r) => {
+          if (r.sweptCount > 0) {
+            console.log(`⚡ Startup CJ Order Auto-Confirm Sweep: ${r.message}`);
+          }
+        })
+        .catch(() => {});
+    }, 8000);
+
+    cron.schedule('*/5 * * * *', () => {
+      autoSweepAndConfirmPendingCjOrders().catch(() => {});
+    });
+
+    // Check for upcoming 24-hour consultation reminders shortly after boot and every 15 minutes
+    setTimeout(() => {
+      runUpcomingAppointmentReminders().catch(() => {});
+    }, 10000);
+
+    cron.schedule('*/15 * * * *', () => {
+      runUpcomingAppointmentReminders().catch((err) => {
+        console.error('❌ Scheduled consultation reminder check failed:', err.message);
+      });
+    });
+
+    cron.schedule(
+      '0 3 * * *',
+      () => {
+        console.log('⏰ Running scheduled daily CJ Beauty & Skincare full sync and MongoDB sanitization at 3:00 AM CST...');
+        syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((error) => {
+          console.error('❌ Scheduled 3:00 AM CST CJ catalog sync failure:', error?.response?.data || error.message);
+        });
+      },
+      { timezone: 'America/Chicago' }
+    );
+  } catch (err) {
+    console.error('❌ Failed to connect to MongoDB on initial attempt (retrying in 10s):', err.message);
+    setTimeout(startDatabaseAndBackgroundServices, 10000);
+  }
+};
+
+startDatabaseAndBackgroundServices();
