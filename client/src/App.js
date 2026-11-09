@@ -9,6 +9,12 @@ const DEFAULT_GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
 const resolveApiBaseUrl = () => {
   const rawEnv = String(process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
   if (typeof window !== 'undefined') {
+    try {
+      const savedOverride = String(window.__SBC_API_URL__ || localStorage.getItem('sbc_override_api_url') || '').trim().replace(/\/+$/, '');
+      if (savedOverride && /^https?:\/\//i.test(savedOverride)) {
+        return savedOverride;
+      }
+    } catch (e) {}
     const host = String(window.location.hostname || '').toLowerCase();
     const isBrowserLocal = host === 'localhost' || host === '127.0.0.1';
     if (rawEnv) {
@@ -13917,8 +13923,21 @@ function App() {
   const [step, setStep] = useState(() => {
     try {
       const savedStep = localStorage.getItem('currentStep');
-      return savedStep !== null ? parseInt(savedStep, 10) : 0;
-    } catch { return 0; }
+      const token = localStorage.getItem('token');
+      const parsed = savedStep !== null ? parseInt(savedStep, 10) : 0;
+      const validSteps = [0, 1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+      if (Number.isNaN(parsed) || !validSteps.includes(parsed)) {
+        localStorage.setItem('currentStep', token ? '5' : '0');
+        return token ? 5 : 0;
+      }
+      if (!token && (parsed === 5 || parsed === 6 || (parsed >= 11 && parsed <= 20))) {
+        localStorage.setItem('currentStep', '0');
+        return 0;
+      }
+      return parsed;
+    } catch {
+      return 0;
+    }
   }); 
 
   const [cart, setCart] = useState(() => {
@@ -18929,4 +18948,58 @@ function App() {
   );
 }
 
-export default App;
+class SanctuaryErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, errorMessage: error?.message || 'Unexpected rendering error' };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Sanctuary UI Error Boundary caught error:', error, info);
+  }
+
+  handleResetSession() {
+    try {
+      localStorage.removeItem('currentStep');
+      localStorage.removeItem('ritualCart');
+    } catch (e) {}
+    window.location.href = '/';
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FAF6F3', padding: '24px', textAlign: 'center' }}>
+          <div style={{ maxWidth: '520px', backgroundColor: '#FFFFFF', border: '1.5px solid #D4AF37', borderRadius: '20px', padding: '32px', boxShadow: '0 12px 32px rgba(44,30,24,0.12)' }}>
+            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#B38B8F', margin: '0 0 10px 0' }}>
+              Refreshing Your Sanctuary Session ✧
+            </h2>
+            <p style={{ fontFamily: 'sans-serif', fontSize: '0.92rem', color: '#5C5454', lineHeight: '1.55', marginBottom: '20px' }}>
+              We detected a cached browser state from a previous update. Click below to refresh your view cleanly.
+            </p>
+            <button
+              type="button"
+              onClick={this.handleResetSession}
+              style={{ backgroundColor: '#2C1E18', color: '#FFFFFF', border: '1px solid #D4AF37', borderRadius: '24px', padding: '12px 26px', fontFamily: 'sans-serif', fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              Reset View &amp; Return to Sanctuary →
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function SafeAppWrapper(props) {
+  return (
+    <SanctuaryErrorBoundary>
+      <App {...props} />
+    </SanctuaryErrorBoundary>
+  );
+}
