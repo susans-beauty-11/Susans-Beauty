@@ -575,51 +575,6 @@ const evaluateBlueprintMatch = (product = {}, quizAnswers = null, hasCompletedQu
     return false;
   };
 
-  // Resets the member's locked Beauty Blueprint when upgrading (e.g. Luminary -> Radiance)
-  // so they can take the full 10-step Radiance Blueprint quiz and upload their skin photo on Step 20.
-  const handleResetBlueprintForUpgrade = async (startQuizNow = true) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      try {
-        await fetch(`${API_BASE_URL}/api/users/me/blueprint/reset-for-upgrade`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-          }
-        });
-      } catch (e) {}
-    }
-    setHasCompletedQuiz(false);
-    setBlueprintAnalysis(null);
-    setAiPhotoAnalysis(null);
-    setQuizPhotoDataUrl('');
-    setQuizAnswers({
-      skinType: '',
-      primaryGoal: '',
-      climate: '',
-      skinSensitivity: '',
-      complexion: '',
-      undertone: '',
-      eyeColor: '',
-      faceShape: '',
-      makeupVibe: '',
-      routineFocus: ''
-    });
-    setUserRecommendations([]);
-    localStorage.removeItem('hasCompletedQuiz');
-    localStorage.removeItem('quizAnswers');
-    localStorage.removeItem('blueprintAnalysis');
-    localStorage.removeItem('sbc_quiz_photo');
-    localStorage.removeItem('aiPhotoAnalysis');
-    if (startQuizNow) {
-      setStep(11);
-    } else {
-      setStep(5);
-      setActiveMemberTab('Blueprint');
-    }
-  };
-
   return {
     ...meta,
     hasValidBlueprint: true,
@@ -14739,6 +14694,51 @@ function App() {
       console.error('Failed to sync member blueprint status:', err);
     }
     return false;
+  };
+
+  // Resets the member's locked Beauty Blueprint when upgrading (e.g. Luminary -> Radiance)
+  // so they can take the full 10-step Radiance Blueprint quiz and upload their skin photo on Step 20.
+  const handleResetBlueprintForUpgrade = async (startQuizNow = true) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        await fetch(`${API_BASE_URL}/api/users/me/blueprint/reset-for-upgrade`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          }
+        });
+      } catch (e) {}
+    }
+    setHasCompletedQuiz(false);
+    setBlueprintAnalysis(null);
+    setAiPhotoAnalysis(null);
+    setQuizPhotoDataUrl('');
+    setQuizAnswers({
+      skinType: '',
+      primaryGoal: '',
+      climate: '',
+      skinSensitivity: '',
+      complexion: '',
+      undertone: '',
+      eyeColor: '',
+      faceShape: '',
+      makeupVibe: '',
+      routineFocus: ''
+    });
+    setUserRecommendations([]);
+    localStorage.removeItem('hasCompletedQuiz');
+    localStorage.removeItem('quizAnswers');
+    localStorage.removeItem('blueprintAnalysis');
+    localStorage.removeItem('sbc_quiz_photo');
+    localStorage.removeItem('aiPhotoAnalysis');
+    if (startQuizNow) {
+      setStep(11);
+    } else {
+      setStep(5);
+      setActiveMemberTab('Blueprint');
+    }
   };
 
   // Prevent Free ('basic') members or members who already completed their one-time Blueprint Quiz from accessing quiz steps 11-20
