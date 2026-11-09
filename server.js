@@ -14616,6 +14616,44 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
     }
 
     const rawOrders = await Order.find({ $or: orClauses }).sort({ createdAt: -1 }).lean();
+
+    // Auto-sync live CJ tracking numbers for up to 5 recent orders that have a CJ order ID but no tracking number saved yet
+    let syncChecks = 0;
+    for (const ord of rawOrders) {
+      if (syncChecks >= 5) break;
+      const existingTrack = String(ord.tracking_code || ord.trackingNumber || '').trim();
+      if (!existingTrack && (ord.cjOrderId || ord.cjOrderCode || ord.cjRealOrderId)) {
+        syncChecks++;
+        try {
+          const liveCj = await lookupLiveCjOrder({ order: ord });
+          if (liveCj && liveCj.found) {
+            const updates = {};
+            if (liveCj.trackNumber) {
+              ord.tracking_code = liveCj.trackNumber;
+              ord.trackingNumber = liveCj.trackNumber;
+              ord.status = 'SHIPPED';
+              updates.tracking_code = liveCj.trackNumber;
+              updates.trackingNumber = liveCj.trackNumber;
+              updates.status = 'SHIPPED';
+            }
+            if (liveCj.logisticName) {
+              ord.logisticName = liveCj.logisticName;
+              ord.carrier = liveCj.logisticName;
+              updates.logisticName = liveCj.logisticName;
+              updates.carrier = liveCj.logisticName;
+            }
+            if (liveCj.cjOrderCode && !ord.cjOrderCode) {
+              ord.cjOrderCode = liveCj.cjOrderCode;
+              updates.cjOrderCode = liveCj.cjOrderCode;
+            }
+            if (Object.keys(updates).length > 0) {
+              await Order.findByIdAndUpdate(ord._id, { $set: updates }).catch(() => {});
+            }
+          }
+        } catch {}
+      }
+    }
+
     const enrichedOrders = rawOrders.map(ord => {
       const items = (Array.isArray(ord.items) ? ord.items : []).map(it => ({
         productId: it.productId || it._id || null,
@@ -14627,6 +14665,22 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
         imageUrl: it.imageUrl || ''
       }));
 
+      const resolvedTrack = String(ord.tracking_code || ord.trackingNumber || '').trim();
+      const resolvedCarrier = String(ord.logisticName || ord.carrier || ord.selectedLogisticName || 'CJPacket Sensitive Pro').trim();
+      const fallbackRef = resolvedTrack || String(ord.cjOrderCode || ord.cjOrderId || '').trim();
+      const resolvedTrackingUrl =
+        ord.trackingUrl ||
+        (resolvedTrack
+          ? buildCarrierTrackingUrl(resolvedCarrier, resolvedTrack)
+          : fallbackRef
+          ? `https://t.17track.net/en#nums=${encodeURIComponent(fallbackRef)}`
+          : 'https://cjpacket.com/');
+      const resolvedCjPacketUrl = resolvedTrack
+        ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(resolvedTrack)}`
+        : fallbackRef
+        ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(fallbackRef)}`
+        : 'https://cjpacket.com/';
+
       return {
         ...ord,
         _id: String(ord._id),
@@ -14636,11 +14690,12 @@ app.get('/api/users/me/orders', authenticateToken, async (req, res) => {
         totalAmount: Number(ord.totalAmount || 0),
         status: ord.status || 'Pending',
         pipelineStage: classifyOrderStage(ord),
-        tracking_code: ord.tracking_code || ord.trackingNumber || '',
-        trackingNumber: ord.trackingNumber || ord.tracking_code || '',
-        logisticName: ord.logisticName || ord.carrier || ord.selectedLogisticName || 'CJPacket Sensitive Pro',
-        carrier: ord.carrier || ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive Pro',
-        trackingUrl: ord.trackingUrl || buildCarrierTrackingUrl(ord.carrier || ord.logisticName || ord.selectedLogisticName, ord.tracking_code || ord.trackingNumber),
+        tracking_code: resolvedTrack,
+        trackingNumber: resolvedTrack,
+        logisticName: resolvedCarrier,
+        carrier: resolvedCarrier,
+        trackingUrl: resolvedTrackingUrl,
+        cjPacketUrl: resolvedCjPacketUrl,
         shipping_address: ord.shipping_address || ord.shippingAddress || user.shippingAddress || {},
         createdAt: ord.createdAt,
         updatedAt: ord.updatedAt || ord.createdAt
@@ -16847,12 +16902,15 @@ app.patch('/api/orders/:orderId/status', authenticateToken, async (req, res) => 
   }
 });
 
-// GET /api/orders/:orderId/tracking-live — Queries CJ Dropshipping's live tracking API (/logistic/getTrackInfo)
-// and returns real-time transit checkpoints, delivery stage, and clickable carrier URLs.
-app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res) => {
+// GET /api/orders/:orderId/tracking-live — Queries CJ Dropshipping's live order & tracking APIs
+// (lookupLiveCjOrder + /logistic/getTrackInfo + /logistic/trackInfo) and returns real-time transit checkpoints,
+// delivery stage, and clickable carrier URLs.
+app.get('/api/orders/:orderId/tracking-live', async (req, res) => {
   try {
     const rawParam = String(req.params.orderId || '').trim();
+    const cleanShort = rawParam.replace(/^#/, '').trim();
     let order = null;
+
     if (mongoose.Types.ObjectId.isValid(rawParam)) {
       order = await Order.findById(rawParam).lean();
     }
@@ -16861,53 +16919,124 @@ app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res
         $or: [
           { tracking_code: rawParam },
           { trackingNumber: rawParam },
-          { cjOrderId: rawParam }
+          { cjOrderId: rawParam },
+          { cjOrderCode: rawParam },
+          { cjRealOrderId: rawParam },
+          { cjShipmentOrderId: rawParam }
         ]
       }).lean();
     }
+    if (!order && cleanShort.length >= 4) {
+      const recentOrders = await Order.find({}).sort({ createdAt: -1 }).limit(200).lean();
+      order =
+        recentOrders.find(
+          (o) =>
+            String(o._id).slice(-6).toUpperCase() === cleanShort.toUpperCase() ||
+            String(o.tracking_code || o.trackingNumber || '').toUpperCase() === cleanShort.toUpperCase()
+        ) || null;
+    }
+
+    // Step 1: If order exists in MongoDB, query CJ Dropshipping live (lookupLiveCjOrder) whenever tracking is missing or forceSync is requested
+    let liveOrderLookup = null;
+    if (order && (!order.tracking_code && !order.trackingNumber || req.query.forceSync === 'true' || order.cjOrderId || order.cjOrderCode)) {
+      try {
+        liveOrderLookup = await lookupLiveCjOrder({ order });
+        if (liveOrderLookup && liveOrderLookup.found) {
+          const dbUpdates = {};
+          if (liveOrderLookup.trackNumber && !order.tracking_code) {
+            order.tracking_code = liveOrderLookup.trackNumber;
+            order.trackingNumber = liveOrderLookup.trackNumber;
+            order.status = 'SHIPPED';
+            dbUpdates.tracking_code = liveOrderLookup.trackNumber;
+            dbUpdates.trackingNumber = liveOrderLookup.trackNumber;
+            dbUpdates.status = 'SHIPPED';
+          }
+          if (liveOrderLookup.logisticName) {
+            order.logisticName = liveOrderLookup.logisticName;
+            order.carrier = liveOrderLookup.logisticName;
+            dbUpdates.logisticName = liveOrderLookup.logisticName;
+            dbUpdates.carrier = liveOrderLookup.logisticName;
+          }
+          if (liveOrderLookup.cjOrderCode && !order.cjOrderCode) {
+            order.cjOrderCode = liveOrderLookup.cjOrderCode;
+            dbUpdates.cjOrderCode = liveOrderLookup.cjOrderCode;
+          }
+          if (liveOrderLookup.realCjOrderId && !order.cjRealOrderId) {
+            order.cjRealOrderId = liveOrderLookup.realCjOrderId;
+            dbUpdates.cjRealOrderId = liveOrderLookup.realCjOrderId;
+          }
+          if (Object.keys(dbUpdates).length > 0 && order._id) {
+            await Order.findByIdAndUpdate(order._id, { $set: dbUpdates }).catch(() => {});
+          }
+        }
+      } catch {}
+    }
 
     const trackingNumber = String(
-      order?.trackingNumber || order?.tracking_code || (!mongoose.Types.ObjectId.isValid(rawParam) ? rawParam : '')
+      order?.trackingNumber ||
+        order?.tracking_code ||
+        liveOrderLookup?.trackNumber ||
+        (!mongoose.Types.ObjectId.isValid(rawParam) && cleanShort.length > 6 ? rawParam : '')
     ).trim();
+    const cjOrderId = String(order?.cjOrderId || liveOrderLookup?.realCjOrderId || liveOrderLookup?.rawOrderId || '').trim();
+    const cjOrderCode = String(order?.cjOrderCode || liveOrderLookup?.cjOrderCode || '').trim();
     const carrier = String(
-      order?.carrier || order?.logisticName || order?.selectedLogisticName || 'CJPacket Sensitive Pro'
+      order?.carrier || order?.logisticName || order?.selectedLogisticName || liveOrderLookup?.logisticName || 'CJPacket Sensitive Pro'
     ).trim();
-    const trackingUrl = order?.trackingUrl || buildCarrierTrackingUrl(carrier, trackingNumber);
-    const cjPacketUrl = trackingNumber ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(trackingNumber)}` : '';
+
+    const lookupCodeForUrl = trackingNumber || cjOrderCode || cjOrderId;
+    const trackingUrl =
+      order?.trackingUrl ||
+      (trackingNumber
+        ? buildCarrierTrackingUrl(carrier, trackingNumber)
+        : lookupCodeForUrl
+        ? `https://t.17track.net/en#nums=${encodeURIComponent(lookupCodeForUrl)}`
+        : 'https://www.17track.net/en');
+    const cjPacketUrl = lookupCodeForUrl
+      ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(lookupCodeForUrl)}`
+      : 'https://cjpacket.com/';
 
     let liveCjData = null;
     let checkpoints = [];
-    let trackingStatus = order?.status || 'PAID_PROCESSING';
+    let trackingStatus = order?.status || liveOrderLookup?.orderStatus || 'PAID_PROCESSING';
     let estimatedDelivery = '5–11 Business Days';
 
-    if (trackingNumber) {
-      try {
-        const cjTrackRes = await cjRequest('GET', '/logistic/getTrackInfo', {
-          params: { trackNumber: trackingNumber }
-        });
-        const rawData = cjTrackRes?.data;
-        const trackRecord = Array.isArray(rawData) ? rawData[0] : rawData;
-        if (trackRecord && typeof trackRecord === 'object') {
-          liveCjData = trackRecord;
-          if (trackRecord.trackingStatus) trackingStatus = trackRecord.trackingStatus;
-          if (trackRecord.deliveryTime || trackRecord.deliveryDay) {
-            estimatedDelivery = `${trackRecord.deliveryTime || trackRecord.deliveryDay} Days`;
+    // Step 2: Query CJ Logistics Tracking Endpoints (/logistic/getTrackInfo and /logistic/trackInfo)
+    const trackCandidates = Array.from(new Set([trackingNumber, cjOrderCode].filter(Boolean)));
+    for (const candidateNum of trackCandidates) {
+      if (checkpoints.length > 0) break;
+      for (const endpointPath of ['/logistic/getTrackInfo', '/logistic/trackInfo']) {
+        try {
+          const cjTrackRes = await cjRequest('GET', endpointPath, {
+            params: { trackNumber: candidateNum }
+          });
+          const rawData = cjTrackRes?.data;
+          const trackRecord = Array.isArray(rawData) ? rawData[0] : rawData;
+          if (trackRecord && typeof trackRecord === 'object') {
+            liveCjData = trackRecord;
+            if (trackRecord.trackingStatus) trackingStatus = trackRecord.trackingStatus;
+            if (trackRecord.deliveryTime || trackRecord.deliveryDay) {
+              estimatedDelivery = `${trackRecord.deliveryTime || trackRecord.deliveryDay} Days`;
+            }
+            const rawRoutes = Array.isArray(trackRecord.routes)
+              ? trackRecord.routes
+              : Array.isArray(trackRecord.trackDetailList)
+              ? trackRecord.trackDetailList
+              : Array.isArray(trackRecord.details)
+              ? trackRecord.details
+              : [];
+            if (rawRoutes.length > 0) {
+              checkpoints = rawRoutes.map((r) => ({
+                time: r.acceptTime || r.time || r.trackTime || '',
+                status: r.remark || r.status || r.description || 'In Transit',
+                location: r.acceptAddress || r.location || r.city || ''
+              }));
+              break;
+            }
           }
-          const rawRoutes = Array.isArray(trackRecord.routes)
-            ? trackRecord.routes
-            : Array.isArray(trackRecord.trackDetailList)
-            ? trackRecord.trackDetailList
-            : Array.isArray(trackRecord.details)
-            ? trackRecord.details
-            : [];
-          checkpoints = rawRoutes.map((r) => ({
-            time: r.acceptTime || r.time || r.trackTime || '',
-            status: r.remark || r.status || r.description || 'In Transit',
-            location: r.acceptAddress || r.location || r.city || ''
-          }));
+        } catch (cjErr) {
+          // Try next endpoint / fallback below
         }
-      } catch (cjErr) {
-        // Fallback to deterministic order lifecycle checkpoints below
       }
     }
 
@@ -16919,10 +17048,14 @@ app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res
         status: 'Order Confirmed & Payment Verified — Ritual Essentials Queued for Fulfillment',
         location: "Susan's Beauty Consulting Sanctuary"
       });
-      if (order?.cjOrderId || String(order?.status || '').toUpperCase().includes('PAID') || trackingNumber) {
+      if (cjOrderId || cjOrderCode || String(order?.status || '').toUpperCase().includes('PAID') || trackingNumber) {
         checkpoints.unshift({
           time: updatedTime,
-          status: `Assigned to ${carrier} (${order?.cjOrderId ? `Dispatched to CJ Fulfillment #${order.cjOrderId}` : 'Preparing Parcel'})`,
+          status: `Assigned to ${carrier} (${
+            cjOrderCode || cjOrderId
+              ? `Dispatched to CJ Dropshipping Fulfillment #${cjOrderCode || cjOrderId}${liveOrderLookup?.orderStatus ? ` • CJ Status: ${liveOrderLookup.orderStatus}` : ''}`
+              : 'Preparing Parcel at Fulfillment Studio'
+          })`,
           location: 'Global Skincare Fulfillment Facility'
         });
       }
@@ -16939,12 +17072,14 @@ app.get('/api/orders/:orderId/tracking-live', authenticateToken, async (req, res
     let stageIndex = 1; // 1: Confirmed, 2: Studio Processing, 3: In Transit, 4: Delivered
     if (upperStatus.includes('DELIVERED')) stageIndex = 4;
     else if (trackingNumber || upperStatus.includes('SHIPPED') || upperStatus.includes('TRANSIT')) stageIndex = 3;
-    else if (order?.cjOrderId || upperStatus.includes('PAID') || upperStatus.includes('PROCESSING')) stageIndex = 2;
+    else if (cjOrderId || cjOrderCode || upperStatus.includes('PAID') || upperStatus.includes('PROCESSING') || upperStatus.includes('UNSHIPPED')) stageIndex = 2;
 
     res.json({
       success: true,
       orderId: order?._id ? String(order._id) : null,
-      shortId: order?._id ? String(order._id).slice(-6).toUpperCase() : rawParam.slice(-6).toUpperCase(),
+      shortId: order?._id ? String(order._id).slice(-6).toUpperCase() : cleanShort.slice(-6).toUpperCase() || 'ORDER',
+      cjOrderId,
+      cjOrderCode,
       status: order?.status || trackingStatus,
       trackingStatus,
       stageIndex,
@@ -17681,9 +17816,38 @@ const executeLilyOrderTrackingLookup = async ({ user = null, orderIdOrTracking =
 
   const enriched = [];
   for (const ord of orders.slice(0, 3)) {
+    if (!ord.trackingNumber && !ord.tracking_code && (ord.cjOrderId || ord.cjOrderCode)) {
+      try {
+        const liveLookup = await lookupLiveCjOrder({ order: ord });
+        if (liveLookup && liveLookup.found && liveLookup.trackNumber) {
+          ord.tracking_code = liveLookup.trackNumber;
+          ord.trackingNumber = liveLookup.trackNumber;
+          ord.status = 'SHIPPED';
+          await Order.findByIdAndUpdate(ord._id, {
+            $set: {
+              tracking_code: liveLookup.trackNumber,
+              trackingNumber: liveLookup.trackNumber,
+              status: 'SHIPPED',
+              ...(liveLookup.logisticName ? { logisticName: liveLookup.logisticName, carrier: liveLookup.logisticName } : {})
+            }
+          }).catch(() => {});
+        }
+      } catch {}
+    }
     const trackingNumber = String(ord.trackingNumber || ord.tracking_code || '').trim();
+    const cjOrderId = String(ord.cjOrderId || ord.cjOrderCode || '').trim();
     const carrier = String(ord.carrier || ord.logisticName || ord.selectedLogisticName || 'CJPacket Sensitive Pro').trim();
-    const trackingUrl = ord.trackingUrl || buildCarrierTrackingUrl(carrier, trackingNumber);
+    const lookupRef = trackingNumber || cjOrderId;
+    const trackingUrl =
+      ord.trackingUrl ||
+      (trackingNumber
+        ? buildCarrierTrackingUrl(carrier, trackingNumber)
+        : lookupRef
+        ? `https://t.17track.net/en#nums=${encodeURIComponent(lookupRef)}`
+        : 'https://cjpacket.com/');
+    const cjPacketUrl = lookupRef
+      ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(lookupRef)}`
+      : 'https://cjpacket.com/';
     let checkpoints = [];
     let liveStatus = ord.status || 'PAID_PROCESSING';
     let estimatedDelivery = '5–11 Business Days';
@@ -17734,9 +17898,11 @@ const executeLilyOrderTrackingLookup = async ({ user = null, orderIdOrTracking =
       includesVipMysteryBox: Boolean(ord.includesVipMysteryBox),
       status: ord.status || 'PAID_PROCESSING',
       liveStatus,
+      cjOrderId,
       trackingNumber,
       carrier,
       trackingUrl,
+      cjPacketUrl,
       estimatedDelivery,
       latestCheckpoint: checkpoints[0] || null,
       checkpoints,
