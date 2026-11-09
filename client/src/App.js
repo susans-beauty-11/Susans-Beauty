@@ -12599,6 +12599,8 @@ export function FoundingMemberPromoAndCartModule({
     }
   };
 
+
+
   const handleProceedToCheckout = async () => {
     if (!activeToken) {
       alert('Please sign in to complete your Founding Member checkout.');
@@ -12813,84 +12815,49 @@ export function LiveOrderTrackingModal({
 
   const isOpen = Boolean(trackingModal?.isOpen);
   const activeToken = authToken || (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
-  const lookupKey =
-    trackingModal?.orderId ||
-    trackingModal?.trackingNumber ||
-    trackingModal?.cjOrderId ||
-    trackingModal?.shortId ||
-    '';
 
-  const fetchLiveTracking = (forceSync = false) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const lookupKey = trackingModal.orderId || trackingModal.trackingNumber || '';
     if (!lookupKey) return;
+
     setLoading(true);
-    const qs = forceSync ? '?forceSync=true' : '';
-    fetch(`${API_BASE_URL}/api/orders/${encodeURIComponent(lookupKey)}/tracking-live${qs}`, {
+    fetch(`${API_BASE_URL}/api/orders/${encodeURIComponent(lookupKey)}/tracking-live`, {
       headers: {
         ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {})
       }
     })
       .then((r) => r.json())
       .then((data) => {
-        if (data && data.success) {
+        if (!cancelled && data && data.success) {
           setTrackingData(data);
         }
       })
       .catch(() => {})
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
-  };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    setTrackingData(null);
-    fetchLiveTracking(false);
-    // eslint-disable-next-line
-  }, [isOpen, lookupKey, activeToken]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, trackingModal?.orderId, trackingModal?.trackingNumber, activeToken]);
 
   if (!isOpen) return null;
 
   const trackNum = trackingData?.trackingNumber || trackingModal?.trackingNumber || '';
-  const cjOrderRef = trackingData?.cjOrderCode || trackingData?.cjOrderId || trackingModal?.cjOrderId || '';
   const carrierName = trackingData?.carrier || trackingModal?.carrier || 'CJPacket Sensitive Pro';
-  const lookupRefForUrl = trackNum || cjOrderRef;
   const carrierUrl =
     trackingData?.trackingUrl ||
     trackingModal?.trackingUrl ||
-    (lookupRefForUrl ? `https://t.17track.net/en#nums=${encodeURIComponent(lookupRefForUrl)}` : 'https://www.17track.net/en');
+    (trackNum ? `https://t.17track.net/en#nums=${encodeURIComponent(trackNum)}` : '');
   const cjPacketUrl =
     trackingData?.cjPacketUrl ||
-    (lookupRefForUrl ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(lookupRefForUrl)}` : 'https://cjpacket.com/');
+    (trackNum ? `https://cjpacket.com/?trackingNumber=${encodeURIComponent(trackNum)}` : '');
   const stageIndex = Number(trackingData?.stageIndex || (trackNum ? 3 : 2));
-  const rawCheckpoints = Array.isArray(trackingData?.checkpoints) ? trackingData.checkpoints : [];
-  const shortOrderRef =
-    trackingData?.shortId ||
-    trackingModal?.shortId ||
-    (trackingModal?.orderId ? String(trackingModal.orderId).slice(-6).toUpperCase() : 'ORDER');
-  const checkpoints =
-    rawCheckpoints.length > 0
-      ? rawCheckpoints
-      : [
-          ...(trackNum
-            ? [
-                {
-                  time: 'Live Update',
-                  status: `Tracking Number ${trackNum} Issued via ${carrierName} — Parcel in Transit`,
-                  location: carrierName
-                }
-              ]
-            : []),
-          {
-            time: trackingModal?.updatedAt ? new Date(trackingModal.updatedAt).toLocaleString() : 'Active',
-            status: `Assigned to ${carrierName} (${cjOrderRef ? `CJ Fulfillment #${cjOrderRef}` : 'Preparing Parcel at Fulfillment Studio'})`,
-            location: 'Global Skincare Fulfillment Facility'
-          },
-          {
-            time: trackingModal?.createdAt ? new Date(trackingModal.createdAt).toLocaleString() : 'Confirmed',
-            status: 'Order Confirmed & Payment Verified — Ritual Essentials Queued for Fulfillment',
-            location: "Susan's Beauty Consulting Sanctuary"
-          }
-        ];
+  const checkpoints = Array.isArray(trackingData?.checkpoints) ? trackingData.checkpoints : [];
+  const shortOrderRef = trackingData?.shortId || trackingModal?.shortId || (trackingModal?.orderId ? String(trackingModal.orderId).slice(-6).toUpperCase() : 'ORDER');
 
   const stages = [
     { step: 1, label: 'Order Confirmed', icon: '✓' },
@@ -12984,26 +12951,9 @@ export function LiveOrderTrackingModal({
               </div>
               {trackNum ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                  <a
-                    href={carrierUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="Click to open live carrier tracking map in a new tab"
-                    style={{
-                      fontFamily: 'monospace',
-                      fontSize: '1.15rem',
-                      fontWeight: 'bold',
-                      color: '#5E35B1',
-                      backgroundColor: '#F4F0FF',
-                      padding: '4px 10px',
-                      borderRadius: '8px',
-                      border: '1.5px solid #5E35B1',
-                      textDecoration: 'underline',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    📍 {trackNum} ↗
-                  </a>
+                  <span style={{ fontFamily: 'monospace', fontSize: '1.15rem', fontWeight: 'bold', color: '#5E35B1', backgroundColor: '#F4F0FF', padding: '4px 10px', borderRadius: '8px', border: '1px solid #D1C4E9' }}>
+                    {trackNum}
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -13019,16 +12969,8 @@ export function LiveOrderTrackingModal({
                   </button>
                 </div>
               ) : (
-                <div style={{ fontSize: '0.9rem', color: '#7A6356' }}>
-                  {cjOrderRef ? (
-                    <span>
-                      Dispatched to CJ Dropshipping Fulfillment (Ref: <strong style={{ fontFamily: 'monospace', color: '#5E35B1' }}>{cjOrderRef}</strong>). Click <strong>Sync Live CJ Tracking</strong> below to check for your courier scan!
-                    </span>
-                  ) : (
-                    <span style={{ fontStyle: 'italic' }}>
-                      Your order is confirmed and being packed at our fulfillment studio. Click Sync Live CJ Tracking or open the carrier portals below anytime.
-                    </span>
-                  )}
+                <div style={{ fontSize: '0.9rem', color: '#7A6356', fontStyle: 'italic' }}>
+                  Your order is confirmed and being packed at our fulfillment studio. Your live tracking number will appear here automatically upon dispatch.
                 </div>
               )}
             </div>
@@ -13041,67 +12983,53 @@ export function LiveOrderTrackingModal({
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #EFE6DD' }}>
-            <button
-              type="button"
-              onClick={() => fetchLiveTracking(true)}
-              disabled={loading}
-              style={{
-                backgroundColor: '#5E35B1',
-                color: '#FFFFFF',
-                border: 'none',
-                padding: '9px 16px',
-                borderRadius: '10px',
-                fontSize: '0.82rem',
-                fontWeight: 'bold',
-                cursor: loading ? 'wait' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-            >
-              {loading ? '⏳ Syncing Live CJ Network...' : '🔄 Sync Live CJ Tracking Now'}
-            </button>
-            <a
-              href={carrierUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                backgroundColor: '#2C1E18',
-                color: '#FFFFFF',
-                textDecoration: 'none',
-                padding: '9px 16px',
-                borderRadius: '10px',
-                fontSize: '0.82rem',
-                fontWeight: 'bold',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-            >
-              🌍 Open Global Carrier Map (17TRACK / Courier) ↗
-            </a>
-            <a
-              href={cjPacketUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                backgroundColor: '#FFF0F2',
-                color: '#5C5454',
-                border: '1px solid #B38B8F',
-                textDecoration: 'none',
-                padding: '9px 16px',
-                borderRadius: '10px',
-                fontSize: '0.82rem',
-                fontWeight: 'bold',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-            >
-              📦 View CJPacket Live Scan ↗
-            </a>
-          </div>
+          {trackNum && (
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #EFE6DD' }}>
+              {carrierUrl && (
+                <a
+                  href={carrierUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    backgroundColor: '#2C1E18',
+                    color: '#FFFFFF',
+                    textDecoration: 'none',
+                    padding: '9px 16px',
+                    borderRadius: '10px',
+                    fontSize: '0.82rem',
+                    fontWeight: 'bold',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  🌍 Open Global Carrier Map (17TRACK / Courier) ↗
+                </a>
+              )}
+              {cjPacketUrl && (
+                <a
+                  href={cjPacketUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    backgroundColor: '#FFF0F2',
+                    color: '#5C5454',
+                    border: '1px solid #B38B8F',
+                    textDecoration: 'none',
+                    padding: '9px 16px',
+                    borderRadius: '10px',
+                    fontSize: '0.82rem',
+                    fontWeight: 'bold',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  📦 View CJPacket Live Scan ↗
+                </a>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Live Checkpoints Timeline */}
@@ -13172,8 +13100,9 @@ export function CustomerOnSiteInbox({
       const res = await fetch(`${API_BASE_URL}/api/inbox`, {
         headers: { Authorization: `Bearer ${activeToken}` }
       });
+  
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success && Array.isArray(data.items)) {
+            if (res.ok && data.success && Array.isArray(data.items)) {
         const serverIds = new Set(data.items.map((i) => String(i._id)));
         const extraFallback = (Array.isArray(fallbackItems) ? fallbackItems : []).filter(
           (f) => f && f._id && !serverIds.has(String(f._id))
@@ -13183,6 +13112,7 @@ export function CustomerOnSiteInbox({
       } else if (Array.isArray(fallbackItems)) {
         setMessages(fallbackItems);
       }
+
     } catch (err) {
       if (Array.isArray(fallbackItems)) setMessages(fallbackItems);
     } finally {
@@ -13295,95 +13225,69 @@ export function CustomerOnSiteInbox({
                     </span>
                   </div>
 
-                  {(() => {
-                    const subjectMatch = String(selectedMsg.subject || selectedMsg.bodyText || '').match(/Order\s*#([A-Za-z0-9]{4,12})/i);
-                    const extractedShortId = subjectMatch ? subjectMatch[1].toUpperCase() : '';
-                    const msgTrackNum = selectedMsg.metadata?.trackingNumber || '';
-                    const isOrderMessage =
-                      Boolean(selectedMsg.orderId) ||
-                      Boolean(msgTrackNum) ||
-                      Boolean(extractedShortId) ||
-                      ['Order Update', 'Shipping Alert'].includes(String(selectedMsg.category || ''));
-                    if (!isOrderMessage) return null;
-
-                    const carrier = selectedMsg.metadata?.carrier || 'CJPacket Sensitive Pro';
-                    const externalTrackUrl =
-                      selectedMsg.metadata?.trackingUrl ||
-                      (msgTrackNum
-                        ? `https://t.17track.net/en#nums=${encodeURIComponent(msgTrackNum)}`
-                        : 'https://cjpacket.com/');
-
-                    return (
-                      <div style={{ marginBottom: '14px', padding: '14px', backgroundColor: '#ffffff', borderLeft: '4px solid #d4af37', borderRadius: '10px', fontSize: '0.85rem', fontFamily: 'sans-serif', boxShadow: '0 2px 10px rgba(44,30,24,0.06)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                          <div>
-                            <strong>Carrier:</strong> {carrier}
-                            {extractedShortId && <span style={{ marginLeft: '10px', color: '#7A6356' }}>• Order <strong>#{extractedShortId}</strong></span>}
-                          </div>
-                        </div>
-                        {msgTrackNum && (
-                          <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <strong>Tracking #:</strong>{' '}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (onOpenTrackingModal) {
-                                  onOpenTrackingModal({
-                                    orderId: selectedMsg.orderId || extractedShortId,
-                                    shortId: extractedShortId,
-                                    trackingNumber: msgTrackNum,
-                                    carrier,
-                                    trackingUrl: externalTrackUrl
-                                  });
-                                }
-                              }}
-                              style={{
-                                fontFamily: 'monospace',
-                                color: '#5E35B1',
-                                backgroundColor: '#F4F0FF',
-                                border: '1.5px solid #5E35B1',
-                                borderRadius: '6px',
-                                padding: '4px 10px',
-                                fontWeight: 'bold',
-                                cursor: 'pointer',
-                                textDecoration: 'underline'
-                              }}
-                              title="Click to see live package location"
-                            >
-                              📍 {msgTrackNum} (Click to Track)
-                            </button>
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '10px' }}>
-                          {onOpenTrackingModal && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenTrackingModal({
-                                  orderId: selectedMsg.orderId || extractedShortId,
-                                  shortId: extractedShortId,
-                                  trackingNumber: msgTrackNum,
-                                  carrier,
-                                  trackingUrl: externalTrackUrl
-                                })
-                              }
-                              style={{ backgroundColor: '#2c1e18', color: '#ffffff', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '0.8rem', fontWeight: 'bold', cursor: 'pointer' }}
-                            >
-                              📍 Where Is My Package? (View Live Checkpoints)
-                            </button>
-                          )}
-                          <a
-                            href={externalTrackUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{ display: 'inline-block', padding: '8px 14px', backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '8px', color: '#5C5454', fontSize: '0.8rem', fontWeight: 'bold', textDecoration: 'none' }}
-                          >
-                            🌍 Open Carrier Tracking Map ↗
-                          </a>
-                        </div>
+                  {selectedMsg.metadata?.trackingNumber && (
+                    <div style={{ marginBottom: '14px', padding: '12px', backgroundColor: '#ffffff', borderLeft: '4px solid #d4af37', borderRadius: '8px', fontSize: '0.85rem', fontFamily: 'sans-serif' }}>
+                      <div>
+                        <strong>Carrier:</strong> {selectedMsg.metadata.carrier || 'CJPacket Sensitive Pro'}
                       </div>
-                    );
-                  })()}
+                      <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <strong>Tracking #:</strong>{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onOpenTrackingModal) {
+                              onOpenTrackingModal({
+                                orderId: selectedMsg.orderId,
+                                trackingNumber: selectedMsg.metadata.trackingNumber,
+                                carrier: selectedMsg.metadata.carrier,
+                                trackingUrl: selectedMsg.metadata.trackingUrl
+                              });
+                            }
+                          }}
+                          style={{
+                            fontFamily: 'monospace',
+                            color: '#5E35B1',
+                            backgroundColor: '#F4F0FF',
+                            border: '1px solid #D1C4E9',
+                            borderRadius: '6px',
+                            padding: '3px 9px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            textDecoration: 'underline'
+                          }}
+                          title="Click to see live package location"
+                        >
+                          📍 {selectedMsg.metadata.trackingNumber} (Click to Track)
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '8px' }}>
+                        {onOpenTrackingModal && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenTrackingModal({
+                                orderId: selectedMsg.orderId,
+                                trackingNumber: selectedMsg.metadata.trackingNumber,
+                                carrier: selectedMsg.metadata.carrier,
+                                trackingUrl: selectedMsg.metadata.trackingUrl
+                              })
+                            }
+                            style={{ backgroundColor: '#2c1e18', color: '#ffffff', border: 'none', borderRadius: '6px', padding: '6px 12px', fontSize: '0.78rem', fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            📍 View In-App Live Checkpoints
+                          </button>
+                        )}
+                        <a
+                          href={selectedMsg.metadata.trackingUrl || `https://t.17track.net/en#nums=${encodeURIComponent(selectedMsg.metadata.trackingNumber)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ display: 'inline-block', padding: '6px 12px', backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '6px', color: '#5C5454', fontSize: '0.78rem', fontWeight: 'bold', textDecoration: 'none' }}
+                        >
+                          Open Carrier Tracking Page ↗
+                        </a>
+                      </div>
+                    </div>
+                  )}
 
                   {selectedMsg.bodyHtml ? (
                     <div
@@ -13443,15 +13347,12 @@ export function CustomerOnSiteInbox({
 export function LilyCustomerConcierge({
   authToken,
   currentUser,
-  userOrders = [],
   onAddToCart,
   onSelectProduct,
   onOpenTrackingModal,
   onNavigateTab,
   externalOpenRequest,
-  onClearExternalOpenRequest,
-  embedded = false,
-  hideFloatingWhenEmbeddedActive = false
+  onClearExternalOpenRequest
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -13598,208 +13499,74 @@ export function LilyCustomerConcierge({
     { label: '💌 Message Susan & Odie', prompt: 'I would like to send a question to Susan and Odie for personal help.' }
   ];
 
-  if (hideFloatingWhenEmbeddedActive && !embedded) {
-    return null;
-  }
-
-  const showWindow = embedded || isOpen;
-
   return (
     <>
-      {/* Floating Launcher Button (only when not embedded in the Ask Lily tab) */}
-      {!embedded && (
-        <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9990 }}>
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(!isOpen);
-              setUnreadReplies(0);
-            }}
-            style={{
-              background: 'linear-gradient(135deg, #2c1e18 0%, #4a332a 55%, #B38B8F 100%)',
-              color: '#FFFFFF',
-              border: '2px solid #D4AF37',
-              borderRadius: '34px',
-              padding: '13px 22px',
-              fontFamily: "'Cormorant Garamond', serif",
-              fontSize: '1.2rem',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              boxShadow: '0 10px 30px rgba(44, 30, 24, 0.35)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px'
-            }}
-          >
-            <span style={{ fontSize: '1.35rem' }}>🌸</span>
-            <span>{isOpen ? 'Close Lily Concierge' : 'Ask Lily AI — Beauty, Tracking & Help Desk'}</span>
-            {unreadReplies > 0 && (
-              <span
-                style={{
-                  backgroundColor: '#D4AF37',
-                  color: '#2C1E18',
-                  borderRadius: '50%',
-                  padding: '2px 8px',
-                  fontSize: '0.8rem',
-                  fontFamily: 'sans-serif',
-                  fontWeight: 'bold'
-                }}
-              >
-                {unreadReplies}
-              </span>
-            )}
-          </button>
-        </div>
-      )}
+      {/* Floating Launcher Button */}
+      <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9990 }}>
+        <button
+          type="button"
+          onClick={() => {
+            setIsOpen(!isOpen);
+            setUnreadReplies(0);
+          }}
+          style={{
+            background: 'linear-gradient(135deg, #2c1e18 0%, #4a332a 55%, #B38B8F 100%)',
+            color: '#FFFFFF',
+            border: '2px solid #D4AF37',
+            borderRadius: '34px',
+            padding: '13px 22px',
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '1.2rem',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            boxShadow: '0 10px 30px rgba(44, 30, 24, 0.35)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}
+        >
+          <span style={{ fontSize: '1.35rem' }}>🌸</span>
+          <span>{isOpen ? 'Close Lily Concierge' : 'Ask Lily AI — Beauty, Tracking & Help Desk'}</span>
+          {unreadReplies > 0 && (
+            <span
+              style={{
+                backgroundColor: '#D4AF37',
+                color: '#2C1E18',
+                borderRadius: '50%',
+                padding: '2px 8px',
+                fontSize: '0.8rem',
+                fontFamily: 'sans-serif',
+                fontWeight: 'bold'
+              }}
+            >
+              {unreadReplies}
+            </span>
+          )}
+        </button>
+      </div>
 
-      {/* Embedded Live Package Quick-Tracker when inside the Ask Lily Sanctuary Tab */}
-      {embedded && Array.isArray(userOrders) && userOrders.length > 0 && (
+      {/* Lily Concierge Chat Window */}
+      {isOpen && (
         <div
           style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '20px',
-            border: '1.5px solid #D1C4E9',
-            padding: '20px 24px',
-            marginBottom: '22px',
-            boxShadow: '0 8px 24px rgba(94, 53, 177, 0.08)',
+            position: 'fixed',
+            bottom: '86px',
+            right: '24px',
+            width: '430px',
+            maxWidth: 'calc(100vw - 32px)',
+            height: '640px',
+            maxHeight: 'calc(100vh - 120px)',
+            backgroundColor: '#FFFDFB',
+            borderRadius: '24px',
+            border: '2px solid #D4AF37',
+            boxShadow: '0 20px 55px rgba(44, 30, 24, 0.32)',
+            zIndex: 9991,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
             textAlign: 'left',
             fontFamily: 'sans-serif'
           }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
-            <div>
-              <span style={{ fontSize: '0.74rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.8px', color: '#5E35B1' }}>
-                🚚 Live CJ Dropshipping Package Tracker
-              </span>
-              <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.75rem', color: '#2C1E18', margin: '2px 0 0 0' }}>
-                Click Any Order Below to See Where Your Package Is
-              </h3>
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
-            {userOrders.slice(0, 4).map((ord, idx) => {
-              const shortRef = ord.shortId || (ord._id ? String(ord._id).slice(-6).toUpperCase() : `ORD-${idx + 1}`);
-              const tCode = ord.tracking_code || ord.trackingNumber || '';
-              const carrier = ord.logisticName || ord.carrier || 'CJPacket Sensitive Pro';
-              const extUrl =
-                ord.trackingUrl ||
-                (tCode
-                  ? `https://t.17track.net/en#nums=${encodeURIComponent(tCode)}`
-                  : ord.cjOrderId
-                  ? `https://t.17track.net/en#nums=${encodeURIComponent(ord.cjOrderId)}`
-                  : 'https://cjpacket.com/');
-              return (
-                <div
-                  key={ord._id || idx}
-                  style={{
-                    backgroundColor: '#FAF8FF',
-                    border: '1px solid #D1C4E9',
-                    borderRadius: '14px',
-                    padding: '14px 16px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong style={{ fontSize: '0.95rem', color: '#2C1E18' }}>Order #{shortRef}</strong>
-                    <span style={{ fontSize: '0.74rem', fontWeight: 'bold', backgroundColor: '#EDE7F6', color: '#5E35B1', padding: '3px 9px', borderRadius: '10px' }}>
-                      {ord.status || 'Processing'}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#5C5454' }}>
-                    Carrier: <strong>{carrier}</strong>
-                    {tCode ? (
-                      <div style={{ marginTop: '4px', fontFamily: 'monospace', color: '#5E35B1', fontWeight: 'bold' }}>
-                        Tracking #: {tCode}
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: '4px', color: '#7A6356', fontStyle: 'italic' }}>
-                        Preparing in studio — click below to check live CJ scan
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' }}>
-                    <button
-                      type="button"
-                      onClick={() => onOpenTrackingModal && onOpenTrackingModal(ord)}
-                      style={{
-                        backgroundColor: '#5E35B1',
-                        color: '#FFFFFF',
-                        border: 'none',
-                        borderRadius: '8px',
-                        padding: '8px 12px',
-                        fontSize: '0.78rem',
-                        fontWeight: 'bold',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      📍 Where Is My Package? (Live Checkpoints)
-                    </button>
-                    <a
-                      href={extUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        backgroundColor: '#FFFFFF',
-                        color: '#5E35B1',
-                        border: '1px solid #5E35B1',
-                        borderRadius: '8px',
-                        padding: '7px 11px',
-                        fontSize: '0.76rem',
-                        fontWeight: 'bold',
-                        textDecoration: 'none'
-                      }}
-                    >
-                      🌍 Carrier Map ↗
-                    </a>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Lily Concierge Chat Window */}
-      {showWindow && (
-        <div
-          style={
-            embedded
-              ? {
-                  width: '100%',
-                  minHeight: '640px',
-                  maxHeight: '780px',
-                  backgroundColor: '#FFFDFB',
-                  borderRadius: '24px',
-                  border: '2px solid #D4AF37',
-                  boxShadow: '0 14px 40px rgba(44, 30, 24, 0.14)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  textAlign: 'left',
-                  fontFamily: 'sans-serif'
-                }
-              : {
-                  position: 'fixed',
-                  bottom: '86px',
-                  right: '24px',
-                  width: '430px',
-                  maxWidth: 'calc(100vw - 32px)',
-                  height: '640px',
-                  maxHeight: 'calc(100vh - 120px)',
-                  backgroundColor: '#FFFDFB',
-                  borderRadius: '24px',
-                  border: '2px solid #D4AF37',
-                  boxShadow: '0 20px 55px rgba(44, 30, 24, 0.32)',
-                  zIndex: 9991,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  textAlign: 'left',
-                  fontFamily: 'sans-serif'
-                }
-          }
         >
           {/* Header */}
           <div
@@ -13841,21 +13608,19 @@ export function LilyCustomerConcierge({
               >
                 Reset
               </button>
-              {!embedded && (
-                <button
-                  type="button"
-                  onClick={() => setIsOpen(false)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: '#FFFFFF',
-                    fontSize: '1.25rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  ✕
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#FFFFFF',
+                  fontSize: '1.25rem',
+                  cursor: 'pointer'
+                }}
+              >
+                ✕
+              </button>
             </div>
           </div>
 
@@ -14030,76 +13795,75 @@ export function LilyCustomerConcierge({
                     if (card.type === 'tracking' && Array.isArray(card.orders)) {
                       return (
                         <div key={cIdx} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          {card.orders.map((ord) => {
-                            const fallbackUrl =
-                              ord.trackingUrl ||
-                              (ord.trackingNumber
-                                ? `https://t.17track.net/en#nums=${encodeURIComponent(ord.trackingNumber)}`
-                                : ord.cjOrderId
-                                ? `https://t.17track.net/en#nums=${encodeURIComponent(ord.cjOrderId)}`
-                                : 'https://cjpacket.com/');
-                            return (
-                              <div
-                                key={ord.orderId}
-                                style={{
-                                  backgroundColor: '#FFFFFF',
-                                  border: '1.5px solid #D1C4E9',
-                                  borderRadius: '12px',
-                                  padding: '12px 14px'
-                                }}
-                              >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                                  <strong style={{ fontSize: '0.86rem', color: '#2C1E18' }}>Order #{ord.shortId}</strong>
-                                  <span style={{ fontSize: '0.72rem', backgroundColor: '#F4F0FF', color: '#5E35B1', padding: '2px 8px', borderRadius: '10px', fontWeight: 'bold' }}>
-                                    {ord.liveStatus}
-                                  </span>
-                                </div>
-                                <div style={{ fontSize: '0.78rem', color: '#5C5454', marginBottom: '8px' }}>
-                                  Carrier: <strong>{ord.carrier}</strong>
-                                  {ord.trackingNumber && (
-                                    <span style={{ marginLeft: '8px', fontFamily: 'monospace', color: '#5E35B1', fontWeight: 'bold' }}>
-                                      #{ord.trackingNumber}
-                                    </span>
-                                  )}
-                                </div>
+                          {card.orders.map((ord) => (
+                            <div
+                              key={ord.orderId}
+                              style={{
+                                backgroundColor: '#FFFFFF',
+                                border: '1.5px solid #D1C4E9',
+                                borderRadius: '12px',
+                                padding: '12px 14px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                                <strong style={{ fontSize: '0.86rem', color: '#2C1E18' }}>Order #{ord.shortId}</strong>
+                                <span style={{ fontSize: '0.72rem', backgroundColor: '#F4F0FF', color: '#5E35B1', padding: '2px 8px', borderRadius: '10px', fontWeight: 'bold' }}>
+                                  {ord.liveStatus}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: '#5C5454', marginBottom: '6px' }}>
+                                Carrier: <strong>{ord.carrier}</strong>
+                              </div>
+                              {ord.trackingNumber ? (
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                                   <button
                                     type="button"
                                     onClick={() => onOpenTrackingModal && onOpenTrackingModal(ord)}
                                     style={{
-                                      fontSize: '0.78rem',
+                                      fontFamily: 'monospace',
+                                      fontSize: '0.8rem',
                                       backgroundColor: '#5E35B1',
                                       color: '#FFFFFF',
                                       border: 'none',
-                                      borderRadius: '8px',
-                                      padding: '7px 12px',
+                                      borderRadius: '6px',
+                                      padding: '6px 10px',
                                       fontWeight: 'bold',
                                       cursor: 'pointer'
                                     }}
                                   >
-                                    {ord.trackingNumber ? `📍 Track #${ord.trackingNumber} Live` : '📍 Click to See Where My Package Is'}
+                                    📍 Track #{ord.trackingNumber} Live
                                   </button>
-                                  <a
-                                    href={fallbackUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    style={{
-                                      fontSize: '0.76rem',
-                                      backgroundColor: '#FFF0F2',
-                                      color: '#5C5454',
-                                      border: '1px solid #B38B8F',
-                                      borderRadius: '8px',
-                                      padding: '6px 10px',
-                                      fontWeight: 'bold',
-                                      textDecoration: 'none'
-                                    }}
-                                  >
-                                    🌍 Carrier Map ↗
-                                  </a>
+                                  {ord.trackingUrl && (
+                                    <a
+                                      href={ord.trackingUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{ fontSize: '0.76rem', color: '#5E35B1', fontWeight: 'bold', textDecoration: 'underline' }}
+                                    >
+                                      Carrier Map ↗
+                                    </a>
+                                  )}
                                 </div>
-                              </div>
-                            );
-                          })}
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenTrackingModal && onOpenTrackingModal(ord)}
+                                  style={{
+                                    backgroundColor: '#FFF0F2',
+                                    color: '#5C5454',
+                                    border: '1px solid #B38B8F',
+                                    borderRadius: '6px',
+                                    padding: '5px 10px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  📍 View Live Fulfillment Stage
+                                </button>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       );
                     }
@@ -14267,23 +14031,13 @@ function App() {
   });
 
   const openLiveTrackingModal = (orderOrInfo = {}) => {
-    const rawId = orderOrInfo._id || orderOrInfo.orderId || '';
-    const shortId =
-      orderOrInfo.shortId ||
-      (rawId ? String(rawId).slice(-6).toUpperCase() : '') ||
-      orderOrInfo.cjOrderId ||
-      '';
     setLiveTrackingModal({
       isOpen: true,
-      orderId: String(rawId || ''),
-      shortId: String(shortId || ''),
-      cjOrderId: String(orderOrInfo.cjOrderId || orderOrInfo.cjOrderCode || ''),
-      status: String(orderOrInfo.status || orderOrInfo.liveStatus || 'PAID_PROCESSING'),
-      trackingNumber: String(orderOrInfo.trackingNumber || orderOrInfo.tracking_code || orderOrInfo.trackNumber || ''),
-      carrier: String(orderOrInfo.carrier || orderOrInfo.logisticName || orderOrInfo.selectedLogisticName || 'CJPacket Sensitive Pro'),
-      trackingUrl: String(orderOrInfo.trackingUrl || ''),
-      createdAt: orderOrInfo.createdAt || null,
-      updatedAt: orderOrInfo.updatedAt || null
+      orderId: orderOrInfo._id || orderOrInfo.orderId || '',
+      shortId: orderOrInfo.shortId || (orderOrInfo._id ? String(orderOrInfo._id).slice(-6).toUpperCase() : ''),
+      trackingNumber: orderOrInfo.trackingNumber || orderOrInfo.tracking_code || '',
+      carrier: orderOrInfo.carrier || orderOrInfo.logisticName || orderOrInfo.selectedLogisticName || 'CJPacket Sensitive Pro',
+      trackingUrl: orderOrInfo.trackingUrl || ''
     });
   };
 
@@ -15917,7 +15671,6 @@ function App() {
         <LilyCustomerConcierge
           authToken={localStorage.getItem('token')}
           currentUser={userDetails}
-          userOrders={userOrders}
           onAddToCart={(prod) => {
             handleAddToCart(prod);
             setIsCartOpen(true);
@@ -15930,7 +15683,6 @@ function App() {
           }}
           externalOpenRequest={lilyOpenRequest}
           onClearExternalOpenRequest={() => setLilyOpenRequest({ open: false, initialPrompt: '' })}
-          hideFloatingWhenEmbeddedActive={step === 5 && activeMemberTab === 'Ask Lily'}
         />
       )}
 
@@ -16434,9 +16186,8 @@ function App() {
               </div>
 
               <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', padding: '0 20px' }}>
-                {['Blueprint', 'Boutique', 'Ask Lily', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
+                {['Blueprint', 'Boutique', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
                   const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
-                  const isAskLilyTab = tab === 'Ask Lily';
                   return (
                     <button
                       key={tab}
@@ -16447,13 +16198,11 @@ function App() {
                         }
                       }}
                       style={{
-                        padding: '12px 18px', textAlign: 'left',
-                        border: isAskLilyTab && activeMemberTab !== tab ? '1.5px solid #D4AF37' : 'none',
-                        borderRadius: '12px',
-                        backgroundColor: activeMemberTab === tab ? '#F2D4D7' : (isAskLilyTab ? '#FFFDF5' : 'transparent'),
-                        color: activeMemberTab === tab ? '#5C5454' : (isAskLilyTab ? '#2C1E18' : '#8A797A'),
+                        padding: '12px 18px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                        backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
+                        color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
                         fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer',
-                        transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab || isAskLilyTab ? 'bold' : 'normal',
+                        transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
                         boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none',
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between'
                       }}
@@ -16461,18 +16210,12 @@ function App() {
                       <span>
                         {tab === 'Blueprint' && '📝 '}
                         {tab === 'Boutique' && '🛍️ '}
-                        {tab === 'Ask Lily' && '🌸 '}
                         {tab === 'Inbox' && '💌 '}
                         {tab === 'Consultations' && '🎥 '}
                         {tab === 'Order History' && '📦 '}
                         {tab === 'Account Info' && '👤 '}
                         {tab}
                       </span>
-                      {isAskLilyTab && (
-                        <span style={{ fontSize: '0.68rem', fontFamily: 'sans-serif', backgroundColor: '#2C1E18', color: '#D4AF37', borderRadius: '10px', padding: '2px 7px', fontWeight: 'bold' }}>
-                          AI ✧
-                        </span>
-                      )}
                       {isLockedForFree && (
                         <span style={{ fontSize: '0.85rem', color: '#B38B8F' }} title="Paid Membership Required">
                           🔒
@@ -16607,7 +16350,7 @@ function App() {
                 </div>
               </div>
 
-              {/* FOUNDING 50 PROMO CODE & VIP ENTITLEMENT BAR */}
+                           {/* FOUNDING 50 PROMO CODE & VIP ENTITLEMENT BAR */}
               <FoundingMemberPromoAndCartModule
                 authToken={localStorage.getItem('token')}
                 currentUser={userDetails}
@@ -16636,6 +16379,8 @@ function App() {
                 cartItems={cart}
                 compact={true}
               />
+ 
+              
 
               {/* TABS CONTENT */}
               
@@ -16744,13 +16489,12 @@ function App() {
                             )}
                             <button
                               type="button"
-                              onClick={() => {
-                                setActiveMemberTab('Ask Lily');
+                              onClick={() =>
                                 setLilyOpenRequest({
                                   open: true,
                                   initialPrompt: 'Please interpret my Beauty Blueprint and recommend matching products for my routine.'
-                                });
-                              }}
+                                })
+                              }
                               style={{ backgroundColor: '#2C1E18', border: '1px solid #D4AF37', color: '#FFFFFF', padding: '6px 15px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' }}
                             >
                               🌸 Ask Lily to Explain My Blueprint →
@@ -17275,99 +17019,47 @@ function App() {
                         </button>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                        {userOrders.map((order, idx) => {
-                          const tCode = order.tracking_code || order.trackingNumber || '';
-                          const extUrl =
-                            order.trackingUrl ||
-                            (tCode
-                              ? `https://t.17track.net/en#nums=${encodeURIComponent(tCode)}`
-                              : order.cjOrderId
-                              ? `https://t.17track.net/en#nums=${encodeURIComponent(order.cjOrderId)}`
-                              : 'https://cjpacket.com/');
-                          return (
-                            <div key={order._id || idx} style={{ padding: '15px', border: '1px solid #E8C5C8', borderRadius: '10px', backgroundColor: '#FFF9F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                              <div>
-                                <p style={{ margin: '0 0 5px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', fontWeight: 'bold' }}>
-                                  Order #{order.shortId || String(order._id || '').slice(-6).toUpperCase()} • {new Date(order.createdAt).toLocaleDateString()}
-                                </p>
-                                <p style={{ margin: '0 0 5px 0', fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Total: ${(order.totalAmount || 0).toFixed(2)}</p>
-                                <p style={{ margin: 0, fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>
-                                  Status:{' '}
-                                  <span
-                                    onClick={() => openLiveTrackingModal(order)}
-                                    style={{ color: order.status === 'SHIPPED' ? '#5E35B1' : '#B38B8F', fontWeight: 'bold', textDecoration: 'underline', cursor: 'pointer' }}
-                                  >
-                                    {order.status || 'Pending'} (Click to Track)
-                                  </span>
-                                </p>
-                              </div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                                {tCode ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => openLiveTrackingModal(order)}
-                                    style={{ backgroundColor: '#F4F0FF', padding: '10px 15px', borderRadius: '10px', border: '1.5px solid #5E35B1', cursor: 'pointer', textAlign: 'left' }}
-                                    title="Click to see live package location & checkpoints"
-                                  >
-                                    <p style={{ margin: '0 0 3px 0', fontSize: '0.78rem', color: '#5E35B1', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
-                                      📍 Where Is My Package? ({order.logisticName || order.carrier || 'Courier'})
-                                    </p>
-                                    <p style={{ margin: 0, fontSize: '1.05rem', color: '#5E35B1', fontWeight: 'bold', fontFamily: 'monospace', textDecoration: 'underline' }}>
-                                      {tCode}
-                                    </p>
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => openLiveTrackingModal(order)}
-                                    style={{ backgroundColor: '#5E35B1', padding: '10px 15px', borderRadius: '10px', border: 'none', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#FFFFFF', fontWeight: 'bold' }}
-                                  >
-                                    📍 Where Is My Package? (Live CJ Status) →
-                                  </button>
-                                )}
-                                <a
-                                  href={extUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  style={{ backgroundColor: '#FFFFFF', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B38B8F', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454', fontWeight: 'bold', textDecoration: 'none' }}
-                                >
-                                  🌍 Carrier Map ↗
-                                </a>
-                              </div>
+                        {userOrders.map((order, idx) => (
+                          <div key={order._id || idx} style={{ padding: '15px', border: '1px solid #E8C5C8', borderRadius: '10px', backgroundColor: '#FFF9F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                            <div>
+                              <p style={{ margin: '0 0 5px 0', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', fontWeight: 'bold' }}>Order Date: {new Date(order.createdAt).toLocaleDateString()}</p>
+                              <p style={{ margin: '0 0 5px 0', fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Total: ${(order.totalAmount || 0).toFixed(2)}</p>
+                              <p style={{ margin: 0, fontFamily: 'sans-serif', fontSize: '0.9rem', color: '#8A797A' }}>Status: <span style={{ color: order.status === 'SHIPPED' ? '#B38B8F' : '#A89999', fontWeight: 'bold' }}>{order.status || 'Pending'}</span></p>
                             </div>
-                          );
-                        })}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                              {(order.tracking_code || order.trackingNumber) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLiveTrackingModal(order)}
+                                  style={{ backgroundColor: '#F4F0FF', padding: '10px 15px', borderRadius: '10px', border: '1.5px solid #D1C4E9', cursor: 'pointer', textAlign: 'left' }}
+                                  title="Click to see live package location & checkpoints"
+                                >
+                                  <p style={{ margin: '0 0 3px 0', fontSize: '0.78rem', color: '#5E35B1', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
+                                    📍 Click to Track Package ({order.logisticName || order.carrier || 'Courier'})
+                                  </p>
+                                  <p style={{ margin: 0, fontSize: '1.05rem', color: '#5E35B1', fontWeight: 'bold', fontFamily: 'monospace', textDecoration: 'underline' }}>
+                                    {order.tracking_code || order.trackingNumber}
+                                  </p>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => openLiveTrackingModal(order)}
+                                  style={{ backgroundColor: '#FFF0F2', padding: '9px 14px', borderRadius: '10px', border: '1px solid #B38B8F', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#5C5454', fontWeight: 'bold' }}
+                                >
+                                  📍 Check Live Order Status →
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* 2. ASK LILY AI CONCIERGE & LIVE PACKAGE TRACKER TAB */}
-              {activeMemberTab === 'Ask Lily' && (
-                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  <LilyCustomerConcierge
-                    authToken={localStorage.getItem('token')}
-                    currentUser={userDetails}
-                    userOrders={userOrders}
-                    onAddToCart={(prod) => {
-                      handleAddToCart(prod);
-                      setIsCartOpen(true);
-                    }}
-                    onSelectProduct={(prod) => setSelectedProduct(prod)}
-                    onOpenTrackingModal={openLiveTrackingModal}
-                    onNavigateTab={(tabName) => {
-                      setStep(5);
-                      setActiveMemberTab(tabName);
-                    }}
-                    externalOpenRequest={lilyOpenRequest}
-                    onClearExternalOpenRequest={() => setLilyOpenRequest({ open: false, initialPrompt: '' })}
-                    embedded={true}
-                  />
-                </div>
-              )}
-
-              {/* 3. INBOX TAB (DUAL-CHANNEL ORDER/VIP UPDATES + SUSAN'S CURATIONS) */}
+              {/* 2. INBOX TAB (DUAL-CHANNEL ORDER/VIP UPDATES + SUSAN'S CURATIONS) */}
               {activeMemberTab === 'Inbox' && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
                   <CustomerOnSiteInbox
@@ -17618,41 +17310,20 @@ function App() {
                               </div>
 
                               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                                <button
-                                  type="button"
-                                  onClick={() => openLiveTrackingModal(order)}
-                                  title="Click to see live package location & transit checkpoints"
+                                <span
                                   style={{
                                     backgroundColor: statusBadgeStyle.bg,
                                     color: statusBadgeStyle.color,
-                                    border: `1.5px solid ${statusBadgeStyle.border}`,
+                                    border: `1px solid ${statusBadgeStyle.border}`,
                                     borderRadius: '18px',
                                     padding: '6px 14px',
                                     fontSize: '0.82rem',
                                     fontFamily: 'sans-serif',
-                                    fontWeight: 'bold',
-                                    cursor: 'pointer'
+                                    fontWeight: 'bold'
                                   }}
                                 >
-                                  {statusBadgeStyle.label} • Click to Track
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openLiveTrackingModal(order)}
-                                  style={{
-                                    backgroundColor: '#5E35B1',
-                                    color: '#FFFFFF',
-                                    border: 'none',
-                                    borderRadius: '18px',
-                                    padding: '8px 16px',
-                                    fontFamily: 'sans-serif',
-                                    fontSize: '0.82rem',
-                                    fontWeight: 'bold',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  📍 Where Is My Package?
-                                </button>
+                                  {statusBadgeStyle.label}
+                                </span>
                                 {orderItems.length > 0 && (
                                   <button
                                     type="button"
@@ -17857,31 +17528,16 @@ function App() {
                                   ) : (
                                     <div style={{ fontSize: '0.88rem', fontFamily: 'sans-serif', color: '#8A797A' }}>
                                       Carrier: <strong>{order.logisticName || order.carrier || 'Sanctuary Priority Fulfillment'}</strong>
-                                      {order.cjOrderId && (
-                                        <div style={{ fontSize: '0.8rem', color: '#5E35B1', marginTop: '2px' }}>
-                                          CJ Fulfillment Ref: <strong style={{ fontFamily: 'monospace' }}>{order.cjOrderCode || order.cjOrderId}</strong>
-                                        </div>
-                                      )}
-                                      <div style={{ fontStyle: 'italic', marginTop: '3px', marginBottom: '10px' }}>
-                                        Click below to sync live CJ Dropshipping checkpoints or open the carrier tracking map.
+                                      <div style={{ fontStyle: 'italic', marginTop: '3px', marginBottom: '8px' }}>
+                                        Tracking number will appear automatically as soon as your parcel dispatches.
                                       </div>
-                                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                        <button
-                                          type="button"
-                                          onClick={() => openLiveTrackingModal(order)}
-                                          style={{ backgroundColor: '#5E35B1', color: '#FFFFFF', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '0.8rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: 'pointer' }}
-                                        >
-                                          📍 Where Is My Package? (Sync Live CJ Status) →
-                                        </button>
-                                        <a
-                                          href={order.trackingUrl || (order.cjOrderId ? `https://t.17track.net/en#nums=${encodeURIComponent(order.cjOrderId)}` : 'https://cjpacket.com/')}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          style={{ backgroundColor: '#FFFFFF', color: '#5E35B1', border: '1px solid #D1C4E9', borderRadius: '8px', padding: '8px 12px', fontSize: '0.78rem', fontFamily: 'sans-serif', fontWeight: 'bold', textDecoration: 'none' }}
-                                        >
-                                          🌍 Carrier Map ↗
-                                        </a>
-                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => openLiveTrackingModal(order)}
+                                        style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '8px', padding: '6px 12px', fontSize: '0.78rem', fontFamily: 'sans-serif', fontWeight: 'bold', cursor: 'pointer' }}
+                                      >
+                                        📍 View Live Fulfillment Stage →
+                                      </button>
                                     </div>
                                   )}
                                 </div>
