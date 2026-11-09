@@ -1,7 +1,6 @@
 {
   "name": "beauty-app",
   "version": "1.0.0",
-  "homepage": "https://susans-beauty-11.github.io/Susans-Beauty",
   "description": "Susan's Beauty Consulting platform",
   "main": "server.js",
   "scripts": {
