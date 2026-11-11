@@ -17166,14 +17166,25 @@ const handleRedeemFoundingPromo = async (req, res) => {
         promo.isActive = true;
         await promo.save();
       } else {
-        return res.status(400).json({ error: `Code ${cleanCode} has already been claimed. Please try the next code number (e.g. RAD-FOUNDER-02).` });
+        return res.status(400).json({ error: `Code ${cleanCode} has already been claimed. Please enter your assigned Founder code.` });
       }
     }
 
     const currentTierLower = String(user.membershipTier || 'basic').toLowerCase().trim();
     const promoTierLower = String(promo.tier || 'Luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
-    const isAdminUser = user.role === 'admin' || currentTierLower === 'admin';
-    const isFreeTierUser = ['basic', 'none', 'free', ''].includes(currentTierLower) && !isAdminUser;
+    const userEmailLower = String(user.email || '').trim().toLowerCase();
+    const isProtectedSusanAccount = [
+      'susan.coke@susansbeautyconsulting.com',
+      'susansbeautyconsulting@gmail.com',
+      'susanseautyconsulting@gmail.com'
+    ].includes(userEmailLower);
+    const hasVerifiedStripeSubscription = Boolean(
+      user.billingInfo &&
+      user.billingInfo.stripeSubscriptionId &&
+      String(user.billingInfo.stripeSubscriptionId).startsWith('sub_')
+    );
+    const isAdminUser = user.role === 'admin' || currentTierLower === 'admin' || isProtectedSusanAccount;
+    const isFreeTierUser = (['basic', 'none', 'free', ''].includes(currentTierLower) || !hasVerifiedStripeSubscription) && !isAdminUser;
     const isUpgradingFromLuminaryToRadiance = currentTierLower === 'luminary' && promoTierLower === 'radiance' && !isAdminUser;
 
     // BLOCK FREE TIER (or unpaid Luminary -> Radiance upgrade) FROM UPGRADING FOR FREE:
@@ -19708,9 +19719,17 @@ app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, a
 
 // ============================================================================
 // PHASE 4: GEO CONTENT ENGINE, NATIVE SOCIAL PROOF TICKER, FACEBOOK LEAD ADS
-// WEBHOOK & AUTOMATED 2-HOUR CART/LEAD FOLLOW-UP CRON JOB
+// WEBHOOK, TEST ACCOUNT MEMBERSHIP RESET & 2-HOUR FOLLOW-UP CRON JOB
 // (Note: `path` and `fs` are already imported above in server.js)
 // ============================================================================
+
+const PROTECTED_SUSAN_EMAILS = [
+  'susan.coke@susansbeautyconsulting.com',
+  'susansbeautyconsulting@gmail.com',
+  'susanseautyconsulting@gmail.com'
+];
+
+const PHASE4_BOOT_TIMESTAMP = new Date();
 
 // 1. MongoDB Schemas for Social Proof Activity & GEO Articles
 const marketingActivitySchema = new mongoose.Schema({
@@ -19864,7 +19883,7 @@ const DEFAULT_GEO_MASTER_ARTICLE = {
       heading: 'How Do I Reintroduce Retinoids and Exfoliants After Barrier Recovery?',
       answerCapsule: 'Reintroduce retinoids and chemical exfoliants only after stinging, tightness, and redness have completely resolved for five consecutive days. Start by buffering a pea-sized amount of retinaldehyde or encapsulated retinol over a lightweight ceramide lotion twice weekly, avoiding concurrent AHA/BHA acids during peak winter months.',
       bodyParagraphs: [
-        'Never resume active anti-aging treatments on the same night. Use the Barrier Sandwich Method: apply a thin layer of your non-comedogenic ceramide lotion, wait 10 minutes until fully absorbed, apply your retinoid, and finish with a drop of squalane. Not sure which exact formulations match your pore structure and climate? Take our complimentary 2-Minute Diagnostic Beauty Blueprint Quiz at Susan’s Beauty Consulting to receive a bespoke winter ritual curated by our AI and Master Esthetician team.'
+        'Never resume active anti-aging treatments on the same night. Use the Barrier Sandwich Method: apply a thin layer of your non-comedogenic ceramide lotion, wait 10 minutes until fully absorbed, apply your retinoid, and finish with a drop of squalane. Not sure which exact formulations match your pore structure and climate? Take our 10-Step Personalized Beauty Blueprint Quiz at Susan’s Beauty Consulting to receive a bespoke winter ritual curated by our AI and Master Esthetician team.'
       ],
       bulletPoints: []
     }
@@ -19898,10 +19917,97 @@ const DEFAULT_GEO_MASTER_ARTICLE = {
   }
 };
 
+// Sanitize existing test accounts so ONLY susan.coke@susansbeautyconsulting.com and susansbeautyconsulting@gmail.com
+// keep their upgraded/admin memberships unless a user has a live verified Stripe subscription.
+async function sanitizeExistingTestAccountMemberships() {
+  try {
+    if (mongoose.connection.readyState !== 1) return;
+
+    const allUsers = await User.find({});
+    let resetCount = 0;
+
+    for (const u of allUsers) {
+      const cleanMail = String(u.email || '').trim().toLowerCase();
+      const isProtectedOwner = PROTECTED_SUSAN_EMAILS.includes(cleanMail);
+
+      if (cleanMail === 'susan.coke@susansbeautyconsulting.com') {
+        if (u.role !== 'admin' || u.membershipTier !== 'admin') {
+          u.role = 'admin';
+          u.membershipTier = 'admin';
+          await u.save();
+        }
+        continue;
+      }
+
+      if (cleanMail === 'susansbeautyconsulting@gmail.com' || cleanMail === 'susanseautyconsulting@gmail.com') {
+        // Preserve Susan's Gmail account membership & Founding perks intact
+        continue;
+      }
+
+      // Check if this non-owner account was test-upgraded without a real Stripe subscription ID
+      const hasVerifiedStripeSub = Boolean(
+        u.billingInfo &&
+        u.billingInfo.stripeSubscriptionId &&
+        String(u.billingInfo.stripeSubscriptionId).startsWith('sub_')
+      );
+
+      const tierLower = String(u.membershipTier || 'basic').toLowerCase().trim();
+      if (!isProtectedOwner && !hasVerifiedStripeSub && (tierLower !== 'basic' || u.isFoundingMember || (u.storeCreditBalance || 0) > 0)) {
+        u.membershipTier = 'basic';
+        u.role = 'client';
+        u.isFoundingMember = false;
+        u.foundingSlotNumber = null;
+        u.priceLockedForLife = false;
+        u.lockedTierPrice = null;
+        u.storeCreditBalance = 0;
+        u.aiBeautyRitualConsultation = false;
+        u.pendingVipMysteryBox = false;
+        u.redeemedPromoCode = null;
+        u.pendingFoundingPromoCode = null;
+        u.pendingUpgradeTier = '';
+        await u.save();
+        resetCount++;
+      }
+    }
+
+    // Re-sync PromoCode usage so test redemptions don't consume real Founding 50 codes
+    if (typeof PromoCode !== 'undefined') {
+      const allCodes = await PromoCode.find({});
+      for (const codeDoc of allCodes) {
+        const validHolders = await User.find({
+          redeemedPromoCode: codeDoc.code,
+          isFoundingMember: true
+        }).select('_id email').lean();
+
+        const nextUses = validHolders.length;
+        const shouldBeActive = nextUses < (codeDoc.maxUses || 1);
+        if (codeDoc.currentUses !== nextUses || codeDoc.isActive !== shouldBeActive) {
+          codeDoc.currentUses = nextUses;
+          codeDoc.isActive = shouldBeActive;
+          codeDoc.redeemedBy = validHolders.map((h) => ({
+            userId: h._id,
+            email: h.email,
+            redeemedAt: new Date()
+          }));
+          await codeDoc.save();
+        }
+      }
+    }
+
+    if (resetCount > 0) {
+      console.log(`✧ [Account Sanitizer] Reset ${resetCount} test account(s) back to Free ('basic') tier. Preserved Susan's owner accounts.`);
+    }
+  } catch (err) {
+    console.warn('⚠️ [Account Sanitizer] Non-fatal notice:', err.message);
+  }
+}
+
 // Auto-seed GEO article and baseline Founding 50 social proof on startup
 async function ensureGeoAndSocialProofSeeded() {
   try {
     if (mongoose.connection.readyState !== 1) return;
+
+    await sanitizeExistingTestAccountMemberships();
 
     const existingArticle = await GeoArticle.findOne({ slug: DEFAULT_GEO_MASTER_ARTICLE.slug });
     if (!existingArticle) {
@@ -19912,12 +20018,12 @@ async function ensureGeoAndSocialProofSeeded() {
     const activityCount = await MarketingActivity.countDocuments();
     if (activityCount === 0) {
       await MarketingActivity.insertMany([
-        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', category: 'blueprint' },
-        { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot #4 (65% OFF Locked)', category: 'founding_member' },
+        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 10-Step Personalized Beauty Blueprint', category: 'blueprint' },
+        { name: 'Elena R.', city: 'Overland Park, KS', action: 'joined The Radiance Elite ($119/mo Locked + $119 Store Credit)', category: 'founding_member' },
         { name: 'Claire T.', city: 'Wichita, KS', action: 'started the 72-Hour Non-Comedogenic Barrier Reset Ritual', category: 'ritual' },
-        { name: 'Michelle K.', city: 'Denver, CO', action: 'claimed Founding 50 Luminary VIP Spot ($25 Credit Vaulted)', category: 'founding_member' },
+        { name: 'Michelle K.', city: 'Denver, CO', action: 'joined The Luminary Circle ($49/mo Locked + $49 Store Credit)', category: 'founding_member' },
         { name: 'Lauren B.', city: 'Salina, KS', action: 'unlocked her Custom Perimenopausal Lipid Protocol', category: 'blueprint' },
-        { name: 'hannah V.', city: 'Austin, TX', action: 'claimed Founding 50 Radiance Spot + Free 3pc Mystery Box', category: 'founding_member' }
+        { name: 'Hannah V.', city: 'Austin, TX', action: 'claimed her Founding 50 Radiance Elite Spot + Free 3pc VIP Mystery Box', category: 'founding_member' }
       ]);
       console.log('✧ [Social Proof Engine] Seeded baseline Founding 50 & Sanctuary Blueprint ticker activities.');
     }
@@ -19928,7 +20034,7 @@ async function ensureGeoAndSocialProofSeeded() {
 setTimeout(ensureGeoAndSocialProofSeeded, 3500);
 
 // Helper to build JSON-LD Structured Data for Google AI Overviews & ChatGPT Search
-function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRemaining = 47) {
+function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRemaining = 49) {
   return [
     {
       '@context': 'https://schema.org',
@@ -19957,27 +20063,16 @@ function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRe
       },
       hasOfferCatalog: {
         '@type': 'OfferCatalog',
-        name: 'Founding 50 Sanctuary Memberships & Diagnostic Skin Blueprints',
+        name: 'Founding 50 VIP Memberships & Store Credit Vault',
         itemListElement: [
           {
             '@type': 'Offer',
             itemOffered: {
-              '@type': 'Service',
-              name: '2-Minute AI & Esthetician Diagnostic Skin Barrier Blueprint',
-              description: 'Complimentary customized AM/PM skincare formulation audit and winter barrier repair protocol.'
-            },
-            price: '0.00',
-            priceCurrency: 'USD',
-            availability: 'https://schema.org/InStock'
-          },
-          {
-            '@type': 'Offer',
-            itemOffered: {
               '@type': 'Product',
-              name: 'Founding 50 Luminary VIP Sanctuary Membership',
-              description: `Founding Member Lifetime 65% Discount, 10% Storewide Boutique Savings, and $25 Instant Store Credit (${foundingRemaining} spots remaining).`
+              name: 'The Luminary Circle — Founding 50 VIP Membership',
+              description: `Lock in $49/mo pricing for life, receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount (${foundingRemaining} of 50 spots remaining).`
             },
-            price: '6.65',
+            price: '49.00',
             priceCurrency: 'USD',
             availability: 'https://schema.org/LimitedAvailability'
           },
@@ -19985,10 +20080,10 @@ function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRe
             '@type': 'Offer',
             itemOffered: {
               '@type': 'Product',
-              name: 'Founding 50 Radiance All-Access Founder Membership',
-              description: 'Founding Member Lifetime 65% Discount ($13.65/mo forever), 20% Storewide Savings, $50 Store Credit Vault, and FREE 3-Piece VIP Mystery Box Set.'
+              name: 'The Radiance Elite — Founding 50 VIP Membership',
+              description: 'Lock in $119/mo pricing for life, receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
             },
-            price: '13.65',
+            price: '119.00',
             priceCurrency: 'USD',
             availability: 'https://schema.org/LimitedAvailability'
           }
@@ -19998,21 +20093,21 @@ function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRe
   ];
 }
 
-// 3. API Endpoint: GET /api/geo/hub (Serves Pillars, 800-Word Guide, FAQs, Reddit Case Study & Live Founding 50 Scarcity)
+// 3. API Endpoint: GET /api/geo/hub (Serves Pillars, 800-Word Guide, FAQs, Reddit Case Study & Live Founding 50 Scarcity — NO public promo codes exposed)
 app.get('/api/geo/hub', async (req, res) => {
   try {
     await ensureGeoAndSocialProofSeeded();
     const article = (await GeoArticle.findOne({ slug: DEFAULT_GEO_MASTER_ARTICLE.slug }).lean()) || DEFAULT_GEO_MASTER_ARTICLE;
 
-    let claimedCount = 3;
+    let claimedCount = 1;
     try {
       const dbClaimed = await User.countDocuments({
         $or: [
-          { isFoundingMember: true },
-          { membershipTier: { $in: ['luminary', 'radiance'] } }
+          { email: { $in: PROTECTED_SUSAN_EMAILS.map((e) => new RegExp(`^${e.replace(/\./g, '\\.')}$`, 'i')) } },
+          { isFoundingMember: true, 'billingInfo.stripeSubscriptionId': { $exists: true, $ne: '' } }
         ]
       });
-      claimedCount = Math.min(49, Math.max(3, dbClaimed));
+      claimedCount = Math.min(49, Math.max(1, dbClaimed));
     } catch (_) {}
 
     const remainingSpots = Math.max(1, 50 - claimedCount);
@@ -20028,11 +20123,10 @@ app.get('/api/geo/hub', async (req, res) => {
         totalCap: 50,
         claimed: claimedCount,
         remaining: remainingSpots,
-        promoCodes: ['FOUNDER65', 'LUMINARY65', 'RADIANCE65'],
-        luminaryFounderPrice: 6.65,
-        luminaryStandardPrice: 19.00,
-        radianceFounderPrice: 13.65,
-        radianceStandardPrice: 39.00
+        luminaryPrice: 49.00,
+        luminaryCreditVault: 49.00,
+        radiancePrice: 119.00,
+        radianceCreditVault: 119.00
       },
       jsonLdSchemas
     });
@@ -20044,48 +20138,39 @@ app.get('/api/geo/hub', async (req, res) => {
       article: DEFAULT_GEO_MASTER_ARTICLE,
       faqs: DEFAULT_GEO_MASTER_ARTICLE.faqs,
       redditCaseStudy: DEFAULT_GEO_MASTER_ARTICLE.redditCaseStudy,
-      founding50: { totalCap: 50, claimed: 3, remaining: 47, promoCodes: ['FOUNDER65', 'LUMINARY65', 'RADIANCE65'] },
-      jsonLdSchemas: buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 47)
+      founding50: {
+        totalCap: 50,
+        claimed: 1,
+        remaining: 49,
+        luminaryPrice: 49.00,
+        luminaryCreditVault: 49.00,
+        radiancePrice: 119.00,
+        radianceCreditVault: 119.00
+      },
+      jsonLdSchemas: buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 49)
     });
   }
 });
 
-// 4. API Endpoint: GET /api/marketing/activities (Native Social Proof Ticker combining real DB events + curated activity)
+// 4. API Endpoint: GET /api/marketing/activities (Native Social Proof Ticker — excludes unverified test accounts)
 app.get('/api/marketing/activities', async (req, res) => {
   try {
     await ensureGeoAndSocialProofSeeded();
     const liveFeed = [];
 
-    // Pull recent anonymized orders
+    // Pull recent verified Founding/Paid members (excluding test accounts)
     try {
-      const recentOrders = await Order.find().sort({ createdAt: -1 }).limit(4).lean();
-      for (const ord of recentOrders) {
-        const rawName = ord?.shippingAddress?.name || ord?.customerEmail?.split('@')[0] || 'A Sanctuary Member';
-        const parts = String(rawName).trim().split(/\s+/);
-        const display = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : `${parts[0]}`;
-        const city = ord?.shippingAddress?.city && ord?.shippingAddress?.state
-          ? `${ord.shippingAddress.city}, ${ord.shippingAddress.state}`
-          : 'Kansas';
-        const firstTitle = ord?.items?.[0]?.title || 'Custom Barrier Repair Ritual';
-        liveFeed.push({
-          name: display,
-          city,
-          action: `ordered ${firstTitle}`,
-          timeAgo: 'Recently'
-        });
-      }
-    } catch (_) {}
-
-    // Pull recent anonymized Founding/Paid members
-    try {
-      const recentUsers = await User.find({ membershipTier: { $in: ['luminary', 'radiance'] } }).sort({ createdAt: -1 }).limit(4).lean();
+      const recentUsers = await User.find({
+        membershipTier: { $in: ['luminary', 'radiance'] },
+        'billingInfo.stripeSubscriptionId': { $exists: true, $ne: '' }
+      }).sort({ createdAt: -1 }).limit(4).lean();
       for (const u of recentUsers) {
         const rawName = u?.name || u?.email?.split('@')[0] || 'A Beauty Insider';
         const parts = String(rawName).trim().split(/\s+/);
         const display = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : `${parts[0]}`;
         const tierLabel = u.membershipTier === 'radiance'
-          ? 'claimed a Founding 50 Radiance All-Access Spot (65% OFF Locked)'
-          : 'claimed a Founding 50 Luminary VIP Spot ($25 Credit Vaulted)';
+          ? 'joined The Radiance Elite ($119/mo Locked + $119 Store Credit)'
+          : 'joined The Luminary Circle ($49/mo Locked + $49 Store Credit)';
         liveFeed.push({
           name: display,
           city: 'United States',
@@ -20114,20 +20199,20 @@ app.get('/api/marketing/activities', async (req, res) => {
     res.json({
       success: true,
       activities: [
-        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', timeAgo: 'Just now' },
-        { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot #4 (65% OFF Locked)', timeAgo: '14m ago' }
+        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 10-Step Personalized Beauty Blueprint', timeAgo: 'Just now' },
+        { name: 'Elena R.', city: 'Overland Park, KS', action: 'joined The Radiance Elite ($119/mo Locked + $119 Store Credit)', timeAgo: '14m ago' }
       ]
     });
   }
 });
 
-// 5. Helper: Gemini AI + IONOS Personalized Outreach for Facebook Lead Ads & Abandoned Blueprints
+// 5. Helper: Gemini AI + IONOS Personalized Outreach for Facebook Lead Ads & New Leads (NO promo codes displayed)
 async function generateAndSendAiFounderOutreach({ name, email, skinConcern, city, source = 'facebook_lead_ad' }) {
   if (!email) return { sent: false, reason: 'No email provided' };
   const firstName = String(name || 'Gorgeous').trim().split(/\s+/)[0] || 'Gorgeous';
   const concernText = skinConcern || 'winter barrier dryness, sensitivity, and maintaining a luminous, pore-clear complexion';
 
-  let subjectLine = `${firstName}, your Custom Winter Skin Barrier Blueprint & Founding 50 Invite ✧`;
+  let subjectLine = `${firstName}, your Custom Winter Skin Barrier Blueprint & Founding 50 VIP Invite ✧`;
   let htmlBody = '';
 
   try {
@@ -20138,8 +20223,10 @@ Write a warm, deeply empathetic, clinical-yet-luxurious HTML email (inline CSS, 
 Their primary skin concern is: "${concernText}".
 Include:
 1. A 3-bullet "72-Hour Non-Comedogenic Barrier Reset" tip tailored to their concern (ceramides 3:1:1, squalane, beta-glucan, pausing harsh foaming cleansers).
-2. A personal invitation to claim one of the remaining Founding 50 Sanctuary Membership spots using promo code FOUNDER65 for a lifetime 65% discount ($6.65/mo Luminary VIP with $25 instant credit, or $13.65/mo Radiance Founder with $50 credit + Free 3-Piece VIP Mystery Box).
-3. A prominent button linking to https://www.susansbeautyconsulting.com to complete their 2-Minute Diagnostic Blueprint or claim their Founding 50 spot.
+2. A personal invitation to explore our Founding 50 VIP Membership & Store Credit Vault (do NOT display or include any promo codes in the email):
+   - The Luminary Circle ($49/mo locked for life): Receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount.
+   - The Radiance Elite ($119/mo locked for life): Receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.
+3. A prominent button linking to https://www.susansbeautyconsulting.com to complete their Personalized Beauty Blueprint or join a membership tier.
 Return ONLY valid HTML body markup (no markdown fences).`;
 
       const aiResp = await ai.models.generateContent({
@@ -20166,12 +20253,12 @@ Return ONLY valid HTML body markup (no markdown fences).`;
           <li><strong>Step 3:</strong> Seal with a breathable 3:1:1 Ceramide + Sugarcane Squalane emulsion instead of heavy petrolatum or shea butter.</li>
         </ul>
         <div style="background: #FFFFFF; border: 1.5px solid #D4AF37; border-radius: 14px; padding: 20px; margin: 24px 0;">
-          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #9A7B2C; font-weight: bold;">Founding 50 Sanctuary Invitation</div>
-          <h3 style="margin: 8px 0; color: #2C1E18;">Lock In 65% OFF For Life + Up to $50 Instant Store Credit</h3>
+          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #9A7B2C; font-weight: bold;">Founding 50 VIP Membership &amp; Store Credit Vault</div>
+          <h3 style="margin: 8px 0; color: #2C1E18;">Lock In $49 Luminary or $119 Radiance For Life + Receive 100% Back in Store Credit</h3>
           <p style="font-size: 14px; line-height: 1.6; color: #5C5454; margin-bottom: 14px;">
-            Use code <strong>FOUNDER65</strong> at checkout to claim <strong>Luminary VIP ($6.65/mo + $25 Credit)</strong> or <strong>Radiance Founder ($13.65/mo + $50 Credit + FREE 3pc Mystery Box Set)</strong>.
+            Join as one of our first 50 Founders to lock in <strong>The Luminary Circle ($49/mo + $49 Store Credit Vault)</strong> or <strong>The Radiance Elite ($119/mo + $119 Store Credit Vault + FREE 3pc VIP Mystery Box on your 1st order)</strong>, redeemable dollar-for-dollar in the Boutique.
           </p>
-          <a href="https://www.susansbeautyconsulting.com" style="display: inline-block; background: #B38B8F; color: #FFFFFF; text-decoration: none; padding: 12px 26px; border-radius: 25px; font-weight: bold; font-size: 15px;">Claim My Diagnostic Blueprint &amp; Founder Spot →</a>
+          <a href="https://www.susansbeautyconsulting.com" style="display: inline-block; background: #B38B8F; color: #FFFFFF; text-decoration: none; padding: 12px 26px; border-radius: 25px; font-weight: bold; font-size: 15px;">Explore Sanctuary Memberships →</a>
         </div>
         <p style="font-size: 13px; color: #8A797A;">With warmth &amp; luminosity,<br/><strong>Susan &amp; Lily AI Concierge</strong><br/>Susan's Beauty Consulting</p>
       </div>
@@ -20230,7 +20317,6 @@ app.get('/api/webhook/facebook', (req, res) => {
 app.post('/api/webhook/facebook', async (req, res) => {
   try {
     const body = req.body || {};
-    // Support both direct JSON lead payloads (Zapier/Make/Direct Form) and native Meta Graph webhook payloads
     const extractedLeads = [];
 
     if (body.email) {
@@ -20263,7 +20349,6 @@ app.post('/api/webhook/facebook', async (req, res) => {
       }
     }
 
-    // Respond 200 immediately so Meta never times out, then process AI email asynchronously
     res.status(200).json({ received: true, leadsQueued: extractedLeads.length });
 
     for (const lead of extractedLeads) {
@@ -20281,15 +20366,15 @@ app.post('/api/webhook/facebook', async (req, res) => {
   }
 });
 
-// 7. Automated 2-Hour Cart & Lead Abandonment Cron Job (Runs Every Hour at Minute 15)
+// 7. Automated 2-Hour Cart & Lead Abandonment Cron Job (Only for new users registered after server boot)
 if (typeof cron !== 'undefined' && cron && typeof cron.schedule === 'function') {
   cron.schedule('15 * * * *', async () => {
     try {
       if (mongoose.connection.readyState !== 1) return;
       const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const twentyFourHoursAgo = new Date(Math.max(PHASE4_BOOT_TIMESTAMP.getTime(), Date.now() - 24 * 60 * 60 * 1000));
+      if (twoHoursAgo <= twentyFourHoursAgo) return;
 
-      // Find basic/free members created 2–24 hours ago who completed the quiz or signed up but haven't upgraded or ordered yet
       const warmLeads = await User.find({
         membershipTier: 'basic',
         createdAt: { $gte: twentyFourHoursAgo, $lte: twoHoursAgo }
@@ -20297,7 +20382,6 @@ if (typeof cron !== 'undefined' && cron && typeof cron.schedule === 'function') 
 
       for (const user of warmLeads) {
         if (!user.email) continue;
-        // Check if we already sent an automated founder follow-up to this user
         let alreadyFollowedUp = false;
         try {
           if (typeof EmailLog !== 'undefined') {
@@ -20387,7 +20471,7 @@ app.get(/^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(
     const indexPath = path.join(buildDirToUse, 'index.html');
     try {
       let html = fs.readFileSync(indexPath, 'utf8');
-      const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 47);
+      const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 49);
       const scriptTag = `<script type="application/ld+json">${JSON.stringify(schemas)}</script></head>`;
       if (html.includes('</head>')) {
         html = html.replace('</head>', scriptTag);
@@ -20449,6 +20533,7 @@ const startDatabaseAndBackgroundServices = async () => {
       try {
         await ensureDefaultOdieMemories();
         await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
+        await sanitizeExistingTestAccountMemberships().catch((err) => console.warn('⚠️ Test account sanitizer notice:', err.message));
         await ensureGeoAndSocialProofSeeded().catch((err) => console.warn('⚠️ GEO & Social Proof startup seed notice:', err.message));
         await backfillProductBlueprintLabels(false);
         await backfillProductShippingAndCustomLabelMeta(false);
