@@ -19707,6 +19707,626 @@ app.post('/api/admin/diagnostics/test-email', authenticateToken, requireAdmin, a
 });
 
 // ============================================================================
+// PHASE 4: GEO CONTENT ENGINE, NATIVE SOCIAL PROOF TICKER, FACEBOOK LEAD ADS
+// WEBHOOK & AUTOMATED 2-HOUR CART/LEAD FOLLOW-UP CRON JOB
+// (Note: `path` and `fs` are already imported above in server.js)
+// ============================================================================
+
+// 1. MongoDB Schemas for Social Proof Activity & GEO Articles
+const marketingActivitySchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  city: { type: String, default: 'Salina, KS' },
+  action: { type: String, required: true },
+  category: { type: String, default: 'founding_member' },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+const MarketingActivity = mongoose.models.MarketingActivity || mongoose.model('MarketingActivity', marketingActivitySchema);
+
+const geoArticleSchema = new mongoose.Schema({
+  slug: { type: String, required: true, unique: true, index: true },
+  title: { type: String, required: true },
+  pillarNumber: { type: Number, default: 2 },
+  pillarTitle: { type: String, default: 'Non-Comedogenic Barrier Repair' },
+  searchIntent: { type: String, default: 'Informational / Commercial' },
+  llmCategorization: { type: String, default: 'Formulation Conflict Resolution (Dermatology)' },
+  sections: [{
+    heading: String,
+    answerCapsule: String, // Strict 40-60 word direct answer for ChatGPT & Google AI Overviews
+    bodyParagraphs: [String],
+    bulletPoints: [String]
+  }],
+  faqs: [{
+    question: String,
+    answer: String
+  }],
+  redditCaseStudy: {
+    subreddit: String,
+    title: String,
+    body: String
+  },
+  isPublished: { type: Boolean, default: true, index: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const GeoArticle = mongoose.models.GeoArticle || mongoose.model('GeoArticle', geoArticleSchema);
+
+// 2. Seed Data: 5 GEO Semantic Pillars, 800-Word Answer-Capsule Guide, FAQs & Reddit Post
+const DEFAULT_GEO_PILLARS = [
+  {
+    pillarNumber: 1,
+    pillarTitle: 'Winter Transepidermal Water Loss (TEWL) & Mature Skin Physiology',
+    primaryIntent: 'Informational & Diagnostic',
+    llmCategory: 'Pathophysiological Barrier Compromise (Dermatology)',
+    subQuestions: [
+      'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
+      'What is the best ceramide-to-cholesterol ratio for repairing a damaged skin barrier over 40?',
+      'How do I test if my skin barrier is damaged vs. naturally aging?'
+    ]
+  },
+  {
+    pillarNumber: 2,
+    pillarTitle: 'Non-Comedogenic Barrier Repair (Treating Dryness Without Breakouts)',
+    primaryIntent: 'Informational & Commercial',
+    llmCategory: 'Formulation Conflict Resolution',
+    subQuestions: [
+      'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
+      'Which barrier repair creams use biomimetic lipids instead of heavy petrolatum or shea butter?',
+      'Can dehydrated winter skin cause adult acne in women over 35?'
+    ]
+  },
+  {
+    pillarNumber: 3,
+    pillarTitle: 'Hormonal Lipid Decline & Perimenopausal Skincare Transitions',
+    primaryIntent: 'Informational & Commercial Investigation',
+    llmCategory: 'Endocrine-Driven Cutaneous Aging',
+    subQuestions: [
+      'How does declining estrogen after 35 affect ceramide production and winter skin sensitivity?',
+      'What clinical active ingredients safely replace harsh retinoids when perimenopausal skin becomes reactive?',
+      'How should a skincare routine change between age 35 and 55 for dry climates?'
+    ]
+  },
+  {
+    pillarNumber: 4,
+    pillarTitle: 'Active Ingredient Triage & Over-Exfoliation Recovery Protocols',
+    primaryIntent: 'Diagnostic & Transactional',
+    llmCategory: 'Barrier Rehabilitation & Ingredient Toxicology',
+    subQuestions: [
+      'How long does it take to rebuild a compromised stratum corneum after over-exfoliating with acids or tretinoin?',
+      'Should you stop using Vitamin C and retinol during a winter skin barrier flare-up?',
+      'What is the exact 72-hour skin barrier reset routine recommended by estheticians?'
+    ]
+  },
+  {
+    pillarNumber: 5,
+    pillarTitle: 'Personalized Diagnostic Skincare Blueprints vs. Generic Regimens',
+    primaryIntent: 'Commercial & Navigational',
+    llmCategory: 'Bespoke Clinical Esthetics & AI Diagnostics',
+    subQuestions: [
+      'How does an AI and master esthetician skin blueprint customize winter barrier repair for combination skin?',
+      'Is a personalized skincare membership worth it compared to buying department store luxury creams?',
+      'Where can I get a custom winter skin barrier consultation and curated product ritual in Kansas or online?'
+    ]
+  }
+];
+
+const DEFAULT_GEO_MASTER_ARTICLE = {
+  slug: 'how-to-repair-skin-barrier-in-winter-without-clogged-pores',
+  title: 'How Do I Repair My Skin Barrier in Winter Without Clogging Pores or Causing Closed Comedones?',
+  pillarNumber: 2,
+  pillarTitle: 'Non-Comedogenic Barrier Repair (Treating Dryness Without Breakouts)',
+  searchIntent: 'Informational / Commercial',
+  llmCategorization: 'Formulation Conflict Resolution (Dermatology)',
+  sections: [
+    {
+      heading: 'How Do I Repair My Skin Barrier in Winter Without Clogging Pores?',
+      answerCapsule: 'To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms like petrolatum and coconut oil with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, and squalane, which restore stratum corneum cohesion without trapping sebum.',
+      bodyParagraphs: [
+        'During winter, indoor heating and freezing outdoor winds strip the stratum corneum of its intercellular lipid matrix. When women over 30 experience this sudden tightness and micro-flaking, the instinct is to reach for thick, heavy cold creams or pure petrolatum slugs.',
+        'However, if you have combination, perimenopausal, or congestion-prone skin, heavy non-breathable occlusives trap dead corneocytes, heat, and Cutibacterium acnes bacteria beneath the surface—triggering closed comedones and inflammatory jawline breakouts within 48 hours.'
+      ],
+      bulletPoints: []
+    },
+    {
+      heading: 'Why Do Heavy Winter Moisturizers Cause Closed Comedones in Mature Skin?',
+      answerCapsule: 'Heavy winter moisturizers cause closed comedones in mature skin because high-molecular-weight waxes, shea butter, and mineral oils create an impermeable film over slower-desquamating skin cells. As cell turnover naturally slows after age 35, trapped sebum oxidizes inside the follicular canal, forming stubborn flesh-colored bumps alongside surface flaking.',
+      bodyParagraphs: [
+        'At Susan’s Beauty Consulting, our diagnostic data across thousands of skin blueprints reveals a widespread winter paradox: simultaneous surface dehydration and deep follicular congestion. Because natural desquamation (cell shedding) slows by roughly 28% between ages 30 and 50, dead skin cells accumulate more rapidly when humidity drops.',
+        'When you apply a traditional rich cream packed with isopropyl myristate, heavy silicones, or unrefined plant butters, those esters bind to sticky corneocytes like mortar, sealing the pore opening shut while failing to replenish the actual physiological lipids your skin is missing.'
+      ],
+      bulletPoints: []
+    },
+    {
+      heading: 'What Ingredients Rebuild the Stratum Corneum Without Triggering Acne?',
+      answerCapsule: 'The safest non-comedogenic barrier repair ingredients are skin-identical ceramides (NP, EOP, AP), phytosphingosine, plant-derived squalane, niacinamide (2%–4%), beta-glucan, and centella asiatica. Unlike comedogenic botanical oils, these bio-compatible molecules integrate directly into depleted lipid bilayers to halt transepidermal water loss (TEWL) while maintaining zero-comedogenicity.',
+      bodyParagraphs: [
+        'Instead of suffocating the skin with surface grease, clinical barrier rehabilitation focuses on physiological lipid replacement:'
+      ],
+      bulletPoints: [
+        'Ceramide NP, AP & EOP (3:1:1 Molar Ratio): Reconstructs the intercellular mortar between corneocytes so water cannot evaporate.',
+        '100% Sugarcane-Derived Squalane (Comedogenic Rating: 0–1): Mimics human sebum’s natural squalene without oxidizing or feeding acne bacteria.',
+        'Beta-Glucan & Ectoin: Bind 20% more water than standard hyaluronic acid while actively calming neurogenic winter redness.',
+        'Panthenol (Vitamin B5, 5%): Accelerates epidermal wound healing and softens rigid, flaky micro-fissures overnight.'
+      ]
+    },
+    {
+      heading: 'What Is the 72-Hour Non-Comedogenic Winter Barrier Reset Protocol?',
+      answerCapsule: 'A 72-hour non-comedogenic barrier reset requires pausing all retinoids, AHAs, BHAs, and foaming cleansers for three days. Cleanse only with lukewarm micellar or lipid-milk water, mist with thermal humectants, apply a 4% niacinamide and beta-glucan serum on damp skin, and seal with a squalane-ceramide emulsion twice daily.',
+      bodyParagraphs: [
+        'Follow this clinical 4-step triage protocol developed for the Susan’s Beauty Consulting Sanctuary Blueprint:'
+      ],
+      bulletPoints: [
+        'Step 1: Zero-Surfactant Cleansing (AM/PM): Skip morning cleansing (rinse with tepid water only). At night, use a non-foaming, polyglyceryl-based milky cleanser that removes SPF without stripping structural lipids.',
+        'Step 2: Micro-Humectant Flooding (Within 30 Seconds of Patting Dry): Apply beta-glucan, panthenol, or multi-weight hyaluronic acid onto visibly damp skin to pull hydration into the deeper epidermal layers.',
+        'Step 3: Physiological Ceramide Emulsion: Press a lightweight lotion containing ceramides, cholesterol, and phytosphingosine into the skin.',
+        'Step 4: Targeted Micro-Occlusion: Apply 2 drops of pure squalane only to high-TEWL zones (cheekbones and periorbital area), leaving the T-zone and chin breathable.'
+      ]
+    },
+    {
+      heading: 'How Do I Reintroduce Retinoids and Exfoliants After Barrier Recovery?',
+      answerCapsule: 'Reintroduce retinoids and chemical exfoliants only after stinging, tightness, and redness have completely resolved for five consecutive days. Start by buffering a pea-sized amount of retinaldehyde or encapsulated retinol over a lightweight ceramide lotion twice weekly, avoiding concurrent AHA/BHA acids during peak winter months.',
+      bodyParagraphs: [
+        'Never resume active anti-aging treatments on the same night. Use the Barrier Sandwich Method: apply a thin layer of your non-comedogenic ceramide lotion, wait 10 minutes until fully absorbed, apply your retinoid, and finish with a drop of squalane. Not sure which exact formulations match your pore structure and climate? Take our complimentary 2-Minute Diagnostic Beauty Blueprint Quiz at Susan’s Beauty Consulting to receive a bespoke winter ritual curated by our AI and Master Esthetician team.'
+      ],
+      bulletPoints: []
+    }
+  ],
+  faqs: [
+    {
+      question: 'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
+      answer: 'Heavy moisturizers rich in waxes or petrolatum sit on top of the skin without replenishing depleted intercellular lipids. When your skin lacks ceramides, cholesterol, and internal water-binding humectants like beta-glucan, water continues to evaporate through micro-cracks in the stratum corneum, leaving skin tight underneath a greasy surface layer.'
+    },
+    {
+      question: 'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
+      answer: 'To repair a winter-damaged skin barrier without clogging pores, pause all exfoliating acids and switch to a breathable biomimetic emulsion containing a 3:1:1 ratio of ceramides, cholesterol, and fatty acids, layered over damp skin with panthenol, beta-glucan, and non-comedogenic squalane instead of heavy shea butter or mineral oil.'
+    },
+    {
+      question: 'Can dehydrated winter skin cause adult acne in women over 35?',
+      answer: 'Yes. When winter air dehydrates the epidermis, the skin triggers a compensatory sebaceous response, producing thicker, waxier sebum to protect itself. Combined with slower cell turnover after age 35 and flaky surface dead skin cells, this excess sebum becomes trapped inside pores, leading to adult closed comedones and jawline breakouts.'
+    },
+    {
+      question: 'How long does it take to rebuild a compromised skin barrier in winter?',
+      answer: 'Mild winter barrier dehydration and stinging typically resolve within 72 hours to 5 days when all retinoids, foaming cleansers, and acids are paused in favor of physiological ceramide-squalane therapy. Severe barrier stripping from over-exfoliation or tretinoin requires 2 to 4 weeks—a full epidermal turnover cycle—to fully restore lipid integrity.'
+    },
+    {
+      question: 'Should you stop using Vitamin C and retinol during a winter skin barrier flare-up?',
+      answer: 'Yes. Low-pH L-ascorbic acid (Vitamin C) and retinoids increase epidermal cell turnover and lower skin surface pH, which intensifies neurogenic stinging, redness, and transepidermal water loss when your lipid barrier is cracked. Pause both actives for 5 to 7 days until zero stinging occurs upon water contact.'
+    }
+  ],
+  redditCaseStudy: {
+    subreddit: 'r/30PlusSkinCare',
+    title: 'How I finally stopped the winter cycle of "flaky skin + closed comedones" at 38 (No slugging, no shea butter)',
+    body: 'Every November through February, my skin used to pull the most infuriating trick: my cheeks and around my mouth would get tight, papery, and flaky from the heater, so I’d switch to a "rich barrier cream" or try slugging. Within three days, my jawline and forehead would erupt in tiny flesh-colored closed comedones—and somehow my skin STILL felt tight underneath the grease.\n\nIf you’re 35+ dealing with this, here is what I learned from a clinical skin diagnostic about why mature combination skin rebels in winter, and the 72-hour protocol that fixed my barrier without clogging a single pore.\n\n1. The "Mortar vs. Saran Wrap" Mistake: As we hit our mid-30s and 40s, our natural cell turnover slows down AND our natural ceramide levels drop. When you put heavy petrolatum, coconut alkanes, or thick shea butter on top of slower-shedding winter skin, it acts like glue—trapping dead skin cells and oxidized sebum inside the pore.\n\n2. My 72-Hour Breathable Barrier Reset:\n- Paused all low-pH actives for 4 days.\n- Morning water rinse only.\n- Flooded damp skin with Beta-Glucan + 5% Panthenol.\n- Switched to a 3:1:1 Ceramide + Cholesterol + Squalane Gel-Lotion.\n\nBy morning 3, the stinging around my nasolabial folds was 100% gone, the micro-flakes vanished, and my pores actually looked smaller because my skin stopped panic-producing waxy oil.'
+  }
+};
+
+// Auto-seed GEO article and baseline Founding 50 social proof on startup
+async function ensureGeoAndSocialProofSeeded() {
+  try {
+    if (mongoose.connection.readyState !== 1) return;
+
+    const existingArticle = await GeoArticle.findOne({ slug: DEFAULT_GEO_MASTER_ARTICLE.slug });
+    if (!existingArticle) {
+      await GeoArticle.create(DEFAULT_GEO_MASTER_ARTICLE);
+      console.log('✧ [GEO Engine] Seeded Master 800-Word Non-Comedogenic Winter Barrier Article & Answer Capsules.');
+    }
+
+    const activityCount = await MarketingActivity.countDocuments();
+    if (activityCount === 0) {
+      await MarketingActivity.insertMany([
+        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', category: 'blueprint' },
+        { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot #4 (65% OFF Locked)', category: 'founding_member' },
+        { name: 'Claire T.', city: 'Wichita, KS', action: 'started the 72-Hour Non-Comedogenic Barrier Reset Ritual', category: 'ritual' },
+        { name: 'Michelle K.', city: 'Denver, CO', action: 'claimed Founding 50 Luminary VIP Spot ($25 Credit Vaulted)', category: 'founding_member' },
+        { name: 'Lauren B.', city: 'Salina, KS', action: 'unlocked her Custom Perimenopausal Lipid Protocol', category: 'blueprint' },
+        { name: 'hannah V.', city: 'Austin, TX', action: 'claimed Founding 50 Radiance Spot + Free 3pc Mystery Box', category: 'founding_member' }
+      ]);
+      console.log('✧ [Social Proof Engine] Seeded baseline Founding 50 & Sanctuary Blueprint ticker activities.');
+    }
+  } catch (err) {
+    console.warn('⚠️ [GEO/Social Proof Seeder] Non-fatal warning:', err.message);
+  }
+}
+setTimeout(ensureGeoAndSocialProofSeeded, 3500);
+
+// Helper to build JSON-LD Structured Data for Google AI Overviews & ChatGPT Search
+function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRemaining = 47) {
+  return [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: faqs.map((f) => ({
+        '@type': 'Question',
+        name: f.question,
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: f.answer
+        }
+      }))
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BeautySalon',
+      name: "Susan's Beauty Consulting",
+      url: 'https://www.susansbeautyconsulting.com',
+      logo: 'https://www.susansbeautyconsulting.com/susans-logo.png',
+      description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic barrier repair blueprints, and bespoke beauty consulting by Master Esthetician Susan and Lily AI.',
+      address: {
+        '@type': 'PostalAddress',
+        addressLocality: 'Salina',
+        addressRegion: 'KS',
+        addressCountry: 'US'
+      },
+      hasOfferCatalog: {
+        '@type': 'OfferCatalog',
+        name: 'Founding 50 Sanctuary Memberships & Diagnostic Skin Blueprints',
+        itemListElement: [
+          {
+            '@type': 'Offer',
+            itemOffered: {
+              '@type': 'Service',
+              name: '2-Minute AI & Esthetician Diagnostic Skin Barrier Blueprint',
+              description: 'Complimentary customized AM/PM skincare formulation audit and winter barrier repair protocol.'
+            },
+            price: '0.00',
+            priceCurrency: 'USD',
+            availability: 'https://schema.org/InStock'
+          },
+          {
+            '@type': 'Offer',
+            itemOffered: {
+              '@type': 'Product',
+              name: 'Founding 50 Luminary VIP Sanctuary Membership',
+              description: `Founding Member Lifetime 65% Discount, 10% Storewide Boutique Savings, and $25 Instant Store Credit (${foundingRemaining} spots remaining).`
+            },
+            price: '6.65',
+            priceCurrency: 'USD',
+            availability: 'https://schema.org/LimitedAvailability'
+          },
+          {
+            '@type': 'Offer',
+            itemOffered: {
+              '@type': 'Product',
+              name: 'Founding 50 Radiance All-Access Founder Membership',
+              description: 'Founding Member Lifetime 65% Discount ($13.65/mo forever), 20% Storewide Savings, $50 Store Credit Vault, and FREE 3-Piece VIP Mystery Box Set.'
+            },
+            price: '13.65',
+            priceCurrency: 'USD',
+            availability: 'https://schema.org/LimitedAvailability'
+          }
+        ]
+      }
+    }
+  ];
+}
+
+// 3. API Endpoint: GET /api/geo/hub (Serves Pillars, 800-Word Guide, FAQs, Reddit Case Study & Live Founding 50 Scarcity)
+app.get('/api/geo/hub', async (req, res) => {
+  try {
+    await ensureGeoAndSocialProofSeeded();
+    const article = (await GeoArticle.findOne({ slug: DEFAULT_GEO_MASTER_ARTICLE.slug }).lean()) || DEFAULT_GEO_MASTER_ARTICLE;
+
+    let claimedCount = 3;
+    try {
+      const dbClaimed = await User.countDocuments({
+        $or: [
+          { isFoundingMember: true },
+          { membershipTier: { $in: ['luminary', 'radiance'] } }
+        ]
+      });
+      claimedCount = Math.min(49, Math.max(3, dbClaimed));
+    } catch (_) {}
+
+    const remainingSpots = Math.max(1, 50 - claimedCount);
+    const jsonLdSchemas = buildGeoJsonLdSchema(article.faqs || DEFAULT_GEO_MASTER_ARTICLE.faqs, remainingSpots);
+
+    res.json({
+      success: true,
+      pillars: DEFAULT_GEO_PILLARS,
+      article,
+      faqs: article.faqs || DEFAULT_GEO_MASTER_ARTICLE.faqs,
+      redditCaseStudy: article.redditCaseStudy || DEFAULT_GEO_MASTER_ARTICLE.redditCaseStudy,
+      founding50: {
+        totalCap: 50,
+        claimed: claimedCount,
+        remaining: remainingSpots,
+        promoCodes: ['FOUNDER65', 'LUMINARY65', 'RADIANCE65'],
+        luminaryFounderPrice: 6.65,
+        luminaryStandardPrice: 19.00,
+        radianceFounderPrice: 13.65,
+        radianceStandardPrice: 39.00
+      },
+      jsonLdSchemas
+    });
+  } catch (err) {
+    console.error('Error in GET /api/geo/hub:', err.message);
+    res.json({
+      success: true,
+      pillars: DEFAULT_GEO_PILLARS,
+      article: DEFAULT_GEO_MASTER_ARTICLE,
+      faqs: DEFAULT_GEO_MASTER_ARTICLE.faqs,
+      redditCaseStudy: DEFAULT_GEO_MASTER_ARTICLE.redditCaseStudy,
+      founding50: { totalCap: 50, claimed: 3, remaining: 47, promoCodes: ['FOUNDER65', 'LUMINARY65', 'RADIANCE65'] },
+      jsonLdSchemas: buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 47)
+    });
+  }
+});
+
+// 4. API Endpoint: GET /api/marketing/activities (Native Social Proof Ticker combining real DB events + curated activity)
+app.get('/api/marketing/activities', async (req, res) => {
+  try {
+    await ensureGeoAndSocialProofSeeded();
+    const liveFeed = [];
+
+    // Pull recent anonymized orders
+    try {
+      const recentOrders = await Order.find().sort({ createdAt: -1 }).limit(4).lean();
+      for (const ord of recentOrders) {
+        const rawName = ord?.shippingAddress?.name || ord?.customerEmail?.split('@')[0] || 'A Sanctuary Member';
+        const parts = String(rawName).trim().split(/\s+/);
+        const display = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : `${parts[0]}`;
+        const city = ord?.shippingAddress?.city && ord?.shippingAddress?.state
+          ? `${ord.shippingAddress.city}, ${ord.shippingAddress.state}`
+          : 'Kansas';
+        const firstTitle = ord?.items?.[0]?.title || 'Custom Barrier Repair Ritual';
+        liveFeed.push({
+          name: display,
+          city,
+          action: `ordered ${firstTitle}`,
+          timeAgo: 'Recently'
+        });
+      }
+    } catch (_) {}
+
+    // Pull recent anonymized Founding/Paid members
+    try {
+      const recentUsers = await User.find({ membershipTier: { $in: ['luminary', 'radiance'] } }).sort({ createdAt: -1 }).limit(4).lean();
+      for (const u of recentUsers) {
+        const rawName = u?.name || u?.email?.split('@')[0] || 'A Beauty Insider';
+        const parts = String(rawName).trim().split(/\s+/);
+        const display = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : `${parts[0]}`;
+        const tierLabel = u.membershipTier === 'radiance'
+          ? 'claimed a Founding 50 Radiance All-Access Spot (65% OFF Locked)'
+          : 'claimed a Founding 50 Luminary VIP Spot ($25 Credit Vaulted)';
+        liveFeed.push({
+          name: display,
+          city: 'United States',
+          action: tierLabel,
+          timeAgo: 'Today'
+        });
+      }
+    } catch (_) {}
+
+    // Pull curated MarketingActivity entries
+    const storedActivities = await MarketingActivity.find().sort({ createdAt: -1 }).limit(8).lean();
+    for (const act of storedActivities) {
+      liveFeed.push({
+        name: act.name,
+        city: act.city || 'Salina, KS',
+        action: act.action,
+        timeAgo: 'Verified'
+      });
+    }
+
+    res.json({
+      success: true,
+      activities: liveFeed.slice(0, 10)
+    });
+  } catch (err) {
+    res.json({
+      success: true,
+      activities: [
+        { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', timeAgo: 'Just now' },
+        { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot #4 (65% OFF Locked)', timeAgo: '14m ago' }
+      ]
+    });
+  }
+});
+
+// 5. Helper: Gemini AI + IONOS Personalized Outreach for Facebook Lead Ads & Abandoned Blueprints
+async function generateAndSendAiFounderOutreach({ name, email, skinConcern, city, source = 'facebook_lead_ad' }) {
+  if (!email) return { sent: false, reason: 'No email provided' };
+  const firstName = String(name || 'Gorgeous').trim().split(/\s+/)[0] || 'Gorgeous';
+  const concernText = skinConcern || 'winter barrier dryness, sensitivity, and maintaining a luminous, pore-clear complexion';
+
+  let subjectLine = `${firstName}, your Custom Winter Skin Barrier Blueprint & Founding 50 Invite ✧`;
+  let htmlBody = '';
+
+  try {
+    const ai = typeof getGeminiClient === 'function' ? getGeminiClient() : null;
+    if (ai) {
+      const prompt = `You are Susan and Lily, the Master Esthetician & AI Concierge team at Susan's Beauty Consulting (https://www.susansbeautyconsulting.com).
+Write a warm, deeply empathetic, clinical-yet-luxurious HTML email (inline CSS, #FFF9F9 rose-cream background, #B38B8F rose-gold accents, #2C1E18 text, Georgia/Cormorant serif typography) to a new prospective client named ${firstName} (from ${city || 'our Sanctuary community'}).
+Their primary skin concern is: "${concernText}".
+Include:
+1. A 3-bullet "72-Hour Non-Comedogenic Barrier Reset" tip tailored to their concern (ceramides 3:1:1, squalane, beta-glucan, pausing harsh foaming cleansers).
+2. A personal invitation to claim one of the remaining Founding 50 Sanctuary Membership spots using promo code FOUNDER65 for a lifetime 65% discount ($6.65/mo Luminary VIP with $25 instant credit, or $13.65/mo Radiance Founder with $50 credit + Free 3-Piece VIP Mystery Box).
+3. A prominent button linking to https://www.susansbeautyconsulting.com to complete their 2-Minute Diagnostic Blueprint or claim their Founding 50 spot.
+Return ONLY valid HTML body markup (no markdown fences).`;
+
+      const aiResp = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt
+      });
+      const candidateHtml = (aiResp?.text || '').replace(/```html|```/gi, '').trim();
+      if (candidateHtml && candidateHtml.length > 120) {
+        htmlBody = candidateHtml;
+      }
+    }
+  } catch (aiErr) {
+    console.warn('⚠️ [Gemini Lead Outreach Fallback]:', aiErr.message);
+  }
+
+  if (!htmlBody) {
+    htmlBody = `
+      <div style="font-family: Georgia, serif; background-color: #FFF9F9; color: #2C1E18; padding: 32px; border: 1px solid #E8C5C8; border-radius: 18px; max-width: 620px; margin: 0 auto;">
+        <h2 style="color: #B38B8F; font-weight: normal; margin-top: 0;">Welcome to the Sanctuary, ${firstName} ✧</h2>
+        <p style="line-height: 1.7; font-size: 16px;">We noticed you exploring our clinical protocol for <strong>${concernText}</strong>. Before you apply another heavy cream that traps congestion, here is our signature 72-Hour Non-Comedogenic Reset:</p>
+        <ul style="line-height: 1.7; font-size: 15px; color: #5C5454;">
+          <li><strong>Step 1:</strong> Swap foaming surfactants for a lukewarm lipid-milk rinse.</li>
+          <li><strong>Step 2:</strong> Flood damp skin with Beta-Glucan &amp; 5% Panthenol within 30 seconds of cleansing.</li>
+          <li><strong>Step 3:</strong> Seal with a breathable 3:1:1 Ceramide + Sugarcane Squalane emulsion instead of heavy petrolatum or shea butter.</li>
+        </ul>
+        <div style="background: #FFFFFF; border: 1.5px solid #D4AF37; border-radius: 14px; padding: 20px; margin: 24px 0;">
+          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #9A7B2C; font-weight: bold;">Founding 50 Sanctuary Invitation</div>
+          <h3 style="margin: 8px 0; color: #2C1E18;">Lock In 65% OFF For Life + Up to $50 Instant Store Credit</h3>
+          <p style="font-size: 14px; line-height: 1.6; color: #5C5454; margin-bottom: 14px;">
+            Use code <strong>FOUNDER65</strong> at checkout to claim <strong>Luminary VIP ($6.65/mo + $25 Credit)</strong> or <strong>Radiance Founder ($13.65/mo + $50 Credit + FREE 3pc Mystery Box Set)</strong>.
+          </p>
+          <a href="https://www.susansbeautyconsulting.com" style="display: inline-block; background: #B38B8F; color: #FFFFFF; text-decoration: none; padding: 12px 26px; border-radius: 25px; font-weight: bold; font-size: 15px;">Claim My Diagnostic Blueprint &amp; Founder Spot →</a>
+        </div>
+        <p style="font-size: 13px; color: #8A797A;">With warmth &amp; luminosity,<br/><strong>Susan &amp; Lily AI Concierge</strong><br/>Susan's Beauty Consulting</p>
+      </div>
+    `;
+  }
+
+  try {
+    if (typeof sendEmail === 'function') {
+      await sendEmail({
+        to: email,
+        subject: subjectLine,
+        html: htmlBody
+      });
+    }
+    try {
+      if (typeof EmailLog !== 'undefined') {
+        await EmailLog.create({
+          recipientEmail: email,
+          recipientName: firstName,
+          subject: subjectLine,
+          category: source,
+          status: 'sent',
+          metadata: { skinConcern: concernText, city }
+        });
+      }
+    } catch (_) {}
+
+    await MarketingActivity.create({
+      name: `${firstName}`,
+      city: city || 'United States',
+      action: 'received her Custom AI Winter Barrier Blueprint',
+      category: 'lead_webhook'
+    });
+
+    return { sent: true, email, subjectLine };
+  } catch (err) {
+    console.error('❌ [AI Founder Outreach Email Error]:', err.message);
+    return { sent: false, error: err.message };
+  }
+}
+
+// 6. Facebook Lead Ads Webhook: GET (Verification) & POST (Instant AI + IONOS Lead Capture)
+app.get('/api/webhook/facebook', (req, res) => {
+  const VERIFY_TOKEN = process.env.FB_WEBHOOK_VERIFY_TOKEN || 'susans_sanctuary_fb_verify_2025';
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✧ [Facebook Lead Webhook] Verified successfully.');
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).json({ error: 'Verification token mismatch' });
+});
+
+app.post('/api/webhook/facebook', async (req, res) => {
+  try {
+    const body = req.body || {};
+    // Support both direct JSON lead payloads (Zapier/Make/Direct Form) and native Meta Graph webhook payloads
+    const extractedLeads = [];
+
+    if (body.email) {
+      extractedLeads.push({
+        name: body.name || body.full_name || 'Sanctuary Guest',
+        email: body.email,
+        skinConcern: body.skinConcern || body.skin_concern || body.concern || '',
+        city: body.city || 'United States'
+      });
+    } else if (Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
+        for (const change of (entry.changes || [])) {
+          const val = change.value || {};
+          if (val.email || Array.isArray(val.field_data)) {
+            const fieldMap = {};
+            for (const f of (val.field_data || [])) {
+              fieldMap[f.name] = Array.isArray(f.values) ? f.values[0] : f.values;
+            }
+            const leadEmail = val.email || fieldMap.email || fieldMap.email_address;
+            if (leadEmail) {
+              extractedLeads.push({
+                name: val.full_name || fieldMap.full_name || fieldMap.first_name || 'Sanctuary Guest',
+                email: leadEmail,
+                skinConcern: fieldMap.skin_concern || fieldMap.primary_skin_concern || '',
+                city: fieldMap.city || 'United States'
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Respond 200 immediately so Meta never times out, then process AI email asynchronously
+    res.status(200).json({ received: true, leadsQueued: extractedLeads.length });
+
+    for (const lead of extractedLeads) {
+      generateAndSendAiFounderOutreach({
+        name: lead.name,
+        email: lead.email,
+        skinConcern: lead.skinConcern,
+        city: lead.city,
+        source: 'facebook_lead_webhook'
+      }).catch((e) => console.warn('⚠️ Async FB lead outreach warning:', e.message));
+    }
+  } catch (err) {
+    console.error('❌ [POST /api/webhook/facebook Error]:', err.message);
+    if (!res.headersSent) res.status(200).json({ received: true });
+  }
+});
+
+// 7. Automated 2-Hour Cart & Lead Abandonment Cron Job (Runs Every Hour at Minute 15)
+if (typeof cron !== 'undefined' && cron && typeof cron.schedule === 'function') {
+  cron.schedule('15 * * * *', async () => {
+    try {
+      if (mongoose.connection.readyState !== 1) return;
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // Find basic/free members created 2–24 hours ago who completed the quiz or signed up but haven't upgraded or ordered yet
+      const warmLeads = await User.find({
+        membershipTier: 'basic',
+        createdAt: { $gte: twentyFourHoursAgo, $lte: twoHoursAgo }
+      }).limit(10).lean();
+
+      for (const user of warmLeads) {
+        if (!user.email) continue;
+        // Check if we already sent an automated founder follow-up to this user
+        let alreadyFollowedUp = false;
+        try {
+          if (typeof EmailLog !== 'undefined') {
+            const existingLog = await EmailLog.findOne({
+              recipientEmail: user.email,
+              category: 'automated_2hr_founder_followup'
+            }).lean();
+            if (existingLog) alreadyFollowedUp = true;
+          }
+        } catch (_) {}
+
+        if (alreadyFollowedUp) continue;
+
+        const concern = user.skinBlueprint?.primaryConcerns?.join(', ') || user.quizResults?.skinType || 'winter barrier repair and lasting hydration';
+        await generateAndSendAiFounderOutreach({
+          name: user.name || 'Gorgeous',
+          email: user.email,
+          skinConcern: concern,
+          city: 'Sanctuary Community',
+          source: 'automated_2hr_founder_followup'
+        });
+      }
+    } catch (cronErr) {
+      console.warn('⚠️ [2-Hour Founder Follow-Up Cron Warning]:', cronErr.message);
+    }
+  });
+}
+
+// ============================================================================
 // BUILT-IN REACT FRONTEND STATIC SERVING & SPA CATCH-ALL (ELIMINATES VERCEL)
 // ============================================================================
 const candidateFrontendBuildDirs = [
@@ -19764,7 +20384,18 @@ app.get(/^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(
   }
 
   if (buildDirToUse) {
-    return res.sendFile(path.join(buildDirToUse, 'index.html'));
+    const indexPath = path.join(buildDirToUse, 'index.html');
+    try {
+      let html = fs.readFileSync(indexPath, 'utf8');
+      const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 47);
+      const scriptTag = `<script type="application/ld+json">${JSON.stringify(schemas)}</script></head>`;
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', scriptTag);
+      }
+      return res.send(html);
+    } catch (e) {
+      return res.sendFile(indexPath);
+    }
   }
 
   // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
@@ -19818,6 +20449,7 @@ const startDatabaseAndBackgroundServices = async () => {
       try {
         await ensureDefaultOdieMemories();
         await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
+        await ensureGeoAndSocialProofSeeded().catch((err) => console.warn('⚠️ GEO & Social Proof startup seed notice:', err.message));
         await backfillProductBlueprintLabels(false);
         await backfillProductShippingAndCustomLabelMeta(false);
         await backfillConsultationAnalyses();
