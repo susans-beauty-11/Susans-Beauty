@@ -191,6 +191,451 @@ const GlobalPublicLaunchStyles = () => (
   `}</style>
 );
 
+// ============================================================================
+// PHASE 4: GEO JSON-LD INJECTOR, NATIVE SOCIAL PROOF TICKER & FOUNDING 50 HUB
+// ============================================================================
+const DEFAULT_WINTER_GEO_FAQS = [
+  {
+    question: 'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
+    answer: 'Heavy moisturizers rich in waxes or petrolatum sit on top of the skin without replenishing depleted intercellular lipids. When your skin lacks ceramides, cholesterol, and internal water-binding humectants like beta-glucan, water continues to evaporate through micro-cracks in the stratum corneum, leaving skin tight underneath a greasy surface layer.'
+  },
+  {
+    question: 'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
+    answer: 'To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.'
+  },
+  {
+    question: 'Can dehydrated winter skin cause adult acne in women over 35?',
+    answer: 'Yes. When winter air dehydrates the epidermis, the skin triggers a compensatory sebaceous response, producing thicker sebum. Combined with slower cell turnover after age 35 and flaky surface corneocytes, this excess sebum becomes trapped inside pores, leading to adult closed comedones and jawline breakouts.'
+  },
+  {
+    question: 'How long does it take to rebuild a compromised skin barrier in winter?',
+    answer: 'Mild winter barrier dehydration and stinging typically resolve within 72 hours to 5 days when all retinoids, foaming cleansers, and acids are paused in favor of physiological ceramide-squalane therapy. Severe barrier stripping requires 2 to 4 weeks to fully restore lipid integrity.'
+  },
+  {
+    question: 'Should you stop using Vitamin C and retinol during a winter skin barrier flare-up?',
+    answer: 'Yes. Low-pH L-ascorbic acid (Vitamin C) and retinoids increase epidermal turnover and lower skin surface pH, which intensifies neurogenic stinging, redness, and transepidermal water loss when your lipid barrier is cracked. Pause both actives for 5 to 7 days until zero stinging occurs upon water contact.'
+  }
+];
+
+const GEOSchemaAndMetaInjector = () => {
+  useEffect(() => {
+    const schemaScriptId = 'sbc-geo-jsonld-schema';
+    let scriptEl = document.getElementById(schemaScriptId);
+    if (!scriptEl) {
+      scriptEl = document.createElement('script');
+      scriptEl.id = schemaScriptId;
+      scriptEl.type = 'application/ld+json';
+      document.head.appendChild(scriptEl);
+    }
+
+    const injectSchemas = (faqsToUse, remainingSpots = 47) => {
+      const schemaPayload = [
+        {
+          '@context': 'https://schema.org',
+          '@type': 'FAQPage',
+          mainEntity: (faqsToUse || DEFAULT_WINTER_GEO_FAQS).map((f) => ({
+            '@type': 'Question',
+            name: f.question,
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: f.answer
+            }
+          }))
+        },
+        {
+          '@context': 'https://schema.org',
+          '@type': 'BeautySalon',
+          name: "Susan's Beauty Consulting",
+          url: 'https://www.susansbeautyconsulting.com',
+          description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
+          hasOfferCatalog: {
+            '@type': 'OfferCatalog',
+            name: 'Founding 50 Sanctuary Memberships & Diagnostic Blueprints',
+            itemListElement: [
+              {
+                '@type': 'Offer',
+                name: 'Founding 50 Luminary VIP Membership (65% OFF Locked)',
+                price: '6.65',
+                priceCurrency: 'USD',
+                description: `Lifetime $6.65/mo rate, 10% Storewide Boutique Discount, and $25 Instant Store Credit (${remainingSpots} of 50 spots remaining).`
+              },
+              {
+                '@type': 'Offer',
+                name: 'Founding 50 Radiance All-Access Membership (65% OFF Locked)',
+                price: '13.65',
+                priceCurrency: 'USD',
+                description: 'Lifetime $13.65/mo rate, 20% Storewide Boutique Discount, $50 Instant Store Credit, and FREE 3-Piece VIP Mystery Box Set.'
+              }
+            ]
+          }
+        }
+      ];
+      scriptEl.textContent = JSON.stringify(schemaPayload);
+    };
+
+    injectSchemas(DEFAULT_WINTER_GEO_FAQS, 47);
+
+    fetch(`${API_BASE_URL}/api/geo/hub`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.faqs) {
+          injectSchemas(data.faqs, data.founding50?.remaining || 47);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  return null;
+};
+
+const NativeSocialProofTicker = () => {
+  const [activities, setActivities] = useState([
+    { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', timeAgo: '2m ago' },
+    { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot (65% OFF Locked)', timeAgo: '9m ago' },
+    { name: 'Claire T.', city: 'Wichita, KS', action: 'started the 72-Hour Non-Comedogenic Barrier Reset', timeAgo: '18m ago' },
+    { name: 'Michelle K.', city: 'Denver, CO', action: 'claimed Founding 50 Luminary VIP + $25 Store Credit', timeAgo: '27m ago' }
+  ]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isVisible, setIsVisible] = useState(true);
+  const [isDismissed, setIsDismissed] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/marketing/activities`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && Array.isArray(data.activities) && data.activities.length > 0) {
+          setActivities(data.activities);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (isDismissed || activities.length === 0) return;
+    const cycleTimer = setInterval(() => {
+      setIsVisible(false);
+      setTimeout(() => {
+        setCurrentIndex((prev) => (prev + 1) % activities.length);
+        setIsVisible(true);
+      }, 600);
+    }, 9500);
+    return () => clearInterval(cycleTimer);
+  }, [activities, isDismissed]);
+
+  if (isDismissed || activities.length === 0) return null;
+  const activeItem = activities[currentIndex] || activities[0];
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        bottom: '22px',
+        left: '22px',
+        zIndex: 990,
+        maxWidth: '335px',
+        backgroundColor: 'rgba(255, 249, 249, 0.96)',
+        border: '1.5px solid #E8C5C8',
+        borderRadius: '18px',
+        padding: '12px 16px',
+        boxShadow: '0 10px 28px rgba(179, 139, 143, 0.25)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        opacity: isVisible ? 1 : 0,
+        transform: isVisible ? 'translateY(0)' : 'translateY(10px)',
+        transition: 'all 0.45s ease',
+        pointerEvents: 'auto'
+      }}
+    >
+      <div
+        style={{
+          width: '38px',
+          height: '38px',
+          borderRadius: '50%',
+          backgroundColor: '#F2D4D7',
+          border: '1px solid #D4AF37',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '1.1rem',
+          flexShrink: 0
+        }}
+      >
+        ✧
+      </div>
+      <div style={{ flex: 1, textAlign: 'left', fontFamily: "'Cormorant Garamond', serif" }}>
+        <div style={{ fontSize: '0.98rem', color: '#2C1E18', lineHeight: '1.3' }}>
+          <strong>{activeItem.name}</strong> in {activeItem.city} {activeItem.action}
+        </div>
+        <div style={{ fontSize: '0.76rem', color: '#B38B8F', fontFamily: 'sans-serif', marginTop: '3px', fontWeight: 'bold' }}>
+          ✓ Verified Sanctuary Activity • {activeItem.timeAgo || 'Just now'}
+        </div>
+      </div>
+      <button
+        onClick={() => setIsDismissed(true)}
+        title="Hide activity notifications"
+        style={{
+          background: 'none',
+          border: 'none',
+          color: '#A89999',
+          cursor: 'pointer',
+          fontSize: '0.9rem',
+          padding: '2px 4px',
+          alignSelf: 'flex-start'
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+};
+
+const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
+  const [geoData, setGeoData] = useState(null);
+  const [showFullGuide, setShowFullGuide] = useState(false);
+  const [openFaqIdx, setOpenFaqIdx] = useState(0);
+  const [copiedCode, setCopiedCode] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/geo/hub`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.success) setGeoData(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const remainingSpots = geoData?.founding50?.remaining ?? 47;
+  const claimedSpots = geoData?.founding50?.claimed ?? 3;
+  const faqs = geoData?.faqs || DEFAULT_WINTER_GEO_FAQS;
+  const article = geoData?.article;
+
+  const handleCopyPromo = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText('FOUNDER65').catch(() => {});
+    }
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2500);
+  };
+
+  return (
+    <div style={{ marginTop: '38px', width: '100%', maxWidth: '880px', marginLeft: 'auto', marginRight: 'auto', textAlign: 'left' }}>
+      {/* 1. FOUNDING 50 SCARCITY & LIFETIME 65% OFF BANNER */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, #FFFDF9 0%, #FFF3F5 100%)',
+          border: '2px solid #D4AF37',
+          borderRadius: '24px',
+          padding: '26px 28px',
+          boxShadow: '0 14px 36px rgba(212, 175, 55, 0.16)',
+          marginBottom: '28px'
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+          <span style={{ backgroundColor: '#2C1E18', color: '#D4AF37', fontFamily: 'sans-serif', fontSize: '0.76rem', fontWeight: 'bold', padding: '5px 14px', borderRadius: '20px', letterSpacing: '1.2px', textTransform: 'uppercase' }}>
+            ✧ Founding 50 Sanctuary Launch • {remainingSpots} of 50 Spots Remaining
+          </span>
+          <span style={{ fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#B38B8F', fontWeight: 'bold' }}>
+            {claimedSpots} Founding Memberships Claimed
+          </span>
+        </div>
+
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.1rem', color: '#2C1E18', margin: '6px 0 10px 0', lineHeight: '1.2' }}>
+          Lock In a Lifetime 65% Founder’s Rate + Up to $50 Instant Store Credit
+        </h2>
+        <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.18rem', color: '#5C5454', lineHeight: '1.65', margin: '0 0 16px 0' }}>
+          Our first 50 Sanctuary Founders lock in <strong>Luminary VIP for $6.65/mo</strong> (reg. $19/mo, includes <strong>$25 instant store credit</strong>) or <strong>Radiance All-Access for $13.65/mo</strong> (reg. $39/mo, includes <strong>$50 instant store credit + FREE 3-Piece VIP Mystery Box Set</strong>) for life.
+        </p>
+
+        {/* Progress Bar */}
+        <div style={{ width: '100%', height: '10px', backgroundColor: '#F2D4D7', borderRadius: '8px', overflow: 'hidden', marginBottom: '18px' }}>
+          <div
+            style={{
+              width: `${Math.min(95, Math.max(12, Math.round((claimedSpots / 50) * 100)))}%`,
+              height: '100%',
+              background: 'linear-gradient(90deg, #B38B8F, #D4AF37)',
+              borderRadius: '8px',
+              transition: 'width 0.6s ease'
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454' }}>Founder Code:</span>
+            <button
+              type="button"
+              onClick={handleCopyPromo}
+              style={{
+                backgroundColor: '#FFF9F9',
+                border: '1.5px dashed #B38B8F',
+                borderRadius: '10px',
+                padding: '6px 14px',
+                fontFamily: 'monospace',
+                fontSize: '0.95rem',
+                fontWeight: 'bold',
+                color: '#2C1E18',
+                cursor: 'pointer'
+              }}
+            >
+              FOUNDER65 {copiedCode ? '✓ Copied!' : '📋'}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClaimFoundingSpot}
+            style={{
+              backgroundColor: '#2C1E18',
+              color: '#FFF9F9',
+              border: '1px solid #D4AF37',
+              borderRadius: '26px',
+              padding: '11px 24px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1.15rem',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              boxShadow: '0 6px 18px rgba(44, 30, 24, 0.2)'
+            }}
+          >
+            Claim My Founding 50 Spot (65% OFF) →
+          </button>
+        </div>
+      </div>
+
+      {/* 2. CLINICAL GEO AUTHORITY HUB: WINTER BARRIER REPAIR WITHOUT CLOGGED PORES */}
+      <div
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.9)',
+          border: '1px solid #E8C5C8',
+          borderRadius: '24px',
+          padding: '28px',
+          boxShadow: '0 10px 30px rgba(232, 197, 200, 0.2)'
+        }}
+      >
+        <div style={{ fontFamily: 'sans-serif', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#B38B8F', fontWeight: 'bold', marginBottom: '6px' }}>
+          Clinical Dermatology &amp; Esthetic Research Monograph • Pillar 2
+        </div>
+        <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.95rem', color: '#2C1E18', margin: '0 0 14px 0', lineHeight: '1.25' }}>
+          How Do I Repair My Skin Barrier in Winter Without Clogging Pores or Causing Closed Comedones?
+        </h2>
+
+        {/* Direct 40-60 Word AI Answer Capsule */}
+        <div
+          style={{
+            backgroundColor: '#FFF9F9',
+            borderLeft: '4px solid #B38B8F',
+            padding: '16px 20px',
+            borderRadius: '0 14px 14px 0',
+            marginBottom: '18px',
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '1.16rem',
+            lineHeight: '1.7',
+            color: '#2C1E18'
+          }}
+        >
+          <strong>Clinical Answer Summary:</strong> To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms like petrolatum and coconut oil with biomimetic lipids—specifically a <strong>3:1:1 ratio of ceramides, cholesterol, and free fatty acids</strong>—layered over damp skin with low-weight humectants like <strong>panthenol, ectoin, beta-glucan, and sugarcane squalane</strong>, which restore stratum corneum cohesion without trapping sebum.
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowFullGuide(!showFullGuide)}
+          style={{
+            background: 'none',
+            border: '1px solid #B38B8F',
+            borderRadius: '20px',
+            padding: '8px 18px',
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '1.05rem',
+            fontWeight: 'bold',
+            color: '#B38B8F',
+            cursor: 'pointer',
+            marginBottom: '20px'
+          }}
+        >
+          {showFullGuide ? '▲ Hide Full 72-Hour Clinical Barrier Reset Monograph' : '▼ Read Full 72-Hour Non-Comedogenic Barrier Reset Protocol'}
+        </button>
+
+        {showFullGuide && article && Array.isArray(article.sections) && (
+          <div style={{ marginTop: '8px', marginBottom: '24px', borderTop: '1px solid #E8C5C8', paddingTop: '18px' }}>
+            {article.sections.map((sec, idx) => (
+              <div key={idx} style={{ marginBottom: '22px' }}>
+                <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', color: '#2C1E18', margin: '0 0 8px 0' }}>
+                  {sec.heading}
+                </h3>
+                <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#4A3F3D', lineHeight: '1.7', backgroundColor: '#FFFDFD', padding: '10px 14px', borderRadius: '10px', border: '1px solid #F2D4D7', margin: '0 0 10px 0' }}>
+                  <strong>Key Takeaway:</strong> {sec.answerCapsule}
+                </p>
+                {(sec.bodyParagraphs || []).map((p, pIdx) => (
+                  <p key={pIdx} style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', lineHeight: '1.75', margin: '0 0 10px 0' }}>
+                    {p}
+                  </p>
+                ))}
+                {Array.isArray(sec.bulletPoints) && sec.bulletPoints.length > 0 && (
+                  <ul style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', color: '#5C5454', lineHeight: '1.7', paddingLeft: '22px' }}>
+                    {sec.bulletPoints.map((bp, bIdx) => (
+                      <li key={bIdx} style={{ marginBottom: '6px' }}>{bp}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Interactive FAQ Accordion (Mirrors JSON-LD FAQPage Schema) */}
+        <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', color: '#2C1E18', margin: '10px 0 14px 0' }}>
+          Frequently Asked Clinical Questions
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {faqs.map((faq, idx) => {
+            const isOpen = openFaqIdx === idx;
+            return (
+              <div
+                key={idx}
+                style={{
+                  border: '1px solid #E8C5C8',
+                  borderRadius: '14px',
+                  backgroundColor: isOpen ? '#FFF9F9' : '#FFFFFF',
+                  overflow: 'hidden'
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setOpenFaqIdx(isOpen ? -1 : idx)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '14px 18px',
+                    background: 'none',
+                    border: 'none',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.15rem',
+                    fontWeight: 'bold',
+                    color: '#2C1E18'
+                  }}
+                >
+                  <span>{faq.question}</span>
+                  <span style={{ color: '#B38B8F', marginLeft: '12px' }}>{isOpen ? '−' : '+'}</span>
+                </button>
+                {isOpen && (
+                  <div style={{ padding: '0 18px 16px 18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', lineHeight: '1.7', color: '#5C5454' }}>
+                    {faq.answer}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const EmpowermentContainer = ({ children }) => (
   <div style={{ margin: '0 auto', maxWidth: '1000px', padding: '60px 40px', textAlign: 'center', position: 'relative', transition: 'all 0.5s ease' }}>
     {children}
@@ -15667,6 +16112,8 @@ function App() {
     <div style={{ width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', position: 'relative' }}>
       
       <GlobalPublicLaunchStyles />
+      <GEOSchemaAndMetaInjector />
+      <NativeSocialProofTicker />
       {isLoading && <FallingSparkles/>}
 
       <MembershipUpgradeModal
@@ -15926,6 +16373,14 @@ function App() {
               <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', transition: 'color 0.3s ease', marginTop: '4px' }} onClick={() => setStep(4)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>
                 Already a member? Sign in to your dashboard
               </p>
+
+              <Founding50AndGeoAuthoritySection
+                onClaimFoundingSpot={() => {
+                  trackSiteEvent('PAGE_VIEW', { page: 'Paid Membership Tiers' });
+                  setStep(2);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+              />
             </div>
           </div>
         )}
