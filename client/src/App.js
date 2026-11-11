@@ -228,7 +228,7 @@ const GEOSchemaAndMetaInjector = () => {
       document.head.appendChild(scriptEl);
     }
 
-    const injectSchemas = (faqsToUse, remainingSpots = 47) => {
+    const injectSchemas = (faqsToUse, remainingSpots = 49) => {
       const schemaPayload = [
         {
           '@context': 'https://schema.org',
@@ -250,21 +250,21 @@ const GEOSchemaAndMetaInjector = () => {
           description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
           hasOfferCatalog: {
             '@type': 'OfferCatalog',
-            name: 'Founding 50 Sanctuary Memberships & Diagnostic Blueprints',
+            name: 'Founding 50 VIP Memberships & Store Credit Vault',
             itemListElement: [
               {
                 '@type': 'Offer',
-                name: 'Founding 50 Luminary VIP Membership (65% OFF Locked)',
-                price: '6.65',
+                name: 'The Luminary Circle — Founding 50 VIP Membership',
+                price: '49.00',
                 priceCurrency: 'USD',
-                description: `Lifetime $6.65/mo rate, 10% Storewide Boutique Discount, and $25 Instant Store Credit (${remainingSpots} of 50 spots remaining).`
+                description: `Lock in $49/mo pricing for life, receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount (${remainingSpots} of 50 spots remaining).`
               },
               {
                 '@type': 'Offer',
-                name: 'Founding 50 Radiance All-Access Membership (65% OFF Locked)',
-                price: '13.65',
+                name: 'The Radiance Elite — Founding 50 VIP Membership',
+                price: '119.00',
                 priceCurrency: 'USD',
-                description: 'Lifetime $13.65/mo rate, 20% Storewide Boutique Discount, $50 Instant Store Credit, and FREE 3-Piece VIP Mystery Box Set.'
+                description: 'Lock in $119/mo pricing for life, receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
               }
             ]
           }
@@ -273,13 +273,13 @@ const GEOSchemaAndMetaInjector = () => {
       scriptEl.textContent = JSON.stringify(schemaPayload);
     };
 
-    injectSchemas(DEFAULT_WINTER_GEO_FAQS, 47);
+    injectSchemas(DEFAULT_WINTER_GEO_FAQS, 49);
 
     fetch(`${API_BASE_URL}/api/geo/hub`)
       .then((r) => r.json())
       .then((data) => {
         if (data && data.faqs) {
-          injectSchemas(data.faqs, data.founding50?.remaining || 47);
+          injectSchemas(data.faqs, data.founding50?.remaining || 49);
         }
       })
       .catch(() => {});
@@ -290,10 +290,10 @@ const GEOSchemaAndMetaInjector = () => {
 
 const NativeSocialProofTicker = () => {
   const [activities, setActivities] = useState([
-    { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 2-Minute Diagnostic Skin Blueprint', timeAgo: '2m ago' },
-    { name: 'Elena R.', city: 'Overland Park, KS', action: 'claimed Founding 50 Radiance Spot (65% OFF Locked)', timeAgo: '9m ago' },
+    { name: 'Sarah M.', city: 'Kansas City, MO', action: 'completed her 10-Step Personalized Beauty Blueprint', timeAgo: '2m ago' },
+    { name: 'Elena R.', city: 'Overland Park, KS', action: 'joined The Radiance Elite ($119/mo Locked + $119 Store Credit)', timeAgo: '9m ago' },
     { name: 'Claire T.', city: 'Wichita, KS', action: 'started the 72-Hour Non-Comedogenic Barrier Reset', timeAgo: '18m ago' },
-    { name: 'Michelle K.', city: 'Denver, CO', action: 'claimed Founding 50 Luminary VIP + $25 Store Credit', timeAgo: '27m ago' }
+    { name: 'Michelle K.', city: 'Denver, CO', action: 'joined The Luminary Circle ($49/mo Locked + $49 Store Credit)', timeAgo: '27m ago' }
   ]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isVisible, setIsVisible] = useState(true);
@@ -394,7 +394,6 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
   const [geoData, setGeoData] = useState(null);
   const [showFullGuide, setShowFullGuide] = useState(false);
   const [openFaqIdx, setOpenFaqIdx] = useState(0);
-  const [copiedCode, setCopiedCode] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/geo/hub`)
@@ -405,22 +404,14 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
       .catch(() => {});
   }, []);
 
-  const remainingSpots = geoData?.founding50?.remaining ?? 47;
-  const claimedSpots = geoData?.founding50?.claimed ?? 3;
+  const remainingSpots = geoData?.founding50?.remaining ?? 49;
+  const claimedSpots = geoData?.founding50?.claimed ?? 1;
   const faqs = geoData?.faqs || DEFAULT_WINTER_GEO_FAQS;
   const article = geoData?.article;
 
-  const handleCopyPromo = () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText('FOUNDER65').catch(() => {});
-    }
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2500);
-  };
-
   return (
     <div style={{ marginTop: '38px', width: '100%', maxWidth: '880px', marginLeft: 'auto', marginRight: 'auto', textAlign: 'left' }}>
-      {/* 1. FOUNDING 50 SCARCITY & LIFETIME 65% OFF BANNER */}
+      {/* 1. FOUNDING 50 VIP MEMBERSHIP & STORE CREDIT VAULT BANNER (NO PUBLIC PROMO CODES DISPLAYED) */}
       <div
         style={{
           background: 'linear-gradient(135deg, #FFFDF9 0%, #FFF3F5 100%)',
@@ -433,25 +424,25 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
           <span style={{ backgroundColor: '#2C1E18', color: '#D4AF37', fontFamily: 'sans-serif', fontSize: '0.76rem', fontWeight: 'bold', padding: '5px 14px', borderRadius: '20px', letterSpacing: '1.2px', textTransform: 'uppercase' }}>
-            ✧ Founding 50 Sanctuary Launch • {remainingSpots} of 50 Spots Remaining
+            👑 Limited to First 50 Members • {remainingSpots} of 50 Spots Remaining
           </span>
           <span style={{ fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#B38B8F', fontWeight: 'bold' }}>
-            {claimedSpots} Founding Memberships Claimed
+            Lifetime Rate Lock + 100% Store Credit Vault
           </span>
         </div>
 
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2.1rem', color: '#2C1E18', margin: '6px 0 10px 0', lineHeight: '1.2' }}>
-          Lock In a Lifetime 65% Founder’s Rate + Up to $50 Instant Store Credit
+          Founding 50 VIP Membership &amp; Store Credit Vault
         </h2>
         <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.18rem', color: '#5C5454', lineHeight: '1.65', margin: '0 0 16px 0' }}>
-          Our first 50 Sanctuary Founders lock in <strong>Luminary VIP for $6.65/mo</strong> (reg. $19/mo, includes <strong>$25 instant store credit</strong>) or <strong>Radiance All-Access for $13.65/mo</strong> (reg. $39/mo, includes <strong>$50 instant store credit + FREE 3-Piece VIP Mystery Box Set</strong>) for life.
+          Lock in <strong>$49/mo The Luminary Circle</strong> or <strong>$119/mo The Radiance Elite</strong> pricing for life, receive <strong>100% back in Store Credit</strong> (<strong>$49</strong> or <strong>$119</strong> in your Store Credit Vault, redeemable dollar-for-dollar on orders), unlock the <strong>AI Beauty &amp; Ritual Consultation</strong>, plus Radiance Founders receive a <strong>FREE 3pc VIP Mystery Box</strong> on their first order.
         </p>
 
         {/* Progress Bar */}
         <div style={{ width: '100%', height: '10px', backgroundColor: '#F2D4D7', borderRadius: '8px', overflow: 'hidden', marginBottom: '18px' }}>
           <div
             style={{
-              width: `${Math.min(95, Math.max(12, Math.round((claimedSpots / 50) * 100)))}%`,
+              width: `${Math.min(95, Math.max(8, Math.round((claimedSpots / 50) * 100)))}%`,
               height: '100%',
               background: 'linear-gradient(90deg, #B38B8F, #D4AF37)',
               borderRadius: '8px',
@@ -461,26 +452,9 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454' }}>Founder Code:</span>
-            <button
-              type="button"
-              onClick={handleCopyPromo}
-              style={{
-                backgroundColor: '#FFF9F9',
-                border: '1.5px dashed #B38B8F',
-                borderRadius: '10px',
-                padding: '6px 14px',
-                fontFamily: 'monospace',
-                fontSize: '0.95rem',
-                fontWeight: 'bold',
-                color: '#2C1E18',
-                cursor: 'pointer'
-              }}
-            >
-              FOUNDER65 {copiedCode ? '✓ Copied!' : '📋'}
-            </button>
-          </div>
+          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#736A6A', fontStyle: 'italic' }}>
+            ✧ Exclusive to our first 50 verified Luminary Circle &amp; Radiance Elite members
+          </span>
 
           <button
             type="button"
@@ -498,7 +472,7 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
               boxShadow: '0 6px 18px rgba(44, 30, 24, 0.2)'
             }}
           >
-            Claim My Founding 50 Spot (65% OFF) →
+            Explore Founding 50 Memberships →
           </button>
         </div>
       </div>
@@ -13111,7 +13085,7 @@ export function FoundingMemberPromoAndCartModule({
                 type="text"
                 value={promoCodeInput}
                 onChange={(e) => setPromoCodeInput(e.target.value)}
-                placeholder="Enter Code (e.g. RAD-FOUNDER-01)"
+                placeholder="Enter Your Private Founder Code"
                 style={{
                   padding: '10px 14px',
                   borderRadius: '10px',
