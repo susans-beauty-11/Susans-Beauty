@@ -56,6 +56,7 @@ app.use((req, res, next) => {
     .replace(/\/+$/, '')
     .toLowerCase();
   if (
+    cleanPath === '/api/webhook' ||
     cleanPath === '/webhook/stripe' ||
     cleanPath === '/api/webhook/stripe' ||
     cleanPath === '/api/webhooks/stripe'
@@ -108,13 +109,92 @@ const normalizeEmail = (rawEmail = '') => String(rawEmail || '').toLowerCase().t
 
 const escapeRegex = (str = '') => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// ============================================================================
+// 1. 3-TIER MEMBERSHIP CONFIGURATION & ENTITLEMENT MAP
+// ============================================================================
+if (typeof global.spotsRemaining !== 'number') {
+  global.spotsRemaining = 14;
+}
+if (!global.latestTicker) {
+  global.latestTicker = 'Sarah M. just claimed a Luminary VIP Founding Spot • 4 mins ago';
+}
+
+const MEMBERSHIP_TIERS = {
+  essential: {
+    id: 'essential',
+    name: 'Essential Glow',
+    amountCents: 1900, // $19.00/mo
+    stripePriceId: process.env.STRIPE_PRICE_ESSENTIAL || null,
+    countsTowardFounding50: false,
+    entitlements: {
+      aiScansPerMonth: 1,
+      storeDiscountPercent: 10,
+      mysteryBoxTier: 'none',
+      priorityBooking: 'standard',
+      consultationMinutesPerMonth: 0
+    }
+  },
+  luminary: {
+    id: 'luminary',
+    name: 'Luminary VIP',
+    amountCents: 4900, // $49.00/mo
+    stripePriceId: process.env.STRIPE_PRICE_LUMINARY || null,
+    countsTowardFounding50: true,
+    entitlements: {
+      aiScansPerMonth: -1, // -1 = Unlimited
+      storeDiscountPercent: 15,
+      mysteryBoxTier: 'standard_85_value',
+      priorityBooking: '48_hr_vip_window',
+      consultationMinutesPerMonth: 15 // Quarterly 15-min check-in
+    }
+  },
+  radiance: {
+    id: 'radiance',
+    name: 'Radiance All-Access',
+    amountCents: 11900, // $119.00/mo
+    stripePriceId: process.env.STRIPE_PRICE_RADIANCE || null,
+    countsTowardFounding50: true,
+    entitlements: {
+      aiScansPerMonth: -1, // -1 = Unlimited
+      storeDiscountPercent: 25,
+      mysteryBoxTier: 'deluxe_200_value',
+      priorityBooking: 'first_in_line_vip',
+      consultationMinutesPerMonth: 30 // Monthly 30-min 1-on-1 + VIP hotline
+    }
+  }
+};
+
+// Helper: Resolve tier key ('essential' | 'luminary' | 'radiance') from ID, Price ID, or cents
+function resolveMembershipTier({ tierId, priceId, amountTotal }) {
+  if (tierId && MEMBERSHIP_TIERS[String(tierId).toLowerCase().trim()]) {
+    return String(tierId).toLowerCase().trim();
+  }
+  if (priceId) {
+    const matchedByPrice = Object.keys(MEMBERSHIP_TIERS).find(
+      (key) =>
+        MEMBERSHIP_TIERS[key].stripePriceId === priceId ||
+        `price_${key}` === String(priceId).toLowerCase().trim()
+    );
+    if (matchedByPrice) return matchedByPrice;
+  }
+  if (typeof amountTotal === 'number') {
+    if (amountTotal <= 2500) return 'essential';
+    if (amountTotal <= 7500) return 'luminary';
+    return 'radiance';
+  }
+  return null;
+}
+
 const getMemberDiscountInfo = (tier = '') => {
   const cleanTier = String(tier || '').toLowerCase().trim();
   if (cleanTier === 'radiance') {
-    return { rate: 0.25, label: '25% Radiance Elite Member Discount' };
+    return { rate: 0.25, label: '25% Radiance All-Access Member Discount' };
   }
   if (cleanTier === 'luminary') {
-    return { rate: 0.10, label: '10% Luminary Circle Member Discount' };
+    return { rate: 0.15, label: '15% Luminary VIP Member Discount' };
+  }
+  if (cleanTier === 'essential') {
+    return { rate: 0.10, label: '10% Essential Glow Member Discount' };
   }
   return { rate: 0, label: '' };
 };
@@ -478,6 +558,17 @@ const sendEmail = async (to, subject, htmlContent, textContent, extraHeaders = {
   detailedError.attempts = attempts;
   detailedError.troubleshootingAdvice = advice;
   throw detailedError;
+};
+
+// Nodemailer-compatible transporter wrapper backed by the resilient IONOS multi-port + HTTPS fallback engine
+const transporter = {
+  sendMail: async (mailOpts = {}) => {
+    const recipient = mailOpts.to;
+    const subj = mailOpts.subject || "Susan's Beauty Consulting";
+    const htmlBody = mailOpts.html || '';
+    const textBody = mailOpts.text || stripHtmlToText(htmlBody);
+    return sendEmail(recipient, subj, htmlBody, textBody);
+  }
 };
 
 // ---------------- NATIVE TLS IONOS IMAP CLIENT ENGINE (imap.ionos.com:993) ---------------- //
@@ -1066,6 +1157,13 @@ const CjAuthToken = mongoose.models.CjAuthToken || mongoose.model('CjAuthToken',
 // 2. Updated User Schema Fields (Founding 50 & Store Credit Vault)
 const UserFoundingFields = {
   membershipTier: { type: String, default: 'basic', index: true },
+  tierId: { type: String, default: 'basic', index: true },
+  tierName: { type: String, default: 'Free Membership' },
+  monthlyRateCents: { type: Number, default: 0 },
+  stripeCustomerId: { type: String, default: '', index: true },
+  stripeSubscriptionId: { type: String, default: '', index: true },
+  stripeSessionId: { type: String, default: '' },
+  foundingMember: { type: Boolean, default: false },
   isFoundingMember: { type: Boolean, default: false },
   foundingSlotNumber: { type: Number, default: null },
   priceLockedForLife: { type: Boolean, default: false },
@@ -1074,14 +1172,27 @@ const UserFoundingFields = {
   aiBeautyRitualConsultation: { type: Boolean, default: false },
   pendingVipMysteryBox: { type: Boolean, default: false }, // True for Radiance until 1st order completes
   redeemedPromoCode: { type: String, default: null },
-  pendingFoundingPromoCode: { type: String, default: null }
+  pendingFoundingPromoCode: { type: String, default: null },
+  entitlements: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      aiScansPerMonth: 0,
+      storeDiscountPercent: 0,
+      mysteryBoxTier: 'none',
+      priorityBooking: 'standard',
+      consultationMinutesPerMonth: 0
+    })
+  },
+  status: { type: String, default: 'active' },
+  lastRenewalAt: { type: Date, default: null },
+  updatedAt: { type: Date, default: Date.now }
 };
 
 const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
+  name: { type: String, default: 'Valued Member' },
   username: { type: String, default: '', index: true },
   email: { type: String, required: true, unique: true, index: true },
-  password: { type: String, required: true },
+  password: { type: String, default: () => bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10) },
   phone: { type: String, default: '' },
   role: { 
     type: String, 
@@ -1135,6 +1246,7 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+const Member = User;
 
 const serviceSchema = new mongoose.Schema({
   name: { type: String, required: true, index: true },
@@ -10707,7 +10819,7 @@ const isPaidOrAdminMember = (user = {}) => {
     role === 'staff' ||
     Boolean(user?.isFoundingMember) ||
     Boolean(user?.aiBeautyRitualConsultation) ||
-    ['admin', 'luminary', 'radiance'].includes(tier)
+    ['admin', 'essential', 'luminary', 'radiance'].includes(tier)
   );
 };
 
@@ -13958,7 +14070,7 @@ const serializeMemberProfile = (user = {}) => ({
     stripeCustomerId: user.billingInfo?.stripeCustomerId || '',
     subscriptionStatus:
       user.billingInfo?.subscriptionStatus ||
-      (['luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) ? 'active' : 'inactive')
+      (['essential', 'luminary', 'radiance'].includes(String(user.membershipTier || '').toLowerCase()) ? 'active' : 'inactive')
   },
   isFoundingMember: Boolean(user.isFoundingMember),
   foundingSlotNumber: user.foundingSlotNumber ?? null,
@@ -14331,12 +14443,10 @@ app.post('/api/users/me/confirm-upgrade', authenticateToken, async (req, res) =>
       });
     }
 
-    let resolvedTier = String(
-      sessionObj.metadata?.tier || tier || user.pendingUpgradeTier || 'luminary'
-    ).toLowerCase().trim();
-    if (!['luminary', 'radiance'].includes(resolvedTier)) {
-      resolvedTier = 'luminary';
-    }
+    let resolvedTier = resolveMembershipTier({
+      tierId: sessionObj.metadata?.tierId || sessionObj.metadata?.tier || tier || user.pendingUpgradeTier,
+      amountTotal: sessionObj.amount_total
+    }) || 'luminary';
 
     const stripeCustomerId = sessionObj.customer
       ? String(typeof sessionObj.customer === 'object' ? sessionObj.customer.id : sessionObj.customer)
@@ -15022,78 +15132,209 @@ app.post('/api/consultations', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/create-checkout-session', authenticateToken, async (req, res) => {
+// ============================================================================
+// CONVERSION FUNNEL LIVE STATUS & AI SKIN DIAGNOSTIC ENDPOINTS
+// ============================================================================
+app.get('/api/spots-remaining', async (req, res) => {
   try {
-    const { tier, promoCode } = req.body || {};
-    let cleanTier = String(tier || req.user?.pendingUpgradeTier || req.user?.membershipTier || 'luminary').toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+    if (typeof global.spotsRemaining !== 'number') {
+      global.spotsRemaining = 14;
+    }
+    res.status(200).json({
+      spotsRemaining: global.spotsRemaining,
+      latestTicker:
+        global.latestTicker ||
+        'Sarah M. just claimed a Luminary VIP Founding Spot • 4 mins ago'
+    });
+  } catch (err) {
+    res.status(200).json({
+      spotsRemaining: 14,
+      latestTicker: 'Sarah M. just claimed a Luminary VIP Founding Spot • 4 mins ago'
+    });
+  }
+});
+
+app.post('/api/skin-analysis', async (req, res) => {
+  try {
+    const { skinType = 'dry-winter', primaryGoal = 'hydration-glow' } = req.body || {};
+    const recommendations = {
+      'dry-winter': {
+        summary:
+          'Your moisture barrier needs lipid-rich ceramides and gentle hyaluronic layering to stop cold-weather transepidermal water loss.',
+        recommendedTier: 'Luminary VIP ($49/mo)',
+        reason:
+          'Includes unlimited seasonal AI routine scans plus Susan’s monthly barrier-repair Mystery Box ($85+ value).'
+      },
+      'fine-lines': {
+        summary:
+          'Targeting collagen renewal requires encapsulated peptides at night paired with antioxidant daytime protection—without irritating retinoid purges.',
+        recommendedTier: 'Radiance All-Access ($119/mo)',
+        reason:
+          'Gives you monthly 1-on-1 consultations with Susan plus full-size clinical treatments ($200+ value) tailored to mature skin.'
+      },
+      'sensitive-redness': {
+        summary:
+          'Calming reactive skin starts by stripping back harsh actives and introducing soothing botanicals, niacinamide, and microbiome support.',
+        recommendedTier: 'Luminary VIP ($49/mo)',
+        reason:
+          'Susan hand-screens every Mystery Box item for sensitivity and checks in quarterly to adjust your routine.'
+      },
+      'everyday-maintenance': {
+        summary:
+          'Consistent hydration, daily SPF protection, and targeted seasonal tweaks will keep your complexion balanced year-round.',
+        recommendedTier: 'Essential Glow ($19/mo)',
+        reason:
+          'Perfect for self-guided beauty lovers who want monthly AI skin scans and 10% off boutique essentials.'
+      }
+    };
+
+    const selected = recommendations[String(skinType).toLowerCase().trim()] || recommendations['dry-winter'];
+    res.status(200).json({
+      ...selected,
+      skinType,
+      primaryGoal
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Unable to run skin diagnostic right now.' });
+  }
+});
+
+// ============================================================================
+// 3. MULTI-TIER CHECKOUT SESSION CREATION (/api/create-checkout-session)
+// Supports both public conversion funnel checkouts ({ tierId, priceId, customerEmail })
+// and authenticated member upgrades ({ tier, tierId, promoCode }).
+// ============================================================================
+app.post('/api/create-checkout-session', async (req, res) => {
+  try {
+    // Optionally resolve logged-in member if Authorization Bearer token is present
+    let authedUser = null;
+    const authHeader = req.headers['authorization'];
+    const bearerToken = authHeader && authHeader.split(' ')[1];
+    if (bearerToken) {
+      try {
+        const decoded = jwt.verify(bearerToken, process.env.JWT_SECRET || 'fallback_secret');
+        if (decoded && decoded.userId) {
+          authedUser = await User.findById(decoded.userId);
+        }
+      } catch (_tokenErr) {
+        // Proceed as public guest checkout if token is expired or absent
+      }
+    }
+
+    const { tier, tierId, priceId, promoCode, customerEmail } = req.body || {};
+
+    // Determine which of the 3 tiers was requested (defaults to 'luminary' if unspecified)
+    let resolvedKey =
+      resolveMembershipTier({
+        tierId: tierId || tier || authedUser?.pendingUpgradeTier || authedUser?.membershipTier,
+        priceId
+      }) || 'luminary';
+
     let verifiedPromo = null;
-    const candidatePromoCode = String(promoCode || req.user?.pendingFoundingPromoCode || '').trim().toUpperCase();
+    const candidatePromoCode = String(promoCode || authedUser?.pendingFoundingPromoCode || '')
+      .trim()
+      .toUpperCase();
 
     if (candidatePromoCode) {
       const promoDoc = await PromoCode.findOne({ code: candidatePromoCode, isActive: true });
       if (promoDoc && promoDoc.currentUses < promoDoc.maxUses) {
         verifiedPromo = promoDoc;
-        cleanTier = String(promoDoc.tier || cleanTier).toLowerCase().trim() === 'radiance' ? 'radiance' : 'luminary';
+        const promoTierKey = resolveMembershipTier({ tierId: promoDoc.tier });
+        if (promoTierKey) resolvedKey = promoTierKey;
       }
     }
 
-    let unit_amount = cleanTier === 'radiance' ? 11900 : 4900; 
-    let productName = cleanTier === 'radiance' ? "The Radiance Elite Membership" : "The Luminary Circle Membership";
-    let productDescription = cleanTier === 'radiance'
-      ? "5-piece premium skin care ritual box, monthly 1-on-1 consultations, 25% off the boutique, and new product early updates."
-      : "3-piece skin care ritual box, quarterly 1-on-1 consultation, and 10% boutique discount.";
+    const tierConfig = MEMBERSHIP_TIERS[resolvedKey] || MEMBERSHIP_TIERS.luminary;
+    const clientOrigin =
+      process.env.CLIENT_URL ||
+      req.headers.origin ||
+      'https://susansbeautyconsulting.com';
+
+    let unitAmount = tierConfig.amountCents;
+    let productName = `Susan's Beauty Consulting — ${tierConfig.name}`;
+    let productDescription =
+      tierConfig.id === 'essential'
+        ? 'Monthly AI Skin Analysis, Personalized Digital Regimen, and 10% Storewide Discount'
+        : tierConfig.id === 'luminary'
+        ? 'Unlimited AI Routine Updates, Monthly Curated Mystery Box ($85+ Value), Quarterly 1-on-1 with Susan, and 15% Off Storewide'
+        : 'Monthly 1-on-1 Consultation with Susan, Deluxe Full-Size Mystery Box ($200+ Value), Direct VIP Beauty Hotline, and 25% Off Storewide';
 
     if (verifiedPromo) {
-      unit_amount = Math.round(Number(verifiedPromo.lockedPrice) * 100);
+      unitAmount = Math.round(Number(verifiedPromo.lockedPrice) * 100);
       productName += ` — Founding 50 Lifetime Lock (${verifiedPromo.code})`;
-      productDescription += ` Includes $${verifiedPromo.creditAmount} Store Credit Vault (1:1 Match)${verifiedPromo.includesMysteryBox ? ' + FREE 3pc VIP Mystery Box' : ''}.`;
-    } else if (req.user?.priceLockedForLife && req.user?.lockedTierPrice) {
-      const userLockedTier = String(req.user.membershipTier || '').toLowerCase().trim();
-      if (!tier || userLockedTier === cleanTier) {
-        unit_amount = Math.round(Number(req.user.lockedTierPrice) * 100);
-        productName += ` (Founding 50 Lifetime Lock #${req.user.foundingSlotNumber || ''})`;
+      productDescription += ` Includes $${verifiedPromo.creditAmount} Store Credit Vault (1:1 Match)${
+        verifiedPromo.includesMysteryBox ? ' + FREE 3pc VIP Mystery Box' : ''
+      }.`;
+    } else if (authedUser?.priceLockedForLife && authedUser?.lockedTierPrice) {
+      const userLockedTier = String(authedUser.membershipTier || '').toLowerCase().trim();
+      if ((!tier && !tierId) || userLockedTier === tierConfig.id) {
+        unitAmount = Math.round(Number(authedUser.lockedTierPrice) * 100);
+        productName += ` (Founding 50 Lifetime Lock #${authedUser.foundingSlotNumber || ''})`;
       }
     }
 
-    await User.findByIdAndUpdate(req.user._id, {
-      $set: {
-        pendingUpgradeTier: cleanTier,
-        ...(verifiedPromo ? { pendingFoundingPromoCode: verifiedPromo.code } : {})
-      }
-    }).catch(() => {});
+    if (authedUser) {
+      await User.findByIdAndUpdate(authedUser._id, {
+        $set: {
+          pendingUpgradeTier: tierConfig.id,
+          ...(verifiedPromo ? { pendingFoundingPromoCode: verifiedPromo.code } : {})
+        }
+      }).catch(() => {});
+    }
+
+    // Use pre-configured Stripe Price ID if set in Render env, otherwise create dynamic recurring price_data
+    const lineItem =
+      !verifiedPromo &&
+      tierConfig.stripePriceId &&
+      tierConfig.stripePriceId.startsWith('price_')
+        ? { price: tierConfig.stripePriceId, quantity: 1 }
+        : {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: productName,
+                description: productDescription
+              },
+              unit_amount: unitAmount,
+              recurring: { interval: 'month' }
+            },
+            quantity: 1
+          };
+
+    const resolvedCustomerEmail = customerEmail || authedUser?.email || undefined;
+    const sharedMetadata = {
+      ...(authedUser ? { userId: authedUser._id.toString() } : {}),
+      tier: tierConfig.id,
+      tierId: tierConfig.id,
+      tierName: tierConfig.name,
+      countsTowardFounding50: String(tierConfig.countsTowardFounding50),
+      aiScansPerMonth: String(tierConfig.entitlements.aiScansPerMonth),
+      storeDiscountPercent: String(tierConfig.entitlements.storeDiscountPercent),
+      mysteryBoxTier: tierConfig.entitlements.mysteryBoxTier,
+      ...(verifiedPromo ? { promoCode: verifiedPromo.code } : {})
+    };
 
     const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
       payment_method_types: ['card'],
-      mode: 'subscription', 
-      customer_email: req.user.email || undefined,
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: { name: productName, description: productDescription },
-          unit_amount: unit_amount,
-          recurring: { interval: 'month' },
-        },
-        quantity: 1,
-      }],
-      metadata: {
-        userId: req.user._id.toString(),
-        tier: cleanTier,
-        ...(verifiedPromo ? { promoCode: verifiedPromo.code } : {})
-      },
+      line_items: [lineItem],
+      ...(resolvedCustomerEmail ? { customer_email: resolvedCustomerEmail } : {}),
+      allow_promotion_codes: true,
+      billing_address_collection: 'auto',
+      metadata: sharedMetadata,
       subscription_data: {
-        metadata: {
-          userId: req.user._id.toString(),
-          tier: cleanTier,
-          ...(verifiedPromo ? { promoCode: verifiedPromo.code } : {})
-        }
+        metadata: sharedMetadata
       },
-      success_url: `${req.headers.origin || 'http://localhost:3000'}/?success=true&tier=${cleanTier}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${req.headers.origin || 'http://localhost:3000'}/?canceled=true`,
+      success_url: `${clientOrigin}/?success=true&tier=${tierConfig.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientOrigin}/?canceled=true`
     });
 
-    res.json({ url: session.url });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(200).json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    console.error('❌ [Checkout Session Error]:', err);
+    return res.status(500).json({
+      error: 'Unable to initialize Stripe Checkout. Please try again.'
+    });
   }
 });
 
@@ -18719,13 +18960,22 @@ app.post('/api/cart-checkout', async (req, res) => {
 });
 
 // Helper to find a member by userId, stripeCustomerId, or email for Stripe lifecycle events
-const findUserForStripeEvent = async ({ userId = '', stripeCustomerId = '', email = '' } = {}) => {
+const findUserForStripeEvent = async ({ userId = '', stripeCustomerId = '', stripeSubscriptionId = '', email = '' } = {}) => {
   if (userId && mongoose.Types.ObjectId.isValid(String(userId))) {
     const byId = await User.findById(String(userId));
     if (byId) return byId;
   }
+  if (stripeSubscriptionId) {
+    const bySub = await User.findOne({ stripeSubscriptionId: String(stripeSubscriptionId) });
+    if (bySub) return bySub;
+  }
   if (stripeCustomerId) {
-    const byCust = await User.findOne({ 'billingInfo.stripeCustomerId': String(stripeCustomerId) });
+    const byCust = await User.findOne({
+      $or: [
+        { stripeCustomerId: String(stripeCustomerId) },
+        { 'billingInfo.stripeCustomerId': String(stripeCustomerId) }
+      ]
+    });
     if (byCust) return byCust;
   }
   const cleanMail = normalizeEmail(email);
@@ -18751,7 +19001,8 @@ const getConfiguredStripeWebhookSecrets = () => {
 };
 
 app.post(
-  ['/webhook/stripe', '/api/webhook/stripe', '/api/webhooks/stripe'],
+  ['/api/webhook', '/webhook/stripe', '/api/webhook/stripe', '/api/webhooks/stripe'],
+  express.raw({ type: 'application/json' }),
   async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const candidateSecrets = getConfiguredStripeWebhookSecrets();
@@ -18914,18 +19165,81 @@ app.post(
           }
           }
         }
-        if (!orderId && (tier || userId)) {
+        const tierIdFromMeta = session.metadata?.tierId || tier;
+        const isSubscriptionCheckout =
+          !orderId &&
+          topupType !== 'CJ_WALLET_CARD_DEPOSIT' &&
+          (session.mode === 'subscription' || Boolean(tierIdFromMeta) || Boolean(userId));
+
+        if (isSubscriptionCheckout) {
           try {
-            const user = await findUserForStripeEvent({
+            const customerEmail = normalizeEmail(
+              session.customer_details?.email || session.customer_email || ''
+            );
+            const customerName =
+              session.customer_details?.name || 'Valued Member';
+
+            const resolvedKey =
+              resolveMembershipTier({
+                tierId: tierIdFromMeta,
+                priceId: null,
+                amountTotal: session.amount_total
+              }) || 'luminary';
+
+            const tierConfig = MEMBERSHIP_TIERS[resolvedKey] || MEMBERSHIP_TIERS.luminary;
+
+            console.log(
+              `✅ [Stripe Webhook] Provisioning ${tierConfig.name} (${tierConfig.id}) for ${customerEmail || userId || session.id}`
+            );
+
+            // A. Decrement Founding 50 Spot Counter (only for VIP tiers: Luminary & Radiance)
+            if (tierConfig.countsTowardFounding50 && typeof global.spotsRemaining === 'number') {
+              global.spotsRemaining = Math.max(1, global.spotsRemaining - 1);
+            }
+
+            const firstName = String(customerName || 'A new member').split(' ')[0];
+            global.latestTicker = `${firstName} just claimed a ${tierConfig.name} Spot • Just now`;
+
+            // B. Provision or Update Member Entitlements in MongoDB (if connected)
+            let user = await findUserForStripeEvent({
               userId,
               stripeCustomerId: session.customer ? String(session.customer) : '',
-              email: session.customer_details?.email || session.customer_email || ''
+              stripeSubscriptionId: session.subscription ? String(session.subscription) : '',
+              email: customerEmail
             });
-            if (user) {
-              const resolvedTier = ['luminary', 'radiance'].includes(String(tier || user.pendingUpgradeTier || '').toLowerCase())
-                ? String(tier || user.pendingUpgradeTier).toLowerCase()
-                : 'luminary';
 
+            let prevTierInWebhook = user ? String(user.membershipTier || 'basic').toLowerCase().trim() : 'basic';
+
+            if (!user && customerEmail && typeof Member !== 'undefined' && Member && typeof Member.findOneAndUpdate === 'function') {
+              try {
+                user = await Member.findOneAndUpdate(
+                  { email: customerEmail },
+                  {
+                    $set: {
+                      email: customerEmail,
+                      name: customerName,
+                      membershipTier: tierConfig.id,
+                      tierId: tierConfig.id,
+                      tierName: tierConfig.name,
+                      monthlyRateCents: tierConfig.amountCents,
+                      stripeCustomerId: session.customer ? String(session.customer) : '',
+                      stripeSubscriptionId: session.subscription ? String(session.subscription) : '',
+                      stripeSessionId: session.id,
+                      foundingMember: tierConfig.countsTowardFounding50,
+                      isFoundingMember: tierConfig.countsTowardFounding50,
+                      entitlements: tierConfig.entitlements,
+                      status: 'active',
+                      updatedAt: new Date()
+                    }
+                  },
+                  { upsert: true, new: true, setDefaultsOnInsert: true }
+                );
+              } catch (dbUpsertErr) {
+                console.error('⚠️ [MongoDB Member Upsert Error]:', dbUpsertErr.message);
+              }
+            }
+
+            if (user) {
               let cardBrand = user.billingInfo?.cardBrand || '';
               let cardLast4 = user.billingInfo?.cardLast4 || '';
               let expMonth = user.billingInfo?.expMonth || '';
@@ -18938,7 +19252,9 @@ app.post(
                   });
                   const pmCard = subObj?.default_payment_method?.card;
                   if (pmCard) {
-                    cardBrand = pmCard.brand ? String(pmCard.brand).charAt(0).toUpperCase() + String(pmCard.brand).slice(1) : cardBrand;
+                    cardBrand = pmCard.brand
+                      ? String(pmCard.brand).charAt(0).toUpperCase() + String(pmCard.brand).slice(1)
+                      : cardBrand;
                     cardLast4 = pmCard.last4 ? String(pmCard.last4) : cardLast4;
                     expMonth = pmCard.exp_month ? String(pmCard.exp_month).padStart(2, '0') : expMonth;
                     expYear = pmCard.exp_year ? String(pmCard.exp_year) : expYear;
@@ -18948,14 +19264,28 @@ app.post(
                 }
               }
 
-              const prevTierInWebhook = String(user.membershipTier || 'basic').toLowerCase().trim();
               if (user.role !== 'admin' && user.membershipTier !== 'admin') {
-                user.membershipTier = resolvedTier;
+                user.membershipTier = tierConfig.id;
               }
+              user.tierId = tierConfig.id;
+              user.tierName = tierConfig.name;
+              user.monthlyRateCents = tierConfig.amountCents;
+              user.stripeCustomerId = session.customer ? String(session.customer) : (user.stripeCustomerId || '');
+              user.stripeSubscriptionId = session.subscription ? String(session.subscription) : (user.stripeSubscriptionId || '');
+              user.stripeSessionId = session.id;
+              user.foundingMember = tierConfig.countsTowardFounding50;
+              if (tierConfig.countsTowardFounding50) {
+                user.isFoundingMember = true;
+              }
+              user.entitlements = tierConfig.entitlements;
+              user.status = 'active';
+              user.updatedAt = new Date();
               user.pendingUpgradeTier = '';
               user.billingInfo = {
                 ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
-                stripeCustomerId: session.customer ? String(session.customer) : (user.billingInfo?.stripeCustomerId || ''),
+                stripeCustomerId: session.customer
+                  ? String(session.customer)
+                  : (user.billingInfo?.stripeCustomerId || ''),
                 ...(cardBrand ? { cardBrand } : {}),
                 ...(cardLast4 ? { cardLast4 } : {}),
                 ...(expMonth ? { expMonth } : {}),
@@ -18963,6 +19293,7 @@ app.post(
                 subscriptionStatus: 'active'
               };
               user.markModified('billingInfo');
+              user.markModified('entitlements');
               await user.save();
 
               // Apply any reserved Founding 50 promo code now that Stripe subscription payment is verified
@@ -18972,32 +19303,88 @@ app.post(
               }
 
               // Archive previous Blueprint if upgrading tiers so member gets a fresh Blueprint & AI Photo Scan
-              if (prevTierInWebhook !== resolvedTier || resolvedTier === 'radiance') {
-                await archiveMemberBlueprintForUpgrade(user._id, resolvedTier);
+              if (prevTierInWebhook !== tierConfig.id || tierConfig.id === 'radiance') {
+                await archiveMemberBlueprintForUpgrade(user._id, tierConfig.id).catch(() => {});
               }
-              webhookSummary = `Upgraded ${user.email} to ${resolvedTier} tier`;
-              console.log(`✨ Successfully upgraded user ${user.email} to ${resolvedTier} tier.`);
+            }
 
-              const welcomeHtml = `
-                <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; text-align: center; border: 1px solid #E8C5C8; padding: 40px; border-radius: 15px;">
-                  <h1 style="color: #B38B8F; font-style: italic;">Welcome to ${resolvedTier === 'radiance' ? 'The Radiance Elite' : 'The Luminary Circle'} ✧</h1>
-                  <p style="font-size: 1.2rem; line-height: 1.6;">Your membership payment is verified. You can now access your member dashboard and complete your personalized beauty blueprint.</p>
-                </div>
-              `;
-              const welcomeText = `Welcome to the ${resolvedTier} tier! Your membership is now active. \n\nWarmly,\nSusan's Beauty Consulting`;
-              await sendEmail(user.email, "Your Membership is Active ✧", welcomeHtml, welcomeText).catch(() => {});
+            webhookSummary = `Provisioned ${tierConfig.name} (${tierConfig.id}) for ${customerEmail || user?.email || session.id}`;
+
+            // C. Send Tier-Specific Welcome Email via Nodemailer / IONOS SMTP (if configured)
+            const emailRecipient = customerEmail || user?.email || '';
+            if (emailRecipient && typeof transporter !== 'undefined') {
+              try {
+                await transporter.sendMail({
+                  from: `"Susan's Beauty Consulting" <${process.env.SMTP_USER || getPrimaryAdminEmail()}>`,
+                  to: emailRecipient,
+                  subject: `Welcome to ${tierConfig.name} — Your Beauty Membership Is Active!`,
+                  html: `
+                    <div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; color: #1c1917; padding: 24px; border: 1px solid #e7e5e4; border-radius: 16px;">
+                      <h2 style="color: #e11d48; margin-bottom: 8px;">Welcome to ${tierConfig.name}, ${escapeHtml(customerName)}!</h2>
+                      <p style="font-size: 16px; line-height: 1.6;">
+                        Thank you for joining <strong>Susan's Beauty Consulting</strong>. Your <strong>${tierConfig.name}</strong> membership ($${(
+                    tierConfig.amountCents / 100
+                  ).toFixed(0)}/mo) is now active.
+                      </p>
+                      <h3 style="margin-top: 20px; font-size: 16px;">Your Active Member Benefits:</h3>
+                      <ul style="font-size: 15px; line-height: 1.8;">
+                        <li><strong>AI Skin Consultations:</strong> ${
+                          tierConfig.entitlements.aiScansPerMonth === -1
+                            ? 'Unlimited seasonal updates'
+                            : '1 per month'
+                        }</li>
+                        <li><strong>Boutique Store Discount:</strong> ${
+                          tierConfig.entitlements.storeDiscountPercent
+                        }% off all orders</li>
+                        <li><strong>Monthly Mystery Box:</strong> ${
+                          tierConfig.entitlements.mysteryBoxTier === 'none'
+                            ? 'Not included in Essential tier (upgrade anytime)'
+                            : tierConfig.entitlements.mysteryBoxTier === 'standard_85_value'
+                            ? 'Curated 3–4 Product Box ($85+ Retail Value)'
+                            : 'Deluxe 5–6 Full-Size Luxury Box ($200+ Retail Value)'
+                        }</li>
+                        <li><strong>1-on-1 Time with Susan:</strong> ${
+                          tierConfig.entitlements.consultationMinutesPerMonth > 0
+                            ? `${tierConfig.entitlements.consultationMinutesPerMonth} mins per consultation window`
+                            : 'Self-guided digital portal'
+                        }</li>
+                      </ul>
+                      <p style="font-size: 15px; line-height: 1.6; margin-top: 20px;">
+                        Warmly,<br/>
+                        <strong>Susan</strong><br/>
+                        Leading Regional Beauty Consultant (5x Winner)
+                      </p>
+                    </div>
+                  `
+                });
+              } catch (mailErr) {
+                console.error('⚠️ [Welcome Email Send Error]:', mailErr.message);
+              }
             }
           } catch (err) {
-            console.error(`⚠️ Failed to upgrade user ${userId} to ${tier}:`, err.message);
+            console.error(`⚠️ Failed to provision membership for ${userId || tierIdFromMeta}:`, err.message);
           }
         }
       } else if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
         const invoice = event.data.object;
+        if (invoice.subscription && typeof Member !== 'undefined' && Member && typeof Member.findOneAndUpdate === 'function') {
+          try {
+            await Member.findOneAndUpdate(
+              { stripeSubscriptionId: String(invoice.subscription) },
+              { $set: { status: 'active', lastRenewalAt: new Date(), 'billingInfo.subscriptionStatus': 'active' } }
+            );
+          } catch (renewalErr) {
+            console.error('⚠️ [Subscription Renewal Update Error]:', renewalErr.message);
+          }
+        }
         const user = await findUserForStripeEvent({
+          stripeSubscriptionId: invoice.subscription ? String(invoice.subscription) : '',
           stripeCustomerId: invoice.customer ? String(invoice.customer) : '',
           email: invoice.customer_email || ''
         });
         if (user) {
+          user.status = 'active';
+          user.lastRenewalAt = new Date();
           user.billingInfo = {
             ...(user.billingInfo && typeof user.billingInfo === 'object' ? user.billingInfo : {}),
             stripeCustomerId: invoice.customer ? String(invoice.customer) : (user.billingInfo?.stripeCustomerId || ''),
@@ -19030,8 +19417,8 @@ app.post(
         });
         if (user) {
           const subStatus = String(subscription.status || 'active').toLowerCase();
-          const metaTier = String(subscription.metadata?.tier || '').toLowerCase();
-          if (['active', 'trialing'].includes(subStatus) && ['luminary', 'radiance'].includes(metaTier)) {
+          const metaTier = String(subscription.metadata?.tierId || subscription.metadata?.tier || '').toLowerCase();
+          if (['active', 'trialing'].includes(subStatus) && ['essential', 'luminary', 'radiance'].includes(metaTier)) {
             if (user.role !== 'admin' && user.membershipTier !== 'admin') {
               user.membershipTier = metaTier;
             }
