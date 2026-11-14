@@ -1,6 +1,49 @@
 import React, { useState, useEffect } from 'react';
+import AboutSusan from './components/AboutSusan';
+import PricingChart from './components/PricingChart';
 import './App.css';
 import logo from "./susans-logo.png";
+
+const FAQ_ITEMS = [
+  {
+    question: 'What actually comes inside the Monthly Mystery Box?',
+    answer:
+      'Every box is hand-curated by Susan around seasonal skin and hair needs. The Luminary VIP box ($49/mo) includes 3 to 4 boutique products worth $85+ in retail value, while the Radiance All-Access box ($119/mo) features 5 to 6 full-size luxury treatments and tools worth $200+.',
+  },
+  {
+    question: 'Can I really pause, upgrade, or cancel my membership anytime?',
+    answer:
+      'Yes. There are zero long-term contracts or cancellation penalties. You can switch between Essential, Luminary, and Radiance or pause your monthly renewal with one click from your member confirmation link.',
+  },
+  {
+    question: 'How does the AI Skin Analysis work with Susan’s consultations?',
+    answer:
+      'Our AI diagnostic analyzes your skin concern inputs and seasonal stressors in seconds to generate an immediate ingredient roadmap. For Luminary and Radiance members, Susan personally reviews your profile during your 1-on-1 check-ins to fine-tune your regimen and Mystery Box selections.',
+  },
+  {
+    question: 'What does "Founding 50 Member" mean?',
+    answer:
+      'The first 50 women who join at the Luminary or Radiance level lock in their monthly rate for life, receive priority salon & virtual booking windows, and get a complimentary Founding Member Welcome Gift added to their first shipment.',
+  },
+];
+
+const SparkleBadgeIcon = ({ className = 'w-4 h-4 text-rose-600' }) => (
+  <svg
+    className={className}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+    />
+  </svg>
+);
 
 // Reads Google OAuth 2.0 Client ID from .env (REACT_APP_GOOGLE_CLIENT_ID) or dynamically from GET /api/auth/providers
 const DEFAULT_GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
@@ -13732,9 +13775,10 @@ export function LilyCustomerConcierge({
   onOpenTrackingModal,
   onNavigateTab,
   externalOpenRequest,
-  onClearExternalOpenRequest
+  onClearExternalOpenRequest,
+  embedded = false
 }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(Boolean(embedded));
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -13785,10 +13829,10 @@ export function LilyCustomerConcierge({
   }, [externalOpenRequest]);
 
   useEffect(() => {
-    if (isOpen && chatEndRef.current) {
+    if ((isOpen || embedded) && chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, isOpen, loading]);
+  }, [messages, isOpen, embedded, loading]);
 
   const handleSendPrompt = async (promptText) => {
     const textToSend = String(promptText !== undefined ? promptText : input).trim();
@@ -13881,72 +13925,93 @@ export function LilyCustomerConcierge({
 
   return (
     <>
-      {/* Floating Launcher Button */}
-      <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9990 }}>
-        <button
-          type="button"
-          onClick={() => {
-            setIsOpen(!isOpen);
-            setUnreadReplies(0);
-          }}
-          style={{
-            background: 'linear-gradient(135deg, #2c1e18 0%, #4a332a 55%, #B38B8F 100%)',
-            color: '#FFFFFF',
-            border: '2px solid #D4AF37',
-            borderRadius: '34px',
-            padding: '13px 22px',
-            fontFamily: "'Cormorant Garamond', serif",
-            fontSize: '1.2rem',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            boxShadow: '0 10px 30px rgba(44, 30, 24, 0.35)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px'
-          }}
-        >
-          <span style={{ fontSize: '1.35rem' }}>🌸</span>
-          <span>{isOpen ? 'Close Lily Concierge' : 'Ask Lily AI — Beauty, Tracking & Help Desk'}</span>
-          {unreadReplies > 0 && (
-            <span
-              style={{
-                backgroundColor: '#D4AF37',
-                color: '#2C1E18',
-                borderRadius: '50%',
-                padding: '2px 8px',
-                fontSize: '0.8rem',
-                fontFamily: 'sans-serif',
-                fontWeight: 'bold'
-              }}
-            >
-              {unreadReplies}
-            </span>
-          )}
-        </button>
-      </div>
+      {/* Floating Launcher Button — Rendered ONLY when not embedded (Landing Page only) */}
+      {!embedded && (
+        <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 990 }}>
+          <button
+            type="button"
+            onClick={() => {
+              setIsOpen(!isOpen);
+              setUnreadReplies(0);
+            }}
+            style={{
+              background: 'linear-gradient(135deg, #2c1e18 0%, #4a332a 55%, #B38B8F 100%)',
+              color: '#FFFFFF',
+              border: '2px solid #D4AF37',
+              borderRadius: '34px',
+              padding: '13px 22px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1.2rem',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              boxShadow: '0 10px 30px rgba(44, 30, 24, 0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}
+          >
+            <span style={{ fontSize: '1.35rem' }}>🌸</span>
+            <span>{isOpen ? 'Close Lily Concierge' : 'Ask Lily AI — Beauty, Tracking & Help Desk'}</span>
+            {unreadReplies > 0 && (
+              <span
+                style={{
+                  backgroundColor: '#D4AF37',
+                  color: '#2C1E18',
+                  borderRadius: '50%',
+                  padding: '2px 8px',
+                  fontSize: '0.8rem',
+                  fontFamily: 'sans-serif',
+                  fontWeight: 'bold'
+                }}
+              >
+                {unreadReplies}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
 
-      {/* Lily Concierge Chat Window */}
-      {isOpen && (
+      {/* Lily Concierge Chat Window (Floating Popup on Landing Page OR Full-Width Tab inside Member Sanctuary) */}
+      {(embedded || isOpen) && (
         <div
-          style={{
-            position: 'fixed',
-            bottom: '86px',
-            right: '24px',
-            width: '430px',
-            maxWidth: 'calc(100vw - 32px)',
-            height: '640px',
-            maxHeight: 'calc(100vh - 120px)',
-            backgroundColor: '#FFFDFB',
-            borderRadius: '24px',
-            border: '2px solid #D4AF37',
-            boxShadow: '0 20px 55px rgba(44, 30, 24, 0.32)',
-            zIndex: 9991,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            textAlign: 'left',
-            fontFamily: 'sans-serif'
-          }}
+          style={
+            embedded
+              ? {
+                  width: '100%',
+                  minHeight: '640px',
+                  height: 'calc(100vh - 250px)',
+                  maxHeight: '820px',
+                  backgroundColor: '#FFFDFB',
+                  borderRadius: '24px',
+                  border: '2px solid #D4AF37',
+                  boxShadow: '0 12px 35px rgba(44, 30, 24, 0.14)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                  textAlign: 'left',
+                  fontFamily: 'sans-serif',
+                  boxSizing: 'border-box'
+                }
+              : {
+                  position: 'fixed',
+                  bottom: '86px',
+                  right: '24px',
+                  width: '430px',
+                  maxWidth: 'calc(100vw - 32px)',
+                  height: '640px',
+                  maxHeight: 'calc(100vh - 120px)',
+                  backgroundColor: '#FFFDFB',
+                  borderRadius: '24px',
+                  border: '2px solid #D4AF37',
+                  boxShadow: '0 20px 55px rgba(44, 30, 24, 0.32)',
+                  zIndex: 995,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                  textAlign: 'left',
+                  fontFamily: 'sans-serif'
+                }
+          }
         >
           {/* Header */}
           <div
@@ -13988,19 +14053,21 @@ export function LilyCustomerConcierge({
               >
                 Reset
               </button>
-              <button
-                type="button"
-                onClick={() => setIsOpen(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#FFFFFF',
-                  fontSize: '1.25rem',
-                  cursor: 'pointer'
-                }}
-              >
-                ✕
-              </button>
+              {!embedded && (
+                <button
+                  type="button"
+                  onClick={() => setIsOpen(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#FFFFFF',
+                    fontSize: '1.25rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✕
+                </button>
+              )}
             </div>
           </div>
 
@@ -14339,6 +14406,121 @@ export function LilyCustomerConcierge({
 }
 
 function App() {
+  const [spotsRemaining, setSpotsRemaining] = useState(14);
+  const [recentActivity, setRecentActivity] = useState(
+    'Sarah M. just claimed a Luminary VIP Founding Spot • 4 mins ago'
+  );
+  const [checkoutBanner, setCheckoutBanner] = useState(null);
+
+  // Interactive AI Skin Check State
+  const [skinType, setSkinType] = useState('dry-winter');
+  const [primaryGoal, setPrimaryGoal] = useState('hydration-glow');
+  const [aiResult, setAiResult] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  // Fetch live Founding 50 spot count & social proof ticker from server.js
+  useEffect(() => {
+    let isMounted = true;
+    const fetchStatus = async () => {
+      try {
+        let res = await fetch('/api/spots-remaining').catch(() => null);
+        if (!res || !res.ok) {
+          res = await fetch(`${API_BASE_URL}/api/spots-remaining`);
+        }
+        if (!res || !res.ok) return;
+        const data = await res.json();
+        if (isMounted) {
+          if (typeof data.spotsRemaining === 'number') {
+            setSpotsRemaining(data.spotsRemaining);
+          }
+          if (data.latestTicker) {
+            setRecentActivity(data.latestTicker);
+          }
+        }
+      } catch (err) {
+        // Silent fallback to default state when offline or during initial deploy
+      }
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 30000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const scrollToSection = (id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const handleRunSkinCheck = async (e) => {
+    e.preventDefault();
+    setAiLoading(true);
+    try {
+      let res = await fetch('/api/skin-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skinType, primaryGoal }),
+      }).catch(() => null);
+      if (!res || !res.ok) {
+        res = await fetch(`${API_BASE_URL}/api/skin-analysis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skinType, primaryGoal }),
+        });
+      }
+      if (res && res.ok) {
+        const data = await res.json();
+        setAiResult(data);
+        setAiLoading(false);
+        return;
+      }
+    } catch (err) {
+      // Fallback to instant client-side consultation synthesis if API is warming up
+    }
+
+    // Instant deterministic recommendation engine fallback
+    const recommendations = {
+      'dry-winter': {
+        summary:
+          'Your moisture barrier needs lipid-rich ceramides and gentle hyaluronic layering to stop cold-weather transepidermal water loss.',
+        recommendedTier: 'Luminary VIP ($49/mo)',
+        reason:
+          'Includes unlimited seasonal AI routine scans plus Susan’s monthly barrier-repair Mystery Box ($85+ value).',
+      },
+      'fine-lines': {
+        summary:
+          'Targeting collagen renewal requires encapsulated peptides at night paired with antioxidant daytime protection—without irritating retinoid purges.',
+        recommendedTier: 'Radiance All-Access ($119/mo)',
+        reason:
+          'Gives you monthly 1-on-1 consultations with Susan plus full-size clinical treatments ($200+ value) tailored to mature skin.',
+      },
+      'sensitive-redness': {
+        summary:
+          'Calming reactive skin starts by stripping back harsh actives and introducing soothing botanicals, niacinamide, and microbiome support.',
+        recommendedTier: 'Luminary VIP ($49/mo)',
+        reason:
+          'Susan hand-screens every Mystery Box item for sensitivity and checks in quarterly to adjust your routine.',
+      },
+      'everyday-maintenance': {
+        summary:
+          'Consistent hydration, daily SPF protection, and targeted seasonal tweaks will keep your complexion balanced year-round.',
+        recommendedTier: 'Essential Glow ($19/mo)',
+        reason:
+          'Perfect for self-guided beauty lovers who want monthly AI skin scans and 10% off boutique essentials.',
+      },
+    };
+
+    setTimeout(() => {
+      setAiResult(recommendations[skinType] || recommendations['dry-winter']);
+      setAiLoading(false);
+    }, 450);
+  };
+
   const [step, setStep] = useState(() => {
     try {
       const savedStep = localStorage.getItem('currentStep');
@@ -14410,7 +14592,7 @@ function App() {
     userDetails?.role === 'admin' ||
     Boolean(userDetails?.isFoundingMember) ||
     Boolean(userDetails?.aiBeautyRitualConsultation) ||
-    ['luminary', 'radiance', 'admin'].includes(effectiveMemberTier);
+    ['essential', 'luminary', 'radiance', 'admin'].includes(effectiveMemberTier);
   const isFreeBasicMember = !isPaidMemberOrAdmin;
   const [applyStoreCreditInBag, setApplyStoreCreditInBag] = useState(true);
   const [lilyOpenRequest, setLilyOpenRequest] = useState({ open: false, initialPrompt: '' });
@@ -15395,10 +15577,17 @@ function App() {
       return;
     }
     
-    if (query.get('success')) {
-      const tierStr = String(query.get('tier') || 'luminary').toLowerCase().trim();
+    if (query.get('success') === 'true' || query.get('success')) {
+      const purchasedTier = query.get('tier') || 'Membership';
+      const tierStr = String(purchasedTier || 'luminary').toLowerCase().trim();
       const sessionId = String(query.get('session_id') || '').trim();
-      window.history.replaceState(null, '', window.location.pathname);
+      setCheckoutBanner({
+        type: 'success',
+        title: `Welcome to Susan's Beauty Consulting (${purchasedTier.toUpperCase()})!`,
+        message:
+          'Your membership is active. Check your email inbox for your welcome guide, booking link, and AI skin profile access.',
+      });
+      window.history.replaceState({}, document.title, window.location.pathname);
 
       const token = localStorage.getItem('token');
       if (token) {
@@ -15421,19 +15610,13 @@ function App() {
               if (confirmData.blueprintResetForUpgrade || String(confirmData.user.membershipTier || tierStr).toLowerCase() === 'radiance') {
                 await handleResetBlueprintForUpgrade(false);
               }
-            } else {
-              alert(
-                confirmData.error ||
-                  'Your Stripe Checkout session could not be verified. Please complete checkout to activate your paid tier.'
-              );
             }
           } catch (e) {
             console.error('Stripe confirm-upgrade verification error:', e);
           }
-          setStep(5);
         })();
       } else {
-        setStep(4);
+        setStep(0);
       }
     }
 
@@ -15446,15 +15629,15 @@ function App() {
       }
     }
 
-    if (query.get('canceled')) {
-      window.history.replaceState(null, '', window.location.pathname);
-      const token = localStorage.getItem('token');
-      if (token) {
-        setStep(5);
-        setActiveMemberTab('Boutique');
-      } else {
-        setStep(0);
-      }
+    if (query.get('canceled') === 'true' || query.get('canceled')) {
+      setCheckoutBanner({
+        type: 'info',
+        title: 'Checkout Paused — Your Founding 50 Spot Is Still Held',
+        message:
+          'No charge was made. Whenever you are ready, you can compare tiers below and complete your enrollment.',
+      });
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setStep(0);
     }
     
     if (query.get('cart_success')) {
@@ -15535,10 +15718,13 @@ function App() {
     if (!isSignedIn) return { rate: 0, label: '' };
     const activeTier = String(userDetails.membershipTier || selectedTier || '').toLowerCase().trim();
     if (activeTier === 'radiance') {
-      return { rate: 0.25, label: '25% Radiance Elite Member Discount' };
+      return { rate: 0.25, label: '25% Radiance All-Access Member Discount' };
     }
     if (activeTier === 'luminary') {
-      return { rate: 0.10, label: '10% Luminary Circle Member Discount' };
+      return { rate: 0.15, label: '15% Luminary VIP Member Discount' };
+    }
+    if (activeTier === 'essential') {
+      return { rate: 0.10, label: '10% Essential Glow Member Discount' };
     }
     return { rate: 0, label: '' };
   };
@@ -16107,8 +16293,9 @@ function App() {
         authToken={localStorage.getItem('token')}
       />
 
-      {step !== 6 && (
+      {step === 0 && !isCartOpen && (
         <LilyCustomerConcierge
+          embedded={false}
           authToken={localStorage.getItem('token')}
           currentUser={userDetails}
           onAddToCart={(prod) => {
@@ -16299,65 +16486,368 @@ function App() {
         </div>
       )}
 
-      <EmpowermentContainer>
-        
-        {step === 0 && (
-          <div style={{ animation: 'fadeIn 1s ease' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '25px' }}>
-              <img src={logo} alt="Susan's Beauty Consulting Logo" style={{ width: '160px', height: '160px', objectFit: 'contain' }} />
-            </div>
-            <h1 style={{ fontSize: '4.8rem', margin: '0 0 20px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>Susan's Beauty Consulting</h1>
-            <p style={{ fontSize: '1.5rem', lineHeight: '1.9', fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', color: '#736A6A', margin: '15px auto', maxWidth: '680px' }}>Gracefully unveil the most luminous version of yourself. Through bespoke skincare rituals and refined makeup artistry, we illuminate your natural essence.</p>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '30px auto' }}>
-              <div style={{ width: '80px', height: '1px', backgroundColor: '#E8C5C8' }}></div>
-              <span style={{ color: '#E8C5C8', margin: '0 15px', fontSize: '1.2rem' }}>✧</span>
-              <div style={{ width: '80px', height: '1px', backgroundColor: '#E8C5C8' }}></div>
-            </div>
-            
-            <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '22px', alignItems: 'center' }}>
-              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                <EmpowermentButton text="Free Membership" onClick={() => { setSelectedTier('basic'); setStep(7); }} />
-                <EmpowermentButton text="Join Paid Membership" onClick={() => setStep(2)} />
+      {step === 0 && (
+        <div className="min-h-screen w-full flex flex-col bg-stone-50 text-stone-900 font-sans">
+          {/* Top Live Founding 50 Social Proof Bar */}
+          <div className="bg-stone-900 text-stone-100 text-xs sm:text-sm py-2.5 px-4 text-center border-b border-stone-800">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-1.5">
+              <div className="flex items-center gap-2 font-medium text-amber-200">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>{recentActivity}</span>
               </div>
-
-              {/* Landing Page Instant Social Membership Sign-Up Card */}
-              <div style={{ backgroundColor: 'rgba(255, 255, 255, 0.86)', border: '1.5px solid #E8C5C8', borderRadius: '24px', padding: '22px 26px', maxWidth: '540px', width: '100%', boxShadow: '0 10px 30px rgba(232, 197, 200, 0.22)', boxSizing: 'border-box' }}>
-                <SocialAuthButtonGrid
-                  mode="signup"
-                  titleText="✨ Create Your Membership Instantly with Social Sign-Up"
-                  showTierSelector={true}
-                  selectedTier={selectedTier || 'basic'}
-                  isSubscribing={['luminary', 'radiance'].includes(String(selectedTier || '').toLowerCase())}
-                  onTierChange={(nextTier, nextSub) => {
-                    setSelectedTier(nextTier);
-                    setIsSubscribing(nextSub);
-                  }}
-                  onSocialAuthSuccess={(data) => {
-                    const chosenTier = String(data.membershipTier || selectedTier || 'basic').toLowerCase();
-                    const isPaid = ['luminary', 'radiance'].includes(chosenTier);
-                    handleSocialAuthSuccess(data, {
-                      tierOverride: chosenTier,
-                      subscribingOverride: isPaid,
-                      goToStep1: !isPaid
-                    });
-                  }}
-                />
+              <div className="text-stone-300">
+                Founding 50 VIP Enrollment:{' '}
+                <strong className="text-white underline decoration-rose-500">
+                  {spotsRemaining} Spots Remaining
+                </strong>
               </div>
-
-              <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', transition: 'color 0.3s ease', marginTop: '4px' }} onClick={() => setStep(4)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>
-                Already a member? Sign in to your dashboard
-              </p>
-
-              <Founding50AndGeoAuthoritySection
-                onClaimFoundingSpot={() => {
-                  trackSiteEvent('PAGE_VIEW', { page: 'Paid Membership Tiers' });
-                  setStep(2);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-              />
             </div>
           </div>
-        )}
+
+          {/* Sticky Navigation Header */}
+          <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-stone-200">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-600 text-white font-serif font-bold text-lg flex items-center justify-center shadow-sm">
+                  S
+                </div>
+                <div>
+                  <span className="font-serif font-bold text-lg tracking-tight text-stone-900 block leading-none">
+                    Susan&apos;s Beauty
+                  </span>
+                  <span className="text-[11px] text-stone-500 uppercase tracking-widest">
+                    Consulting &amp; Skincare
+                  </span>
+                </div>
+              </div>
+
+              <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-stone-600">
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('about-susan')}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  Meet Susan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('ai-consultation')}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  Free AI Skin Check
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('membership-tiers')}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  Compare Tiers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('faq')}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  FAQ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  Boutique
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
+                  className="hover:text-rose-600 transition-colors"
+                >
+                  {localStorage.getItem('token') ? 'My Sanctuary' : 'Member Sign In'}
+                </button>
+              </nav>
+
+              <button
+                type="button"
+                onClick={() => scrollToSection('membership-tiers')}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-semibold shadow-sm transition-colors"
+              >
+                Claim Founding Spot
+              </button>
+            </div>
+          </header>
+
+          {/* Stripe Checkout Return Notification Banner */}
+          {checkoutBanner && (
+            <div
+              className={`px-4 py-4 border-b ${
+                checkoutBanner.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-amber-50 border-amber-200 text-amber-900'
+              }`}
+            >
+              <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div>
+                  <h2 className="font-bold text-base">{checkoutBanner.title}</h2>
+                  <p className="text-sm mt-0.5">{checkoutBanner.message}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {checkoutBanner.type === 'success' && (
+                    <button
+                      type="button"
+                      onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
+                      className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 transition-colors"
+                    >
+                      Open Member Sanctuary →
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCheckoutBanner(null)}
+                    className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-200"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Hero Section */}
+          <section className="relative bg-gradient-to-b from-rose-50/70 via-white to-white pt-12 pb-16 sm:pt-20 sm:pb-24 px-4 sm:px-6 lg:px-8 border-b border-stone-100">
+            <div className="max-w-4xl mx-auto text-center">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-rose-100/80 border border-rose-200 text-rose-900 text-xs font-semibold tracking-wide uppercase mb-6">
+                <SparkleBadgeIcon />
+                <span>5x Regional Leading Beauty Consultant • Founding 50 Now Open</span>
+              </div>
+
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-serif font-bold text-stone-900 tracking-tight leading-tight">
+                Stop Guessing With Your Skin.{' '}
+                <span className="text-rose-600">
+                  Get a Personal Beauty Consultant in Your Corner.
+                </span>
+              </h1>
+
+              <p className="mt-6 text-lg sm:text-xl text-stone-600 max-w-2xl mx-auto leading-relaxed">
+                Combine instant AI skin diagnostics with 1-on-1 guidance and hand-curated
+                monthly beauty boxes from Susan—named her region&apos;s Leading Beauty
+                Consultant 5 years in a row.
+              </p>
+
+              <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('membership-tiers')}
+                  className="w-full sm:w-auto px-8 py-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-base shadow-lg shadow-rose-600/25 transition-all"
+                >
+                  Explore Membership Tiers (From $19/mo)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToSection('about-susan')}
+                  className="w-full sm:w-auto px-8 py-4 rounded-xl bg-white hover:bg-stone-50 text-stone-800 font-semibold text-base border border-stone-300 transition-all"
+                >
+                  Meet Susan &amp; Read Her Story
+                </button>
+              </div>
+
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs sm:text-sm text-stone-500">
+                <span>✓ Lock in Founding 50 Rates for Life</span>
+                <span>✓ $85–$200+ Curated Mystery Boxes</span>
+                <span>✓ Pause or Cancel in 1 Click</span>
+              </div>
+            </div>
+          </section>
+
+          {/* Phase 2 Component: About Susan (Authority & Empathy Section) */}
+          <AboutSusan
+            photoUrl="/susan-portrait.jpg"
+            onExploreTiers={() => scrollToSection('membership-tiers')}
+            onStartConsultation={() => scrollToSection('ai-consultation')}
+          />
+
+          {/* Interactive Free AI Skin Check Section */}
+          <section
+            id="ai-consultation"
+            className="py-16 sm:py-20 px-4 sm:px-6 lg:px-8 bg-stone-900 text-white"
+          >
+            <div className="max-w-4xl mx-auto">
+              <div className="text-center mb-10">
+                <span className="text-xs font-semibold uppercase tracking-widest text-rose-400">
+                  Interactive Preview • Takes 15 Seconds
+                </span>
+                <h2 className="mt-2 text-3xl sm:text-4xl font-serif font-bold">
+                  Not Sure Which Tier Fits Your Skin?
+                </h2>
+                <p className="mt-3 text-stone-300 max-w-xl mx-auto text-sm sm:text-base">
+                  Run a quick preview of our AI Skin Diagnostic below to see your priority
+                  ingredient focus and which of Susan&apos;s membership tiers matches your
+                  goals.
+                </p>
+              </div>
+
+              <form
+                onSubmit={handleRunSkinCheck}
+                className="bg-stone-800/90 border border-stone-700 rounded-2xl p-6 sm:p-8 shadow-xl"
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div>
+                    <label
+                      htmlFor="skinType"
+                      className="block text-xs font-semibold uppercase tracking-wider text-stone-300 mb-2"
+                    >
+                      1. Primary Skin Feel Right Now
+                    </label>
+                    <select
+                      id="skinType"
+                      value={skinType}
+                      onChange={(e) => setSkinType(e.target.value)}
+                      className="w-full rounded-xl bg-stone-900 border border-stone-700 px-4 py-3 text-sm text-white focus:outline-none focus:border-rose-500"
+                    >
+                      <option value="dry-winter">Dry, Tight, or Winter-Depleted</option>
+                      <option value="fine-lines">Fine Lines, Firmness &amp; Healthy Aging</option>
+                      <option value="sensitive-redness">Sensitive, Redness-Prone, or Reactive</option>
+                      <option value="everyday-maintenance">Balanced / Everyday Glow Maintenance</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="primaryGoal"
+                      className="block text-xs font-semibold uppercase tracking-wider text-stone-300 mb-2"
+                    >
+                      2. How Much Support Do You Want?
+                    </label>
+                    <select
+                      id="primaryGoal"
+                      value={primaryGoal}
+                      onChange={(e) => setPrimaryGoal(e.target.value)}
+                      className="w-full rounded-xl bg-stone-900 border border-stone-700 px-4 py-3 text-sm text-white focus:outline-none focus:border-rose-500"
+                    >
+                      <option value="hydration-glow">Curated Monthly Products + Seasonal Check-ins</option>
+                      <option value="hands-on-vip">1-on-1 Coaching with Susan + Full-Size Luxury Box</option>
+                      <option value="digital-only">Digital Routine Guidance &amp; Store Discounts Only</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex justify-center">
+                  <button
+                    type="submit"
+                    disabled={aiLoading}
+                    className="px-8 py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-sm transition-colors disabled:opacity-60"
+                  >
+                    {aiLoading ? 'Analyzing Your Skin Profile...' : 'Get My Instant Recommendation'}
+                  </button>
+                </div>
+
+                {aiResult && (
+                  <div className="mt-6 pt-6 border-t border-stone-700 bg-stone-900/70 rounded-xl p-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                          Recommended Match: {aiResult.recommendedTier}
+                        </span>
+                        <p className="mt-1.5 text-sm text-stone-200 leading-relaxed">
+                          {aiResult.summary}
+                        </p>
+                        <p className="mt-2 text-xs text-stone-400">{aiResult.reason}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => scrollToSection('membership-tiers')}
+                        className="shrink-0 px-5 py-2.5 rounded-xl bg-white text-stone-900 hover:bg-stone-100 text-xs font-bold uppercase tracking-wider transition-colors"
+                      >
+                        Compare Below →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </form>
+            </div>
+          </section>
+
+          {/* Phase 1 Component: 3-Tier Pricing & Comparison Matrix */}
+          <div id="membership-tiers">
+            <PricingChart spotsRemaining={spotsRemaining} />
+          </div>
+
+          {/* Transparent FAQ Section */}
+          <section
+            id="faq"
+            className="py-16 sm:py-20 px-4 sm:px-6 lg:px-8 bg-white border-t border-stone-200"
+          >
+            <div className="max-w-4xl mx-auto">
+              <div className="text-center mb-12">
+                <h2 className="text-3xl font-serif font-bold text-stone-900">
+                  Frequently Asked Questions
+                </h2>
+                <p className="mt-2 text-stone-600 text-sm sm:text-base">
+                  Everything you need to know before claiming your Founding 50 spot.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                {FAQ_ITEMS.map((item) => (
+                  <div
+                    key={item.question}
+                    className="rounded-2xl border border-stone-200 bg-stone-50/60 p-6"
+                  >
+                    <h3 className="text-base font-bold text-stone-900">{item.question}</h3>
+                    <p className="mt-2 text-sm text-stone-600 leading-relaxed">
+                      {item.answer}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Quick Portal Links for Returning Members, Boutique Shoppers & Free Sign-Up */}
+              <div className="mt-12 pt-8 border-t border-stone-200 flex flex-wrap items-center justify-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
+                >
+                  🛍️ Browse The Boutique
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedTier('basic');
+                    setStep(7);
+                  }}
+                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
+                >
+                  ✨ Free Basic Account Sign-Up
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
+                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
+                >
+                  🔑 {localStorage.getItem('token') ? 'Return to Member Sanctuary' : 'Already a Member? Sign In'}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Footer */}
+          <footer className="bg-stone-900 text-stone-400 py-10 px-4 text-center text-xs border-t border-stone-800 mt-auto">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+              <p>
+                &copy; {new Date().getFullYear()} Susan&apos;s Beauty Consulting. All rights
+                reserved.
+              </p>
+              <p className="text-stone-500">
+                Leading Regional Beauty Consultant (5 Consecutive Years) • Secure Checkout
+                Powered by Stripe
+              </p>
+            </div>
+          </footer>
+        </div>
+      )}
+
+      {step !== 0 && (
+      <EmpowermentContainer>
 
         {step === 1 && (
           <div style={{ animation: 'fadeIn 1s ease', textAlign: 'left' }}>
@@ -16634,7 +17124,7 @@ function App() {
               </div>
 
               <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', padding: '0 20px' }}>
-                {['Blueprint', 'Boutique', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
+                {['Blueprint', 'Boutique', 'Ask Lily', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
                   const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
                   return (
                     <button
@@ -16658,6 +17148,7 @@ function App() {
                       <span>
                         {tab === 'Blueprint' && '📝 '}
                         {tab === 'Boutique' && '🛍️ '}
+                        {tab === 'Ask Lily' && '🌸 '}
                         {tab === 'Inbox' && '💌 '}
                         {tab === 'Consultations' && '🎥 '}
                         {tab === 'Order History' && '📦 '}
@@ -16937,12 +17428,13 @@ function App() {
                             )}
                             <button
                               type="button"
-                              onClick={() =>
+                              onClick={() => {
+                                setActiveMemberTab('Ask Lily');
                                 setLilyOpenRequest({
                                   open: true,
                                   initialPrompt: 'Please interpret my Beauty Blueprint and recommend matching products for my routine.'
-                                })
-                              }
+                                });
+                              }}
                               style={{ backgroundColor: '#2C1E18', border: '1px solid #D4AF37', color: '#FFFFFF', padding: '6px 15px', borderRadius: '18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' }}
                             >
                               🌸 Ask Lily to Explain My Blueprint →
@@ -17507,7 +17999,84 @@ function App() {
                 </div>
               )}
 
-              {/* 2. INBOX TAB (DUAL-CHANNEL ORDER/VIP UPDATES + SUSAN'S CURATIONS) */}
+              {/* 2. ASK LILY AI CONCIERGE TAB (INLINE SANCTUARY WORKSPACE — NO FLOATING BUTTON OVERLAY) */}
+              {activeMemberTab === 'Ask Lily' && (
+                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                  <div
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #E8C5C8',
+                      borderRadius: '18px',
+                      padding: '18px 24px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '12px',
+                      boxShadow: '0 4px 15px rgba(232, 197, 200, 0.15)'
+                    }}
+                  >
+                    <div>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          backgroundColor: '#FFF0F2',
+                          color: '#B38B8F',
+                          border: '1px solid #E8C5C8',
+                          borderRadius: '14px',
+                          padding: '3px 12px',
+                          fontSize: '0.75rem',
+                          fontWeight: 'bold',
+                          fontFamily: 'sans-serif',
+                          marginBottom: '6px'
+                        }}
+                      >
+                        🌸 SANCTUARY AI CONCIERGE &amp; LIVE HELP DESK
+                      </span>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: 0 }}>
+                        Ask Lily — Personalized Beauty, Order Tracking &amp; Billing Assistant
+                      </h2>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveMemberTab('Boutique')}
+                      style={{
+                        backgroundColor: '#F2D4D7',
+                        border: '1px solid #B38B8F',
+                        color: '#5C5454',
+                        padding: '9px 18px',
+                        borderRadius: '20px',
+                        fontFamily: "'Cormorant Garamond', serif",
+                        fontSize: '1.05rem',
+                        fontWeight: 'bold',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      🛍️ Go to Boutique →
+                    </button>
+                  </div>
+
+                  <LilyCustomerConcierge
+                    embedded={true}
+                    authToken={localStorage.getItem('token')}
+                    currentUser={userDetails}
+                    onAddToCart={(prod) => {
+                      handleAddToCart(prod);
+                      setIsCartOpen(true);
+                    }}
+                    onSelectProduct={(prod) => setSelectedProduct(prod)}
+                    onOpenTrackingModal={openLiveTrackingModal}
+                    onNavigateTab={(tabName) => {
+                      setStep(5);
+                      setActiveMemberTab(tabName);
+                    }}
+                    externalOpenRequest={lilyOpenRequest}
+                    onClearExternalOpenRequest={() => setLilyOpenRequest({ open: false, initialPrompt: '' })}
+                  />
+                </div>
+              )}
+
+              {/* 2B. INBOX TAB (SUSAN'S DIRECT RECOMMENDATIONS & MESSAGES) */}
               {activeMemberTab === 'Inbox' && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
                   <CustomerOnSiteInbox
@@ -19373,6 +19942,7 @@ function App() {
         )}
 
       </EmpowermentContainer>
+      )}
     </div>
   );
 }
