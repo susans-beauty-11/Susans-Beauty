@@ -3,423 +3,410 @@ import React, { useState } from 'react';
 const TIERS = [
   {
     id: 'essential',
-    name: 'Essential Glow',
-    priceId: 'price_essential_tier', // Replace with live Stripe Price ID or map on backend
+    name: 'Essential Sanctuary',
+    tagline: 'Daily Barrier Maintenance & Member Pricing',
     price: 19,
-    tagline: 'Digital skin diagnostics & member store access for self-guided routines.',
-    badge: null,
-    highlighted: false,
-    ctaText: 'Start Essential',
+    period: '/month',
+    badge: 'ESSENTIAL TIER',
+    highlight: false,
+    creditMatch: '100% Store Credit Match ($19/mo added to your Vault)',
+    ctaLabel: 'Start Essential ($19/mo) ✧',
     features: [
-      { text: 'Monthly AI Skin Analysis & Routine Update', included: true },
-      { text: '10% Off All Boutique Skincare Products', included: true },
-      { text: 'Seasonal Skincare Guide & Ingredient Tracker', included: true },
-      { text: 'Standard Salon & Virtual Booking Access', included: true },
-      { text: 'Monthly Curated Mystery Box', included: false },
-      { text: 'Priority VIP Booking Line with Susan', included: false },
-      { text: '1-on-1 Live Video Consultation with Susan', included: false },
-    ],
+      'Full 10-Step Beauty Blueprint Skin Diagnostic Quiz',
+      '$19 Monthly Boutique Store Credit (rolls over)',
+      'Member-Only 20% Savings on Curated Skincare',
+      '24/7 Access to Ask Lily AI Skincare Concierge',
+      'Seasonal Winter & Summer Barrier Transition Guides'
+    ]
   },
   {
     id: 'luminary',
-    name: 'Luminary VIP',
-    priceId: 'price_luminary_tier', // Replace with live Stripe Price ID
+    name: 'The Luminary Circle VIP',
+    tagline: 'Curated 3-Piece Monthly Ritual + Founding Perks',
     price: 49,
-    tagline: 'Our signature Founding Member tier with AI diagnostics and a monthly product box.',
-    badge: 'Most Popular • Founding 50',
-    highlighted: true,
-    ctaText: 'Claim Luminary Spot',
+    period: '/month',
+    badge: 'MOST POPULAR • FOUNDING 50',
+    highlight: true,
+    creditMatch: '100% Store Credit Match ($49/mo added to your Vault)',
+    ctaLabel: 'Claim Luminary VIP Spot ($49/mo) ✧',
     features: [
-      { text: 'Unlimited AI Skin Analysis & Custom Routine', included: true },
-      { text: '15% Off All Boutique Skincare Products', included: true },
-      { text: 'Monthly Mystery Box ($85+ Retail Value)', included: true },
-      { text: 'Priority Booking for Salon & Consultations', included: true },
-      { text: 'Free Shipping on All Store Orders', included: true },
-      { text: 'Quarterly 15-Min Check-In with Susan', included: true },
-      { text: 'Monthly 1-on-1 Deep-Dive Consultation', included: false },
-    ],
+      'Everything in Essential + Founding 50 Lifetime Price Lock',
+      'Curated 3-Piece Monthly Skincare Ritual Box Shipped Free',
+      '100% Dollar-for-Dollar Store Credit Match ($49/mo)',
+      'Quarterly 1-on-1 Consultation with Susan Coke',
+      'Priority Access to Limited-Batch Clinical Formulations'
+    ]
   },
   {
     id: 'radiance',
-    name: 'Radiance All-Access',
-    priceId: 'price_radiance_tier', // Replace with live Stripe Price ID
+    name: 'The Radiance Elite All-Access',
+    tagline: '5-Piece Ritual Box + VIP AI Photo Analysis + Mystery Box',
     price: 119,
-    tagline: 'Complete concierge beauty care, deluxe full-size box, and direct 1-on-1 access to Susan.',
-    badge: 'Ultimate Concierge',
-    highlighted: false,
-    ctaText: 'Join Radiance VIP',
+    period: '/month',
+    badge: 'ALL-ACCESS + FREE MYSTERY BOX',
+    highlight: false,
+    creditMatch: '100% Store Credit Match ($119/mo) + Free Mystery Box',
+    ctaLabel: 'Claim Radiance Elite + Mystery Box ($119/mo) ✧',
     features: [
-      { text: 'Unlimited AI Skin Analysis & Dynamic Tracking', included: true },
-      { text: '25% Off All Boutique Skincare Products', included: true },
-      { text: 'Deluxe Monthly Mystery Box ($200+ Retail Value)', included: true },
-      { text: 'First-in-Line VIP Booking & Emergency Slots', included: true },
-      { text: 'Free Expedited Shipping on All Orders', included: true },
-      { text: 'Monthly 30-Min 1-on-1 Consultation with Susan', included: true },
-      { text: 'Custom Seasonal Regimen Formulated by Susan', included: true },
-    ],
-  },
+      '60-Second VIP AI Skin Photo Barrier & Hydration Analysis',
+      'Curated 5-Piece Full-Size Monthly Skincare Ritual Box',
+      'Complimentary Luxury Founder’s Mystery Box ($150+ Value)',
+      'Monthly 1-on-1 Private Video or Sanctuary Consultation with Susan',
+      '100% Store Credit Match ($119/mo) + 35% VIP Boutique Discount'
+    ]
+  }
 ];
 
-const COMPARISON_ROWS = [
-  {
-    feature: 'AI Skin Analysis & Routine Builder',
-    description: 'Instant photo-based diagnostics for hydration, texture, and seasonal shifts',
-    essential: '1 Scan / Month',
-    luminary: 'Unlimited Scans',
-    radiance: 'Unlimited + Trend Tracking',
-  },
-  {
-    feature: 'Monthly Curated Mystery Box',
-    description: 'Hand-selected skincare & haircare tailored to your skin profile',
-    essential: false,
-    luminary: 'Standard Box ($85+ Value)',
-    radiance: 'Deluxe Full-Size ($200+ Value)',
-  },
-  {
-    feature: 'Priority Salon & Consultation Booking',
-    description: 'Skip the waitlist for peak appointments and seasonal prep',
-    essential: 'Standard Access',
-    luminary: '48-Hr Priority Window',
-    radiance: 'First-in-Line + Reserved VIP Slots',
-  },
-  {
-    feature: 'Direct Consultations with Susan',
-    description: 'Private virtual or in-person skin and beauty coaching',
-    essential: false,
-    luminary: 'Quarterly 15-Min Check-In',
-    radiance: 'Monthly 30-Min Private Session',
-  },
-  {
-    feature: 'Member Boutique Discount',
-    description: 'Automatic savings on every product order all year round',
-    essential: '10% Off',
-    luminary: '15% Off',
-    radiance: '25% Off',
-  },
-  {
-    feature: 'Shipping Perks',
-    description: 'Delivery on boutique orders and monthly membership boxes',
-    essential: 'Standard Rates',
-    luminary: 'Free Standard Shipping',
-    radiance: 'Free Expedited Shipping',
-  },
-  {
-    feature: 'Founding 50 Member Bonus Gift',
-    description: 'Exclusive welcome kit locked in for the first 50 members',
-    essential: false,
-    luminary: true,
-    radiance: true,
-  },
-];
+const PricingChart = ({
+  onSelectTier,
+  onCheckout,
+  onSubscribe,
+  user,
+  currentUser,
+  apiBaseUrl,
+  foundingSpotsRemaining = 47,
+  loadingTier: externalLoadingTier = null
+}) => {
+  const [internalLoadingTier, setInternalLoadingTier] = useState(null);
+  const [checkoutError, setCheckoutError] = useState('');
 
-const CheckIcon = ({ className = 'w-5 h-5 text-emerald-600' }) => (
-  <svg
-    className={className}
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden="true"
-  >
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-  </svg>
-);
+  const activeUser = user || currentUser || null;
+  const activeLoadingTier = externalLoadingTier || internalLoadingTier;
 
-const CrossIcon = ({ className = 'w-5 h-5 text-stone-300' }) => (
-  <svg
-    className={className}
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden="true"
-  >
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-  </svg>
-);
+  const resolvedApiBase =
+    apiBaseUrl ||
+    process.env.REACT_APP_API_URL ||
+    (typeof window !== 'undefined' && window.location.hostname === 'localhost'
+      ? 'http://localhost:5000'
+      : '');
 
-export default function PricingChart({ spotsRemaining = 14, onSelectTier }) {
-  const [loadingTier, setLoadingTier] = useState(null);
-  const [errorMsg, setErrorMsg] = useState('');
+  const handleTierAction = async (tierObj) => {
+    setCheckoutError('');
+    const customHandler = onSelectTier || onCheckout || onSubscribe;
 
-  const handleTierCheckout = async (tier) => {
-    setErrorMsg('');
-
-    // If parent App.js passes a custom checkout handler, delegate to it
-    if (typeof onSelectTier === 'function') {
-      onSelectTier(tier);
+    if (typeof customHandler === 'function') {
+      try {
+        setInternalLoadingTier(tierObj.id);
+        await customHandler(tierObj.id, tierObj);
+      } catch (err) {
+        setCheckoutError(err?.message || 'Unable to start checkout. Please try again.');
+      } finally {
+        setInternalLoadingTier(null);
+      }
       return;
     }
 
-    // Default built-in Stripe checkout session request to server.js
     try {
-      setLoadingTier(tier.id);
-      const response = await fetch('/api/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tierId: tier.id,
-          priceId: tier.priceId,
-          tierName: tier.name,
-          price: tier.price,
-        }),
-      });
+      setInternalLoadingTier(tierObj.id);
+      const token =
+        typeof localStorage !== 'undefined'
+          ? localStorage.getItem('token') || localStorage.getItem('sbc_token')
+          : null;
 
-      const data = await response.json();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Unable to start checkout. Please try again.');
+      const payload = {
+        tier: tierObj.id,
+        membershipTier: tierObj.id,
+        plan: tierObj.id,
+        price: tierObj.price,
+        email: activeUser?.email || undefined,
+        userId: activeUser?._id || activeUser?.id || undefined,
+        includesVipMysteryBox: tierObj.id === 'radiance'
+      };
+
+      const endpoints = [
+        `${resolvedApiBase}/api/membership/checkout`,
+        `${resolvedApiBase}/api/create-checkout-session`,
+        `${resolvedApiBase}/api/stripe/create-subscription-session`
+      ];
+
+      let sessionUrl = null;
+      let lastError = 'Unable to initialize Stripe checkout session.';
+
+      for (const endpoint of endpoints) {
+        try {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+          });
+          const data = await response.json().catch(() => ({}));
+          if (response.ok && (data.url || data.checkoutUrl || data.sessionUrl)) {
+            sessionUrl = data.url || data.checkoutUrl || data.sessionUrl;
+            break;
+          }
+          if (data?.error || data?.message) {
+            lastError = data.error || data.message;
+          }
+        } catch (innerErr) {
+          lastError = innerErr.message || lastError;
+        }
       }
 
-      if (data.url) {
-        window.location.href = data.url;
+      if (sessionUrl && typeof window !== 'undefined') {
+        window.location.href = sessionUrl;
+        return;
       }
+
+      setCheckoutError(lastError);
     } catch (err) {
-      setErrorMsg(err.message || 'Checkout connection error. Please try again.');
+      setCheckoutError(err?.message || 'Checkout connection error. Please try again.');
     } finally {
-      setLoadingTier(null);
+      setInternalLoadingTier(null);
     }
-  };
-
-  const renderMatrixCell = (value, isHighlighted = false) => {
-    if (value === true) {
-      return (
-        <div className="flex justify-center">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-emerald-50 text-emerald-600">
-            <CheckIcon className="w-4 h-4" />
-          </span>
-        </div>
-      );
-    }
-    if (value === false) {
-      return (
-        <div className="flex justify-center">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-stone-100 text-stone-400">
-            <CrossIcon className="w-4 h-4" />
-          </span>
-        </div>
-      );
-    }
-    return (
-      <span
-        className={`text-sm font-medium ${
-          isHighlighted ? 'text-rose-900 font-semibold' : 'text-stone-700'
-        }`}
-      >
-        {value}
-      </span>
-    );
   };
 
   return (
-    <section id="membership-tiers" className="py-16 px-4 sm:px-6 lg:px-8 bg-stone-50 text-stone-900">
-      <div className="max-w-7xl mx-auto">
-        {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto mb-12">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-rose-100 border border-rose-200 text-rose-900 text-xs sm:text-sm font-semibold tracking-wide uppercase mb-4">
-            <span className="w-2 h-2 rounded-full bg-rose-600 animate-pulse" />
-            Founding 50 Enrollment Open • {spotsRemaining} Spots Remaining
-          </div>
-          <h2 className="text-3xl sm:text-4xl font-serif font-bold tracking-tight text-stone-900 mb-4">
-            Transparent Membership Tiers. Zero Hidden Fees.
-          </h2>
-          <p className="text-base sm:text-lg text-stone-600 leading-relaxed">
-            Know exactly what you receive every month before you join. Whether you want AI-guided
-            skincare diagnostics or a full-size monthly beauty box curated by Susan, every tier
-            can be paused or canceled anytime with one click.
-          </p>
+    <section
+      id="pricing-tiers"
+      style={{
+        maxWidth: '1080px',
+        margin: '36px auto',
+        padding: '0 16px',
+        textAlign: 'center'
+      }}
+    >
+      <div style={{ marginBottom: '26px' }}>
+        <span
+          style={{
+            display: 'inline-block',
+            backgroundColor: '#FFF0F2',
+            color: '#C62828',
+            border: '1px solid #B38B8F',
+            borderRadius: '20px',
+            padding: '6px 16px',
+            fontFamily: 'sans-serif',
+            fontSize: '0.78rem',
+            fontWeight: 'bold',
+            letterSpacing: '0.5px',
+            marginBottom: '12px'
+          }}
+        >
+          🔴 FOUNDING 50 ENROLLMENT OPEN • {foundingSpotsRemaining} SPOTS REMAINING
+        </span>
+
+        <h2
+          style={{
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '2.4rem',
+            color: '#5C5454',
+            margin: '0 0 10px 0',
+            lineHeight: '1.2'
+          }}
+        >
+          Choose Your Sanctuary Membership Tier
+        </h2>
+
+        <p
+          style={{
+            fontFamily: 'sans-serif',
+            fontSize: '0.96rem',
+            color: '#736A6A',
+            maxWidth: '680px',
+            margin: '0 auto',
+            lineHeight: '1.6'
+          }}
+        >
+          Every Founding Membership includes a <strong>100% Dollar-for-Dollar Store Credit Match</strong> in your Boutique Vault and a <strong>Lifetime Founding Price Lock</strong>. Cancel or switch tiers anytime in one click.
+        </p>
+      </div>
+
+      {checkoutError && (
+        <div
+          style={{
+            maxWidth: '640px',
+            margin: '0 auto 20px auto',
+            backgroundColor: '#FFF0F2',
+            border: '1px solid #C62828',
+            color: '#C62828',
+            padding: '12px 16px',
+            borderRadius: '12px',
+            fontFamily: 'sans-serif',
+            fontSize: '0.88rem'
+          }}
+        >
+          ⚠️ {checkoutError}
         </div>
+      )}
 
-        {/* Error Banner */}
-        {errorMsg && (
-          <div className="max-w-xl mx-auto mb-8 p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm text-center">
-            {errorMsg}
-          </div>
-        )}
-
-        {/* Mobile-First 3-Tier Cards */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-stretch mb-16">
-          {TIERS.map((tier) => {
-            const isBusy = loadingTier === tier.id;
-            return (
-              <div
-                key={tier.id}
-                className={`relative flex flex-col rounded-2xl transition-all duration-200 ${
-                  tier.highlighted
-                    ? 'bg-white border-2 border-rose-500 shadow-xl lg:-translate-y-2'
-                    : 'bg-white border border-stone-200 shadow-sm hover:shadow-md'
-                }`}
-              >
-                {/* Top Badge */}
-                {tier.badge && (
-                  <div
-                    className={` -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-bold uppercase tracking-wider whitespace-nowrap shadow-sm ${
-                      tier.highlighted
-                        ? 'bg-rose-600 text-white'
-                        : 'bg-stone-900 text-amber-200'
-                    }`}
-                  >
-                    {tier.badge}
-                  </div>
-                )}
-
-                <div className="p-6 sm:p-8 flex-1 flex flex-col">
-                  <div className="mb-6">
-                    <h3 className="text-xl font-bold text-stone-900 mb-2">{tier.name}</h3>
-                    <p className="text-sm text-stone-600 min-h-[40px]">{tier.tagline}</p>
-                  </div>
-
-                  {/* Price Block */}
-                  <div className="mb-6 pb-6 border-b border-stone-100">
-                    <div className="flex items-baseline gap-1">
-                      <span className="text-4xl sm:text-5xl font-extrabold tracking-tight text-stone-900">
-                        ${tier.price}
-                      </span>
-                      <span className="text-sm font-medium text-stone-500">/ month</span>
-                    </div>
-                    <p className="text-xs text-stone-500 mt-1">
-                      Locked-in Founding Member rate • Cancel anytime
-                    </p>
-                  </div>
-
-                  {/* Feature Checklist */}
-                  <ul className="space-y-3.5 mb-8 flex-1">
-                    {tier.features.map((item, idx) => (
-                      <li key={idx} className="flex items-start gap-3 text-sm">
-                        <span className="mt-0.5 shrink-0">
-                          {item.included ? (
-                            <CheckIcon className="w-5 h-5 text-emerald-600" />
-                          ) : (
-                            <CrossIcon className="w-5 h-5 text-stone-300" />
-                          )}
-                        </span>
-                        <span
-                          className={
-                            item.included
-                              ? 'text-stone-800 font-medium'
-                              : 'text-stone-400 line-through'
-                          }
-                        >
-                          {item.text}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-
-                  {/* CTA Button */}
-                  <button
-                    type="button"
-                    onClick={() => handleTierCheckout(tier)}
-                    disabled={isBusy}
-                    className={`w-full py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                      tier.highlighted
-                        ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md focus:ring-rose-500'
-                        : 'bg-stone-900 hover:bg-stone-800 text-white focus:ring-stone-900'
-                    } ${isBusy ? 'opacity-70 cursor-wait' : ''}`}
-                  >
-                    {isBusy ? 'Securing Your Spot...' : tier.ctaText}
-                  </button>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))',
+          gap: '22px',
+          alignItems: 'stretch'
+        }}
+      >
+        {TIERS.map((tier) => {
+          const isCurrentLoading = activeLoadingTier === tier.id;
+          return (
+            <div
+              key={tier.id}
+              style={{
+                backgroundColor: '#FFFFFF',
+                border: tier.highlight ? '2.5px solid #B38B8F' : '1.5px solid #E8C5C8',
+                borderRadius: '24px',
+                padding: '28px 24px',
+                boxShadow: tier.highlight
+                  ? '0 16px 38px rgba(179, 139, 143, 0.28)'
+                  : '0 8px 24px rgba(179, 139, 143, 0.12)',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                textAlign: 'left',
+                position: 'relative'
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    display: 'inline-block',
+                    backgroundColor: tier.highlight ? '#B38B8F' : '#FFF0F2',
+                    color: tier.highlight ? '#FFFFFF' : '#B38B8F',
+                    borderRadius: '14px',
+                    padding: '4px 12px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.72rem',
+                    fontWeight: 'bold',
+                    letterSpacing: '0.5px',
+                    marginBottom: '12px'
+                  }}
+                >
+                  {tier.badge}
                 </div>
-              </div>
-            );
-          })}
-        </div>
 
-        {/* Side-by-Side Detailed Feature Comparison Matrix */}
-        <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-          <div className="p-6 sm:p-8 border-b border-stone-200 bg-stone-50/60">
-            <h3 className="text-xl sm:text-2xl font-serif font-bold text-stone-900">
-              Side-by-Side Benefit Comparison
-            </h3>
-            <p className="text-sm text-stone-600 mt-1">
-              Compare every deliverable across Essential, Luminary, and Radiance memberships.
-            </p>
-          </div>
+                <h3
+                  style={{
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.75rem',
+                    color: '#5C5454',
+                    margin: '0 0 6px 0'
+                  }}
+                >
+                  {tier.name}
+                </h3>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[640px]">
-              <thead>
-                <tr className="border-b border-stone-200 bg-stone-50/40">
-                  <th className="py-4 px-6 text-xs font-bold uppercase tracking-wider text-stone-500 w-2/5">
-                    Membership Deliverable
-                  </th>
-                  <th className="py-4 px-4 text-center text-sm font-bold text-stone-800 w-1/5">
-                    Essential
-                    <span className="block text-xs font-normal text-stone-500 mt-0.5">$19/mo</span>
-                  </th>
-                  <th className="py-4 px-4 text-center text-sm font-bold text-rose-900 bg-rose-50/60 w-1/5">
-                    Luminary VIP
-                    <span className="block text-xs font-semibold text-rose-600 mt-0.5">$49/mo</span>
-                  </th>
-                  <th className="py-4 px-4 text-center text-sm font-bold text-stone-800 w-1/5">
-                    Radiance
-                    <span className="block text-xs font-normal text-stone-500 mt-0.5">$119/mo</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-200">
-                {COMPARISON_ROWS.map((row, index) => (
-                  <tr key={index} className="hover:bg-stone-50/50 transition-colors">
-                    <td className="py-4 px-6">
-                      <div className="font-semibold text-stone-900 text-sm">{row.feature}</div>
-                      <div className="text-xs text-stone-500 mt-0.5">{row.description}</div>
-                    </td>
-                    <td className="py-4 px-4 text-center">{renderMatrixCell(row.essential)}</td>
-                    <td className="py-4 px-4 text-center bg-rose-50/30">
-                      {renderMatrixCell(row.luminary, true)}
-                    </td>
-                    <td className="py-4 px-4 text-center">{renderMatrixCell(row.radiance)}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t border-stone-200 bg-stone-50/40">
-                  <td className="py-4 px-6 text-xs text-stone-500 font-medium">
-                    100% Secure Checkout via Stripe • Cancel Anytime
-                  </td>
-                  {TIERS.map((tier) => (
-                    <td
-                      key={tier.id}
-                      className={`py-4 px-4 text-center ${
-                        tier.highlighted ? 'bg-rose-50/60' : ''
-                      }`}
+                <p
+                  style={{
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.84rem',
+                    color: '#8A797A',
+                    margin: '0 0 16px 0',
+                    lineHeight: '1.45'
+                  }}
+                >
+                  {tier.tagline}
+                </p>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: '4px',
+                    marginBottom: '12px'
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '2.75rem',
+                      fontWeight: 'bold',
+                      color: '#5C5454',
+                      lineHeight: '1'
+                    }}
+                  >
+                    ${tier.price}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: 'sans-serif',
+                      fontSize: '0.9rem',
+                      color: '#8A797A'
+                    }}
+                  >
+                    {tier.period}
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    backgroundColor: '#FFF9F9',
+                    border: '1px solid #E8C5C8',
+                    borderRadius: '12px',
+                    padding: '10px 12px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.8rem',
+                    color: '#5C5454',
+                    fontWeight: 600,
+                    marginBottom: '18px'
+                  }}
+                >
+                  💵 {tier.creditMatch}
+                </div>
+
+                <ul
+                  style={{
+                    listStyle: 'none',
+                    padding: 0,
+                    margin: '0 0 24px 0',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px'
+                  }}
+                >
+                  {tier.features.map((feat, idx) => (
+                    <li
+                      key={idx}
+                      style={{
+                        fontFamily: 'sans-serif',
+                        fontSize: '0.86rem',
+                        color: '#5C5454',
+                        lineHeight: '1.45',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '8px'
+                      }}
                     >
-                      <button
-                        type="button"
-                        onClick={() => handleTierCheckout(tier)}
-                        disabled={loadingTier === tier.id}
-                        className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${
-                          tier.highlighted
-                            ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                            : 'bg-stone-900 hover:bg-stone-800 text-white'
-                        }`}
-                      >
-                        {loadingTier === tier.id ? 'Loading...' : `Select ${tier.name.split(' ')[0]}`}
-                      </button>
-                    </td>
+                      <span style={{ color: '#B38B8F', fontWeight: 'bold' }}>✓</span>
+                      <span>{feat}</span>
+                    </li>
                   ))}
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
+                </ul>
+              </div>
 
-        {/* Bottom Risk-Reversal Guarantee */}
-        <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-6 text-xs sm:text-sm text-stone-600 text-center">
-          <div className="flex items-center gap-2">
-            <CheckIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>No long-term contracts or cancellation fees</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <CheckIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Keep your Founding 50 pricing for life</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <CheckIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>256-bit SSL encrypted Stripe checkout</span>
-          </div>
-        </div>
+              <button
+                type="button"
+                disabled={Boolean(activeLoadingTier)}
+                onClick={() => handleTierAction(tier)}
+                style={{
+                  width: '100%',
+                  background: tier.highlight
+                    ? 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)'
+                    : '#FFF0F2',
+                  color: tier.highlight ? '#FFFFFF' : '#5C5454',
+                  border: tier.highlight ? 'none' : '1.5px solid #B38B8F',
+                  borderRadius: '26px',
+                  padding: '14px 20px',
+                  fontFamily: "'Cormorant Garamond', serif",
+                  fontSize: '1.18rem',
+                  fontWeight: 'bold',
+                  cursor: activeLoadingTier ? 'wait' : 'pointer',
+                  boxShadow: tier.highlight
+                    ? '0 8px 20px rgba(179, 139, 143, 0.32)'
+                    : 'none',
+                  opacity: activeLoadingTier && !isCurrentLoading ? 0.65 : 1
+                }}
+              >
+                {isCurrentLoading ? 'Opening Secure Stripe Checkout...' : tier.ctaLabel}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
-}
+};
+
+export default PricingChart;

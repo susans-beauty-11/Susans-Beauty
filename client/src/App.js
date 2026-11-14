@@ -16,7 +16,7 @@ const FAQ_ITEMS = [
       'Yes. There are zero long-term contracts or cancellation penalties. You can switch between Essential, Luminary, and Radiance or pause your monthly renewal with one click from your member confirmation link.',
   },
   {
-    question: 'How does the AI Skin Analysis work with Susan’s consultations?',
+    question: 'How does the AI Skin Analysis work with Susans consultations?',
     answer:
       'Our AI diagnostic analyzes your skin concern inputs and seasonal stressors in seconds to generate an immediate ingredient roadmap. For Luminary and Radiance members, Susan personally reviews your profile during your 1-on-1 check-ins to fine-tune your regimen and Mystery Box selections.',
   },
