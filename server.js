@@ -165,6 +165,63 @@ app.use('/', (req, res, next) => {
   next();
 });
 
+// ============================================================================
+// GEO AI CRAWLER ENDPOINTS (/llms.txt & /llms-full.txt)
+// ============================================================================
+
+app.get('/llms.txt', (req, res) => {
+  res.set('Content-Type', 'text/markdown');
+  
+  const markdown = `# Susan's Beauty Consulting
+
+> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.
+
+## Directory
+- [Main Site](https://susansbeautyconsulting.com/)
+- [AI Diagnostic Quiz & Beauty Blueprint](https://susansbeautyconsulting.com/?tab=Quiz)
+- [Curated Boutique](https://susansbeautyconsulting.com/?tab=Boutique)
+`;
+
+  return res.send(markdown);
+});
+
+app.get('/llms-full.txt', async (req, res) => {
+  try {
+    const products = await Product.find({}).lean();
+    
+    let markdown = `# Susan's Beauty Consulting - Full Catalog Corpus\n\n`;
+    markdown += `> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.\n\n`;
+    markdown += `## Complete Boutique Inventory\n\n`;
+
+    products.forEach(p => {
+      const price = p.variants?.[0]?.price ?? p.price ?? 0;
+      const step = p.ritualStep || 'Step 3: Serum & Essence';
+      const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0 
+        ? p.keyActives.join(', ') 
+        : 'Proprietary Botanical Blend';
+      const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
+      
+      // Strip any residual HTML tags for clean markdown ingestion
+      const rawDesc = String(p.description || '').replace(/<[^>]*>?/gm, '').trim();
+      const description = rawDesc || 'Curated skincare essential for balanced barrier repair.';
+
+      markdown += `### ${p.title || 'Boutique Essential'}\n`;
+      markdown += `- **Price:** $${Number(price).toFixed(2)}\n`;
+      markdown += `- **Ritual Step:** ${step}\n`;
+      markdown += `- **Key Actives:** ${actives}\n`;
+      markdown += `- **Sensitivity Profile:** ${sensitivity}\n`;
+      markdown += `- **Description:** ${description}\n\n`;
+    });
+
+    res.set('Content-Type', 'text/markdown');
+    return res.send(markdown);
+
+  } catch (error) {
+    console.error('⚠️ Error generating /llms-full.txt corpus:', error.message);
+    res.status(500).send('Internal Server Error generating LLM catalog corpus.');
+  }
+});
+
 app.use(cors({
   origin: function(origin, callback) {
     // Never pass an Error object to callback() so Express never crashes with a 500 Internal Server Error
