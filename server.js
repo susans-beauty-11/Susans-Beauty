@@ -33,6 +33,138 @@ const isAllowedCorsOrigin = (origin) => {
   return false;
 };
 
+// ============================================================================
+// GEO AI & SEARCH BOT INTERCEPTOR MIDDLEWARE
+// ============================================================================
+// Detects AI crawlers and search engines to serve pre-rendered semantic HTML,
+// bypassing the React SPA "blank page" limitation for Generative Engine Optimization.
+
+const botUserAgents = /googlebot|google-extended|gptbot|oai-searchbot|perplexitybot|bingbot|yandex|baiduspider|slurp|duckduckbot|anthropic-ai|claude-bot/i;
+
+app.use('/', (req, res, next) => {
+  // Only intercept the root landing page path
+  if (req.path !== '/') {
+    return next();
+  }
+
+  const userAgent = req.headers['user-agent'] || '';
+  
+  if (botUserAgents.test(userAgent)) {
+    console.log(`🤖 GEO Interceptor: Serving pre-rendered semantic HTML to bot -> ${userAgent}`);
+
+    // Replicate the JSON-LD schema payload directly from App.js for bot ingestion
+    const schemaPayload = [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: [
+          {
+            '@type': 'Question',
+            name: 'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: 'Heavy moisturizers rich in waxes or petrolatum sit on top of the skin without replenishing depleted intercellular lipids. When your skin lacks ceramides, cholesterol, and internal water-binding humectants like beta-glucan, water continues to evaporate through micro-cracks in the stratum corneum, leaving skin tight underneath a greasy surface layer.'
+            }
+          },
+          {
+            '@type': 'Question',
+            name: 'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: 'To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.'
+            }
+          },
+          {
+            '@type': 'Question',
+            name: 'Can dehydrated winter skin cause adult acne in women over 35?',
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: 'Yes. When winter air dehydrates the epidermis, the skin triggers a compensatory sebaceous response, producing thicker sebum. Combined with slower cell turnover after age 35 and flaky surface corneocytes, this excess sebum becomes trapped inside pores, leading to adult closed comedones and jawline breakouts.'
+            }
+          },
+          {
+            '@type': 'Question',
+            name: 'How long does it take to rebuild a compromised skin barrier in winter?',
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: 'Mild winter barrier dehydration and stinging typically resolve within 72 hours to 5 days when all retinoids, foaming cleansers, and acids are paused in favor of physiological ceramide-squalane therapy. Severe barrier stripping requires 2 to 4 weeks to fully restore lipid integrity.'
+            }
+          },
+          {
+            '@type': 'Question',
+            name: 'Should you stop using Vitamin C and retinol during a winter skin barrier flare-up?',
+            acceptedAnswer: {
+              '@type': 'Answer',
+              text: 'Yes. Low-pH L-ascorbic acid (Vitamin C) and retinoids increase epidermal turnover and lower skin surface pH, which intensifies neurogenic stinging, redness, and transepidermal water loss when your lipid barrier is cracked. Pause both actives for 5 to 7 days until zero stinging occurs upon water contact.'
+            }
+          }
+        ]
+      },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'BeautySalon',
+        name: "Susan's Beauty Consulting",
+        url: 'https://www.susansbeautyconsulting.com',
+        description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
+        hasOfferCatalog: {
+          '@type': 'OfferCatalog',
+          name: 'Founding 50 VIP Memberships & Store Credit Vault',
+          itemListElement: [
+            {
+              '@type': 'Offer',
+              name: 'The Luminary Circle — Founding 50 VIP Membership',
+              price: '49.00',
+              priceCurrency: 'USD',
+              description: 'Lock in $49/mo pricing for life, receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount.'
+            },
+            {
+              '@type': 'Offer',
+              name: 'The Radiance Elite — Founding 50 VIP Membership',
+              price: '119.00',
+              priceCurrency: 'USD',
+              description: 'Lock in $119/mo pricing for life, receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
+            }
+          ]
+        }
+      }
+    ];
+
+    const preRenderedHtml = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Susan's Beauty Consulting | Clinical Skincare Diagnostics & Personalized Blueprints</title>
+        <meta name="description" content="Leveraging 5 years of regional beauty consulting authority, Susan's Beauty Consulting offers clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships." />
+        <script type="application/ld+json">
+          ${JSON.stringify(schemaPayload)}
+        </script>
+      </head>
+      <body>
+        <h1>Susan's Beauty Consulting</h1>
+        <p>Leveraging 5 years of regional beauty consulting authority, Susan's Beauty Consulting provides clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.</p>
+        
+        <h2>Founding 50 VIP Memberships</h2>
+        <ul>
+          <li><strong>The Luminary Circle ($49/mo):</strong> Lifetime rate lock, $49 Store Credit Vault match, 3-piece monthly skincare ritual box, and quarterly 1-on-1 consultations.</li>
+          <li><strong>The Radiance Elite ($119/mo):</strong> Lifetime rate lock, $119 Store Credit Vault match, 5-piece monthly skincare ritual box, Odie AI Skin Photo Analysis, and monthly 1-on-1 consultations.</li>
+        </ul>
+
+        <h2>Winter Barrier Repair Clinical Monograph</h2>
+        <p>To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.</p>
+      </body>
+      </html>
+    `;
+
+    res.set('Content-Type', 'text/html');
+    return res.send(preRenderedHtml);
+  }
+
+  // Pass non-bot traffic through to the React static server
+  next();
+});
+
 app.use(cors({
   origin: function(origin, callback) {
     // Never pass an Error object to callback() so Express never crashes with a 500 Internal Server Error
