@@ -16,7 +16,7 @@ const FAQ_ITEMS = [
       'Yes. There are zero long-term contracts or cancellation penalties. You can switch between Essential, Luminary, and Radiance or pause your monthly renewal with one click from your member confirmation link.',
   },
   {
-    question: 'How does the AI Skin Analysis work with Susans consultations?',
+    question: 'How does the AI Skin Analysis work with Susan’s consultations?',
     answer:
       'Our AI diagnostic analyzes your skin concern inputs and seasonal stressors in seconds to generate an immediate ingredient roadmap. For Luminary and Radiance members, Susan personally reviews your profile during your 1-on-1 check-ins to fine-tune your regimen and Mystery Box selections.',
   },
@@ -27,9 +27,12 @@ const FAQ_ITEMS = [
   },
 ];
 
-const SparkleBadgeIcon = ({ className = 'w-4 h-4 text-rose-600' }) => (
+const SparkleBadgeIcon = ({ className = '', style = {} }) => (
   <svg
     className={className}
+    width="16"
+    height="16"
+    style={{ width: '16px', height: '16px', flexShrink: 0, verticalAlign: 'middle', color: '#B38B8F', ...style }}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -16293,7 +16296,7 @@ function App() {
         authToken={localStorage.getItem('token')}
       />
 
-      {step === 0 && !isCartOpen && (
+      {(step === 0 || step === 4) && !isCartOpen && (
         <LilyCustomerConcierge
           embedded={false}
           authToken={localStorage.getItem('token')}
@@ -16486,116 +16489,170 @@ function App() {
         </div>
       )}
 
-      {step === 0 && (
-        <div className="min-h-screen w-full flex flex-col bg-stone-50 text-stone-900 font-sans">
-          {/* Top Live Founding 50 Social Proof Bar */}
-          <div className="bg-stone-900 text-stone-100 text-xs sm:text-sm py-2.5 px-4 text-center border-b border-stone-800">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-1.5">
-              <div className="flex items-center gap-2 font-medium text-amber-200">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+      <EmpowermentContainer>
+
+        {(step === 0 || step === 4) && (
+          <div style={{ animation: 'fadeIn 0.8s ease' }}>
+            {/* Top Live Founding 50 Social Proof & Scarcity Bar */}
+            <div
+              style={{
+                backgroundColor: '#FFF9F9',
+                border: '1.5px solid #E8C5C8',
+                borderRadius: '20px',
+                padding: '10px 18px',
+                marginBottom: '14px',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                boxShadow: '0 6px 18px rgba(179, 139, 143, 0.12)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#5C5454', fontWeight: 600 }}>
+                <span
+                  style={{
+                    width: '9px',
+                    height: '9px',
+                    borderRadius: '50%',
+                    backgroundColor: '#2E7D32',
+                    display: 'inline-block',
+                    boxShadow: '0 0 0 3px rgba(46, 125, 50, 0.18)'
+                  }}
+                />
                 <span>{recentActivity}</span>
               </div>
-              <div className="text-stone-300">
+              <div style={{ fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#736A6A' }}>
                 Founding 50 VIP Enrollment:{' '}
-                <strong className="text-white underline decoration-rose-500">
+                <strong style={{ color: '#C62828', textDecoration: 'underline' }}>
                   {spotsRemaining} Spots Remaining
                 </strong>
               </div>
             </div>
-          </div>
 
-          {/* Sticky Navigation Header */}
-          <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-stone-200">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-rose-600 text-white font-serif font-bold text-lg flex items-center justify-center shadow-sm">
-                  S
-                </div>
-                <div>
-                  <span className="font-serif font-bold text-lg tracking-tight text-stone-900 block leading-none">
-                    Susan&apos;s Beauty
-                  </span>
-                  <span className="text-[11px] text-stone-500 uppercase tracking-widest">
-                    Consulting &amp; Skincare
-                  </span>
-                </div>
-              </div>
-
-              <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-stone-600">
+            {/* Styled Rose-Gold Quick-Jump Anchor Bar */}
+            <nav
+              aria-label="Sanctuary Quick Navigation"
+              style={{
+                position: 'sticky',
+                top: '10px',
+                zIndex: 900,
+                backgroundColor: 'rgba(255, 249, 249, 0.96)',
+                backdropFilter: 'blur(8px)',
+                border: '1.5px solid #B38B8F',
+                borderRadius: '28px',
+                padding: '10px 16px',
+                marginBottom: '28px',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                boxShadow: '0 10px 26px rgba(179, 139, 143, 0.18)'
+              }}
+            >
+              {[
+                { label: 'Meet Susan', onClick: () => scrollToSection('about-susan') },
+                { label: 'Free AI Skin Check', onClick: () => scrollToSection('ai-consultation') },
+                { label: 'Compare Tiers', onClick: () => scrollToSection('membership-tiers') },
+                { label: 'FAQ', onClick: () => scrollToSection('faq') },
+                { label: '🛍️ Boutique', onClick: () => setStep(1) }
+              ].map((navItem) => (
                 <button
+                  key={navItem.label}
                   type="button"
-                  onClick={() => scrollToSection('about-susan')}
-                  className="hover:text-rose-600 transition-colors"
+                  onClick={navItem.onClick}
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    color: '#5C5454',
+                    border: '1px solid #E8C5C8',
+                    borderRadius: '20px',
+                    padding: '7px 15px',
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.02rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.25s ease'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.backgroundColor = '#FFF0F2';
+                    e.currentTarget.style.borderColor = '#B38B8F';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.backgroundColor = '#FFFFFF';
+                    e.currentTarget.style.borderColor = '#E8C5C8';
+                  }}
                 >
-                  Meet Susan
+                  {navItem.label}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => scrollToSection('ai-consultation')}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  Free AI Skin Check
-                </button>
-                <button
-                  type="button"
-                  onClick={() => scrollToSection('membership-tiers')}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  Compare Tiers
-                </button>
-                <button
-                  type="button"
-                  onClick={() => scrollToSection('faq')}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  FAQ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  Boutique
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  {localStorage.getItem('token') ? 'My Sanctuary' : 'Member Sign In'}
-                </button>
-              </nav>
+              ))}
 
               <button
                 type="button"
                 onClick={() => scrollToSection('membership-tiers')}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-semibold shadow-sm transition-colors"
+                style={{
+                  background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '20px',
+                  padding: '8px 18px',
+                  fontFamily: "'Cormorant Garamond', serif",
+                  fontSize: '1.05rem',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 14px rgba(179, 139, 143, 0.32)'
+                }}
               >
-                Claim Founding Spot
+                Claim Founding Spot ✧
               </button>
-            </div>
-          </header>
+            </nav>
 
-          {/* Stripe Checkout Return Notification Banner */}
-          {checkoutBanner && (
-            <div
-              className={`px-4 py-4 border-b ${
-                checkoutBanner.type === 'success'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                  : 'bg-amber-50 border-amber-200 text-amber-900'
-              }`}
-            >
-              <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+            {/* Stripe Checkout Return Notification Banner */}
+            {checkoutBanner && (
+              <div
+                style={{
+                  maxWidth: '760px',
+                  margin: '0 auto 24px auto',
+                  backgroundColor: checkoutBanner.type === 'success' ? '#F4FBF5' : '#FFFDF5',
+                  border: checkoutBanner.type === 'success' ? '1.5px solid #A5D6A7' : '1.5px solid #D4AF37',
+                  color: checkoutBanner.type === 'success' ? '#2E7D32' : '#5C4308',
+                  borderRadius: '18px',
+                  padding: '16px 20px',
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '12px',
+                  textAlign: 'left'
+                }}
+              >
                 <div>
-                  <h2 className="font-bold text-base">{checkoutBanner.title}</h2>
-                  <p className="text-sm mt-0.5">{checkoutBanner.message}</p>
+                  <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.35rem', fontWeight: 'bold' }}>
+                    {checkoutBanner.title}
+                  </div>
+                  <div style={{ fontFamily: 'sans-serif', fontSize: '0.88rem', marginTop: '4px' }}>
+                    {checkoutBanner.message}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   {checkoutBanner.type === 'success' && (
                     <button
                       type="button"
-                      onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
-                      className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 transition-colors"
+                      onClick={() => {
+                        if (localStorage.getItem('token')) setStep(5);
+                        else scrollToSection('sanctuary-signin-top');
+                      }}
+                      style={{
+                        backgroundColor: '#2E7D32',
+                        color: '#FFFFFF',
+                        border: 'none',
+                        borderRadius: '16px',
+                        padding: '8px 16px',
+                        fontFamily: 'sans-serif',
+                        fontSize: '0.8rem',
+                        fontWeight: 'bold',
+                        cursor: 'pointer'
+                      }}
                     >
                       Open Member Sanctuary →
                     </button>
@@ -16603,251 +16660,682 @@ function App() {
                   <button
                     type="button"
                     onClick={() => setCheckoutBanner(null)}
-                    className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-200"
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      color: '#5C5454',
+                      border: '1px solid #E8C5C8',
+                      borderRadius: '16px',
+                      padding: '7px 14px',
+                      fontFamily: 'sans-serif',
+                      fontSize: '0.78rem',
+                      cursor: 'pointer'
+                    }}
                   >
                     Dismiss
                   </button>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Hero Section */}
-          <section className="relative bg-gradient-to-b from-rose-50/70 via-white to-white pt-12 pb-16 sm:pt-20 sm:pb-24 px-4 sm:px-6 lg:px-8 border-b border-stone-100">
-            <div className="max-w-4xl mx-auto text-center">
-              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-rose-100/80 border border-rose-200 text-rose-900 text-xs font-semibold tracking-wide uppercase mb-6">
-                <SparkleBadgeIcon />
-                <span>5x Regional Leading Beauty Consultant • Founding 50 Now Open</span>
+            {/* 1. TOP FOCAL POINT: 'WELCOME BACK' SIGN-IN CARD (PICTURE 2) */}
+            <section
+              id="sanctuary-signin-top"
+              style={{
+                paddingTop: '6px',
+                paddingBottom: '28px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '15px' }}>
+                <img src={logo} alt="Susan's Beauty Consulting Logo" style={{ width: '100px', height: '100px', objectFit: 'contain' }} />
               </div>
-
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-serif font-bold text-stone-900 tracking-tight leading-tight">
-                Stop Guessing With Your Skin.{' '}
-                <span className="text-rose-600">
-                  Get a Personal Beauty Consultant in Your Corner.
-                </span>
+              <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>
+                Welcome Back
               </h1>
-
-              <p className="mt-6 text-lg sm:text-xl text-stone-600 max-w-2xl mx-auto leading-relaxed">
-                Combine instant AI skin diagnostics with 1-on-1 guidance and hand-curated
-                monthly beauty boxes from Susan—named her region&apos;s Leading Beauty
-                Consultant 5 years in a row.
+              <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '15px auto 25px', maxWidth: '600px' }}>
+                Sign in to access your dashboard and personalized blueprint.
               </p>
 
-              <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => scrollToSection('membership-tiers')}
-                  className="w-full sm:w-auto px-8 py-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-base shadow-lg shadow-rose-600/25 transition-all"
-                >
-                  Explore Membership Tiers (From $19/mo)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => scrollToSection('about-susan')}
-                  className="w-full sm:w-auto px-8 py-4 rounded-xl bg-white hover:bg-stone-50 text-stone-800 font-semibold text-base border border-stone-300 transition-all"
-                >
-                  Meet Susan &amp; Read Her Story
-                </button>
-              </div>
+              {localStorage.getItem('token') && (
+                <div style={{ marginBottom: '22px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setStep(5)}
+                    style={{
+                      backgroundColor: '#FFF0F2',
+                      border: '1.5px solid #B38B8F',
+                      borderRadius: '26px',
+                      padding: '10px 24px',
+                      color: '#5C5454',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.2rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      boxShadow: '0 6px 18px rgba(179, 139, 143, 0.22)'
+                    }}
+                  >
+                    📝 Return to My Sanctuary Dashboard →
+                  </button>
+                </div>
+              )}
 
-              <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs sm:text-sm text-stone-500">
-                <span>✓ Lock in Founding 50 Rates for Life</span>
-                <span>✓ $85–$200+ Curated Mystery Boxes</span>
-                <span>✓ Pause or Cancel in 1 Click</span>
-              </div>
+              {isLoading ? (
+                <EmpowermentLoader text="Verifying credentials securely..." />
+              ) : (
+                <div style={{ maxWidth: '460px', margin: '0 auto' }}>
+                  <SocialAuthButtonGrid
+                    mode="login"
+                    showBottomDivider={true}
+                    initialSandboxProvider={oauthSandboxProvider}
+                    selectedTier={selectedTier}
+                    isSubscribing={false}
+                    onSocialAuthSuccess={(data) =>
+                      handleSocialAuthSuccess(data, {
+                        subscribingOverride: false
+                      })
+                    }
+                  />
+
+                  <ElegantInput name="email" onChange={handleLoginInputChange} placeholder="Email Address" type="email" value={loginCredentials.email} />
+                  <ElegantInput name="password" onChange={handleLoginInputChange} placeholder="Password" type="password" value={loginCredentials.password} />
+
+                  <div style={{ marginTop: '30px' }}>
+                    <EmpowermentButton text="Sign In" onClick={handleLoginSubmit} />
+                  </div>
+
+                  <p
+                    style={{ cursor: 'pointer', color: '#A89999', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', marginTop: '20px', transition: 'color 0.3s ease' }}
+                    onClick={() => setStep(8)}
+                    onMouseOver={(e) => { e.target.style.color = '#736A6A'; }}
+                    onMouseOut={(e) => { e.target.style.color = '#A89999'; }}
+                  >
+                    Forgot your password?
+                  </p>
+                </div>
+              )}
+            </section>
+
+            {/* Decorative Sanctuary Divider */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '14px auto 34px auto' }}>
+              <div style={{ width: '90px', height: '1px', backgroundColor: '#E8C5C8' }} />
+              <span style={{ color: '#B38B8F', margin: '0 16px', fontSize: '1.25rem' }}>✧</span>
+              <div style={{ width: '90px', height: '1px', backgroundColor: '#E8C5C8' }} />
             </div>
-          </section>
 
-          {/* Phase 2 Component: About Susan (Authority & Empathy Section) */}
-          <AboutSusan
-            photoUrl="/susan-portrait.jpg"
-            onExploreTiers={() => scrollToSection('membership-tiers')}
-            onStartConsultation={() => scrollToSection('ai-consultation')}
-          />
-
-          {/* Interactive Free AI Skin Check Section */}
-          <section
-            id="ai-consultation"
-            className="py-16 sm:py-20 px-4 sm:px-6 lg:px-8 bg-stone-900 text-white"
-          >
-            <div className="max-w-4xl mx-auto">
-              <div className="text-center mb-10">
-                <span className="text-xs font-semibold uppercase tracking-widest text-rose-400">
-                  Interactive Preview • Takes 15 Seconds
-                </span>
-                <h2 className="mt-2 text-3xl sm:text-4xl font-serif font-bold">
-                  Not Sure Which Tier Fits Your Skin?
-                </h2>
-                <p className="mt-3 text-stone-300 max-w-xl mx-auto text-sm sm:text-base">
-                  Run a quick preview of our AI Skin Diagnostic below to see your priority
-                  ingredient focus and which of Susan&apos;s membership tiers matches your
-                  goals.
-                </p>
-              </div>
-
-              <form
-                onSubmit={handleRunSkinCheck}
-                className="bg-stone-800/90 border border-stone-700 rounded-2xl p-6 sm:p-8 shadow-xl"
+            {/* 2. RESTYLED HERO BANNER UNDERNEATH SIGN-IN (NO GIANT SVG) */}
+            <section
+              style={{
+                maxWidth: '980px',
+                margin: '0 auto 36px auto',
+                padding: '0 16px'
+              }}
+            >
+              <div
+                style={{
+                  backgroundColor: '#FFF9F9',
+                  border: '1.5px solid #B38B8F',
+                  borderRadius: '24px',
+                  padding: '38px 28px',
+                  boxShadow: '0 14px 36px rgba(179, 139, 143, 0.18)',
+                  textAlign: 'center'
+                }}
               >
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  <div>
-                    <label
-                      htmlFor="skinType"
-                      className="block text-xs font-semibold uppercase tracking-wider text-stone-300 mb-2"
-                    >
-                      1. Primary Skin Feel Right Now
-                    </label>
-                    <select
-                      id="skinType"
-                      value={skinType}
-                      onChange={(e) => setSkinType(e.target.value)}
-                      className="w-full rounded-xl bg-stone-900 border border-stone-700 px-4 py-3 text-sm text-white focus:outline-none focus:border-rose-500"
-                    >
-                      <option value="dry-winter">Dry, Tight, or Winter-Depleted</option>
-                      <option value="fine-lines">Fine Lines, Firmness &amp; Healthy Aging</option>
-                      <option value="sensitive-redness">Sensitive, Redness-Prone, or Reactive</option>
-                      <option value="everyday-maintenance">Balanced / Everyday Glow Maintenance</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="primaryGoal"
-                      className="block text-xs font-semibold uppercase tracking-wider text-stone-300 mb-2"
-                    >
-                      2. How Much Support Do You Want?
-                    </label>
-                    <select
-                      id="primaryGoal"
-                      value={primaryGoal}
-                      onChange={(e) => setPrimaryGoal(e.target.value)}
-                      className="w-full rounded-xl bg-stone-900 border border-stone-700 px-4 py-3 text-sm text-white focus:outline-none focus:border-rose-500"
-                    >
-                      <option value="hydration-glow">Curated Monthly Products + Seasonal Check-ins</option>
-                      <option value="hands-on-vip">1-on-1 Coaching with Susan + Full-Size Luxury Box</option>
-                      <option value="digital-only">Digital Routine Guidance &amp; Store Discounts Only</option>
-                    </select>
-                  </div>
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    backgroundColor: '#FFF0F2',
+                    color: '#B38B8F',
+                    border: '1px solid #B38B8F',
+                    borderRadius: '20px',
+                    padding: '6px 16px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.78rem',
+                    fontWeight: 'bold',
+                    letterSpacing: '0.6px',
+                    textTransform: 'uppercase',
+                    marginBottom: '16px'
+                  }}
+                >
+                  <span>✧</span>
+                  <span>5x Regional Leading Beauty Consultant • Founding 50 Now Open</span>
                 </div>
 
-                <div className="mt-6 flex justify-center">
+                <h2
+                  style={{
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '2.65rem',
+                    color: '#5C5454',
+                    margin: '0 auto 14px auto',
+                    maxWidth: '820px',
+                    lineHeight: '1.18'
+                  }}
+                >
+                  Stop Guessing With Your Skin.{' '}
+                  <span style={{ color: '#B38B8F', fontStyle: 'italic' }}>
+                    Get a Personal Beauty Consultant in Your Corner.
+                  </span>
+                </h2>
+
+                <p
+                  style={{
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.3rem',
+                    color: '#736A6A',
+                    maxWidth: '720px',
+                    margin: '0 auto 26px auto',
+                    lineHeight: '1.6'
+                  }}
+                >
+                  Combine instant AI skin diagnostics with 1-on-1 guidance and hand-curated monthly beauty boxes from Susan—named her region&apos;s Leading Beauty Consultant 5 years in a row.
+                </p>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '14px',
+                    marginBottom: '22px'
+                  }}
+                >
                   <button
-                    type="submit"
-                    disabled={aiLoading}
-                    className="px-8 py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-sm transition-colors disabled:opacity-60"
+                    type="button"
+                    onClick={() => scrollToSection('membership-tiers')}
+                    style={{
+                      background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                      color: '#FFFFFF',
+                      border: 'none',
+                      borderRadius: '28px',
+                      padding: '14px 30px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.25rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      boxShadow: '0 8px 22px rgba(179, 139, 143, 0.35)'
+                    }}
                   >
-                    {aiLoading ? 'Analyzing Your Skin Profile...' : 'Get My Instant Recommendation'}
+                    Explore Membership Tiers (From $19/mo) ✧
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => scrollToSection('about-susan')}
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      color: '#5C5454',
+                      border: '1.5px solid #B38B8F',
+                      borderRadius: '28px',
+                      padding: '13px 26px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.2rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Meet Susan &amp; Read Her Story
                   </button>
                 </div>
 
-                {aiResult && (
-                  <div className="mt-6 pt-6 border-t border-stone-700 bg-stone-900/70 rounded-xl p-5">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div>
-                        <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                          Recommended Match: {aiResult.recommendedTier}
-                        </span>
-                        <p className="mt-1.5 text-sm text-stone-200 leading-relaxed">
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '18px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.84rem',
+                    color: '#736A6A',
+                    fontWeight: 600
+                  }}
+                >
+                  <span>✓ Lock in Founding 50 Rates for Life</span>
+                  <span>✓ $85–$200+ Curated Mystery Boxes</span>
+                  <span>✓ Pause or Cancel in 1 Click</span>
+                </div>
+              </div>
+            </section>
+
+            {/* 3. ABOUT SUSAN SECTION */}
+            <AboutSusan
+              photoUrl="/susan-portrait.jpg"
+              foundingSpotsRemaining={spotsRemaining}
+              onExploreTiers={() => scrollToSection('membership-tiers')}
+              onStartConsultation={() => scrollToSection('ai-consultation')}
+              onStartDiagnostic={() => scrollToSection('ai-consultation')}
+            />
+
+            {/* 4. INTERACTIVE 15-SECOND FREE AI SKIN CHECK (ROSE-GOLD SANCTUARY STYLING) */}
+            <section
+              id="ai-consultation"
+              style={{
+                maxWidth: '980px',
+                margin: '36px auto',
+                padding: '0 16px'
+              }}
+            >
+              <div
+                style={{
+                  backgroundColor: '#FFFFFF',
+                  border: '1.5px solid #B38B8F',
+                  borderRadius: '24px',
+                  padding: '34px 28px',
+                  boxShadow: '0 12px 32px rgba(179, 139, 143, 0.16)',
+                  textAlign: 'center'
+                }}
+              >
+                <span
+                  style={{
+                    display: 'inline-block',
+                    backgroundColor: '#FFF0F2',
+                    color: '#B38B8F',
+                    border: '1px solid #B38B8F',
+                    borderRadius: '20px',
+                    padding: '5px 14px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold',
+                    letterSpacing: '0.6px',
+                    textTransform: 'uppercase',
+                    marginBottom: '12px'
+                  }}
+                >
+                  ✧ Interactive Preview • Takes 15 Seconds
+                </span>
+
+                <h2
+                  style={{
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '2.25rem',
+                    color: '#5C5454',
+                    margin: '0 0 10px 0'
+                  }}
+                >
+                  Not Sure Which Tier Fits Your Skin?
+                </h2>
+
+                <p
+                  style={{
+                    fontFamily: 'sans-serif',
+                    fontSize: '0.94rem',
+                    color: '#736A6A',
+                    maxWidth: '640px',
+                    margin: '0 auto 24px auto',
+                    lineHeight: '1.6'
+                  }}
+                >
+                  Run a quick preview of our AI Skin Diagnostic below to see your priority ingredient focus and which of Susan&apos;s membership tiers matches your goals.
+                </p>
+
+                <form
+                  onSubmit={handleRunSkinCheck}
+                  style={{
+                    backgroundColor: '#FFF9F9',
+                    border: '1px solid #E8C5C8',
+                    borderRadius: '20px',
+                    padding: '24px 22px',
+                    textAlign: 'left'
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                      gap: '18px',
+                      marginBottom: '22px'
+                    }}
+                  >
+                    <div>
+                      <label
+                        htmlFor="skinType"
+                        style={{
+                          display: 'block',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.15rem',
+                          fontWeight: 'bold',
+                          color: '#5C5454',
+                          marginBottom: '8px'
+                        }}
+                      >
+                        1. Primary Skin Feel Right Now
+                      </label>
+                      <select
+                        id="skinType"
+                        value={skinType}
+                        onChange={(e) => setSkinType(e.target.value)}
+                        style={{
+                          width: '100%',
+                          backgroundColor: '#FFFFFF',
+                          border: '1.5px solid #B38B8F',
+                          borderRadius: '14px',
+                          padding: '12px 14px',
+                          fontFamily: 'sans-serif',
+                          fontSize: '0.92rem',
+                          color: '#5C5454',
+                          outline: 'none',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <option value="dry-winter">Dry, Tight, or Winter-Depleted</option>
+                        <option value="fine-lines">Fine Lines, Firmness &amp; Healthy Aging</option>
+                        <option value="sensitive-redness">Sensitive, Redness-Prone, or Reactive</option>
+                        <option value="everyday-maintenance">Balanced / Everyday Glow Maintenance</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="primaryGoal"
+                        style={{
+                          display: 'block',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.15rem',
+                          fontWeight: 'bold',
+                          color: '#5C5454',
+                          marginBottom: '8px'
+                        }}
+                      >
+                        2. How Much Support Do You Want?
+                      </label>
+                      <select
+                        id="primaryGoal"
+                        value={primaryGoal}
+                        onChange={(e) => setPrimaryGoal(e.target.value)}
+                        style={{
+                          width: '100%',
+                          backgroundColor: '#FFFFFF',
+                          border: '1.5px solid #B38B8F',
+                          borderRadius: '14px',
+                          padding: '12px 14px',
+                          fontFamily: 'sans-serif',
+                          fontSize: '0.92rem',
+                          color: '#5C5454',
+                          outline: 'none',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <option value="hydration-glow">Curated Monthly Products + Seasonal Check-ins</option>
+                        <option value="hands-on-vip">1-on-1 Coaching with Susan + Full-Size Luxury Box</option>
+                        <option value="digital-only">Digital Routine Guidance &amp; Store Discounts Only</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={{ textAlign: 'center' }}>
+                    <button
+                      type="submit"
+                      disabled={aiLoading}
+                      style={{
+                        background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+                        color: '#FFFFFF',
+                        border: 'none',
+                        borderRadius: '26px',
+                        padding: '13px 30px',
+                        fontFamily: "'Cormorant Garamond', serif",
+                        fontSize: '1.22rem',
+                        fontWeight: 'bold',
+                        cursor: aiLoading ? 'wait' : 'pointer',
+                        boxShadow: '0 6px 18px rgba(179, 139, 143, 0.32)',
+                        opacity: aiLoading ? 0.7 : 1
+                      }}
+                    >
+                      {aiLoading ? 'Analyzing Your Skin Profile...' : 'Get My Instant Recommendation ✧'}
+                    </button>
+                  </div>
+
+                  {aiResult && (
+                    <div
+                      style={{
+                        marginTop: '22px',
+                        backgroundColor: '#FFFFFF',
+                        border: '1.5px solid #B38B8F',
+                        borderRadius: '16px',
+                        padding: '18px 20px',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '14px'
+                      }}
+                    >
+                      <div style={{ flex: '1 1 320px' }}>
+                        <div
+                          style={{
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.78rem',
+                            fontWeight: 'bold',
+                            textTransform: 'uppercase',
+                            color: '#2E7D32',
+                            letterSpacing: '0.5px',
+                            marginBottom: '6px'
+                          }}
+                        >
+                          ✓ Recommended Match: {aiResult.recommendedTier}
+                        </div>
+                        <p style={{ fontFamily: 'sans-serif', fontSize: '0.92rem', color: '#5C5454', margin: '0 0 6px 0', lineHeight: '1.55' }}>
                           {aiResult.summary}
                         </p>
-                        <p className="mt-2 text-xs text-stone-400">{aiResult.reason}</p>
+                        <p style={{ fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#8A797A', margin: 0 }}>
+                          {aiResult.reason}
+                        </p>
                       </div>
                       <button
                         type="button"
                         onClick={() => scrollToSection('membership-tiers')}
-                        className="shrink-0 px-5 py-2.5 rounded-xl bg-white text-stone-900 hover:bg-stone-100 text-xs font-bold uppercase tracking-wider transition-colors"
+                        style={{
+                          backgroundColor: '#FFF0F2',
+                          color: '#5C5454',
+                          border: '1.5px solid #B38B8F',
+                          borderRadius: '20px',
+                          padding: '10px 20px',
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.1rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
                       >
-                        Compare Below →
+                        Compare Tiers Below →
                       </button>
                     </div>
-                  </div>
-                )}
-              </form>
-            </div>
-          </section>
-
-          {/* Phase 1 Component: 3-Tier Pricing & Comparison Matrix */}
-          <div id="membership-tiers">
-            <PricingChart spotsRemaining={spotsRemaining} />
-          </div>
-
-          {/* Transparent FAQ Section */}
-          <section
-            id="faq"
-            className="py-16 sm:py-20 px-4 sm:px-6 lg:px-8 bg-white border-t border-stone-200"
-          >
-            <div className="max-w-4xl mx-auto">
-              <div className="text-center mb-12">
-                <h2 className="text-3xl font-serif font-bold text-stone-900">
-                  Frequently Asked Questions
-                </h2>
-                <p className="mt-2 text-stone-600 text-sm sm:text-base">
-                  Everything you need to know before claiming your Founding 50 spot.
-                </p>
+                  )}
+                </form>
               </div>
+            </section>
 
-              <div className="space-y-4">
-                {FAQ_ITEMS.map((item) => (
-                  <div
-                    key={item.question}
-                    className="rounded-2xl border border-stone-200 bg-stone-50/60 p-6"
+            {/* 5. 3-TIER PRICING & COMPARISON MATRIX */}
+            <div id="membership-tiers">
+              <PricingChart
+                spotsRemaining={spotsRemaining}
+                foundingSpotsRemaining={spotsRemaining}
+                user={userDetails}
+                apiBaseUrl={API_BASE_URL}
+              />
+            </div>
+
+            {/* 6. CLINICAL GEO AUTHORITY HUB */}
+            <Founding50AndGeoAuthoritySection
+              onClaimFoundingSpot={() => {
+                trackSiteEvent('PAGE_VIEW', { page: 'Paid Membership Tiers' });
+                scrollToSection('membership-tiers');
+              }}
+            />
+
+            {/* 7. TRANSPARENT FAQ SECTION (ROSE-GOLD SANCTUARY STYLING) */}
+            <section
+              id="faq"
+              style={{
+                maxWidth: '980px',
+                margin: '36px auto 20px auto',
+                padding: '0 16px'
+              }}
+            >
+              <div
+                style={{
+                  backgroundColor: '#FFFFFF',
+                  border: '1.5px solid #E8C5C8',
+                  borderRadius: '24px',
+                  padding: '34px 28px',
+                  boxShadow: '0 10px 28px rgba(179, 139, 143, 0.14)',
+                  textAlign: 'left'
+                }}
+              >
+                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                  <h2
+                    style={{
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '2.2rem',
+                      color: '#5C5454',
+                      margin: '0 0 8px 0'
+                    }}
                   >
-                    <h3 className="text-base font-bold text-stone-900">{item.question}</h3>
-                    <p className="mt-2 text-sm text-stone-600 leading-relaxed">
-                      {item.answer}
-                    </p>
-                  </div>
-                ))}
-              </div>
+                    Frequently Asked Questions
+                  </h2>
+                  <p
+                    style={{
+                      fontFamily: 'sans-serif',
+                      fontSize: '0.92rem',
+                      color: '#736A6A',
+                      margin: 0
+                    }}
+                  >
+                    Everything you need to know before claiming your Founding 50 spot.
+                  </p>
+                </div>
 
-              {/* Quick Portal Links for Returning Members, Boutique Shoppers & Free Sign-Up */}
-              <div className="mt-12 pt-8 border-t border-stone-200 flex flex-wrap items-center justify-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
-                >
-                  🛍️ Browse The Boutique
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedTier('basic');
-                    setStep(7);
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {FAQ_ITEMS.map((item) => (
+                    <div
+                      key={item.question}
+                      style={{
+                        backgroundColor: '#FFF9F9',
+                        border: '1px solid #E8C5C8',
+                        borderRadius: '16px',
+                        padding: '18px 20px'
+                      }}
+                    >
+                      <h3
+                        style={{
+                          fontFamily: "'Cormorant Garamond', serif",
+                          fontSize: '1.3rem',
+                          color: '#5C5454',
+                          margin: '0 0 6px 0'
+                        }}
+                      >
+                        {item.question}
+                      </h3>
+                      <p
+                        style={{
+                          fontFamily: 'sans-serif',
+                          fontSize: '0.9rem',
+                          color: '#736A6A',
+                          lineHeight: '1.6',
+                          margin: 0
+                        }}
+                      >
+                        {item.answer}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Quick Portal Links */}
+                <div
+                  style={{
+                    marginTop: '28px',
+                    paddingTop: '22px',
+                    borderTop: '1px solid #E8C5C8',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px'
                   }}
-                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
                 >
-                  ✨ Free Basic Account Sign-Up
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep(localStorage.getItem('token') ? 5 : 4)}
-                  className="px-5 py-2.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-800 text-xs sm:text-sm font-semibold transition-colors"
-                >
-                  🔑 {localStorage.getItem('token') ? 'Return to Member Sanctuary' : 'Already a Member? Sign In'}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setStep(1)}
+                    style={{
+                      backgroundColor: '#FFF9F9',
+                      color: '#5C5454',
+                      border: '1px solid #B38B8F',
+                      borderRadius: '22px',
+                      padding: '10px 20px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.08rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🛍️ Browse The Boutique
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTier('basic');
+                      setStep(7);
+                    }}
+                    style={{
+                      backgroundColor: '#FFF9F9',
+                      color: '#5C5454',
+                      border: '1px solid #B38B8F',
+                      borderRadius: '22px',
+                      padding: '10px 20px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.08rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ✨ Free Basic Account Sign-Up
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (localStorage.getItem('token')) setStep(5);
+                      else scrollToSection('sanctuary-signin-top');
+                    }}
+                    style={{
+                      backgroundColor: '#F2D4D7',
+                      color: '#5C5454',
+                      border: '1px solid #B38B8F',
+                      borderRadius: '22px',
+                      padding: '10px 20px',
+                      fontFamily: "'Cormorant Garamond', serif",
+                      fontSize: '1.08rem',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🔑 {localStorage.getItem('token') ? 'Return to Member Sanctuary' : 'Back to Sign In ↑'}
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          {/* Footer */}
-          <footer className="bg-stone-900 text-stone-400 py-10 px-4 text-center text-xs border-t border-stone-800 mt-auto">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-              <p>
-                &copy; {new Date().getFullYear()} Susan&apos;s Beauty Consulting. All rights
-                reserved.
-              </p>
-              <p className="text-stone-500">
-                Leading Regional Beauty Consultant (5 Consecutive Years) • Secure Checkout
-                Powered by Stripe
-              </p>
-            </div>
-          </footer>
-        </div>
-      )}
-
-      {step !== 0 && (
-      <EmpowermentContainer>
+            {/* Sanctuary Footer */}
+            <footer
+              style={{
+                maxWidth: '980px',
+                margin: '16px auto 0 auto',
+                padding: '20px 16px',
+                borderTop: '1px solid #E8C5C8',
+                fontFamily: 'sans-serif',
+                fontSize: '0.8rem',
+                color: '#8A797A',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px'
+              }}
+            >
+              <span>&copy; {new Date().getFullYear()} Susan&apos;s Beauty Consulting. All rights reserved.</span>
+              <span>Leading Regional Beauty Consultant (5 Consecutive Years) • Secure Checkout Powered by Stripe</span>
+            </footer>
+          </div>
+        )}
 
         {step === 1 && (
           <div style={{ animation: 'fadeIn 1s ease', textAlign: 'left' }}>
@@ -17027,45 +17515,7 @@ function App() {
           </div>
         )}
 
-        {step === 4 && (
-          <div style={{ animation: 'fadeIn 1s ease' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '15px' }}>
-              <img src={logo} alt="Logo" style={{ width: '100px', height: '100px', objectFit: 'contain' }} />
-            </div>
-            <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>Welcome Back</h1>
-            <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '15px auto 25px', maxWidth: '600px' }}>Sign in to access your dashboard and personalized blueprint.</p>
 
-            {isLoading ? (
-              <EmpowermentLoader text="Verifying credentials securely..."/>
-            ) : (
-              <div style={{ maxWidth: '460px', margin: '0 auto' }}>
-                <SocialAuthButtonGrid
-                  mode="login"
-                  showBottomDivider={true}
-                  initialSandboxProvider={oauthSandboxProvider}
-                  selectedTier={selectedTier}
-                  isSubscribing={false}
-                  onSocialAuthSuccess={(data) =>
-                    handleSocialAuthSuccess(data, {
-                      subscribingOverride: false
-                    })
-                  }
-                />
-
-                <ElegantInput name="email" onChange={handleLoginInputChange} placeholder="Email Address" type="email" value={loginCredentials.email}/>
-                <ElegantInput name="password" onChange={handleLoginInputChange} placeholder="Password" type="password" value={loginCredentials.password}/>
-                
-                <div style={{ marginTop: '30px' }}>
-                  <EmpowermentButton text="Sign In" onClick={handleLoginSubmit}/>
-                </div>
-
-                <p style={{ cursor: 'pointer', color: '#A89999', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', marginTop: '20px', transition: 'color 0.3s ease' }} onClick={() => setStep(8)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>Forgot your password?</p>
-
-                <p style={{ cursor: 'pointer', color: '#A89999', textDecoration: 'underline', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', marginTop: '10px', transition: 'color 0.3s ease' }} onClick={() => setStep(0)} onMouseOver={(e) => e.target.style.color = '#736A6A'} onMouseOut={(e) => e.target.style.color = '#A89999'}>← Back to Home</p>
-              </div>
-            )}
-          </div>
-        )}
 
         {step === 8 && (
           <div style={{ animation: 'fadeIn 1s ease' }}>
@@ -19942,7 +20392,6 @@ function App() {
         )}
 
       </EmpowermentContainer>
-      )}
     </div>
   );
 }
