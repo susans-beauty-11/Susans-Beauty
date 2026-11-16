@@ -17177,9 +17177,6 @@ const CLIENT_SEO_ROUTE_META = {
     title: "Beauty Memberships for Personalized Guidance | Susan's",
     description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations."
   },
-    title: "Beauty Memberships for Personalized Guidance | Susan's",
-    description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations."
-  },
   '/membership-options': {
     title: "Compare Beauty Membership Options | Susan's",
     description: "Compare Essential Glow ($19/mo), Luminary VIP ($49/mo), and Radiance All-Access ($119/mo) beauty membership options at Susan's Beauty Consulting."
@@ -17272,7 +17269,7 @@ const PublicSeoFooterAndRouteSync = () => {
     </footer>
   );
 };
-
+             
             {/* 7. TRANSPARENT FAQ SECTION (ROSE-GOLD SANCTUARY STYLING) */}
             <section
               id="faq"
