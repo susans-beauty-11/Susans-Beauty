@@ -17421,16 +17421,9 @@ function App() {
                 </div>
               </div>
             </section>
-
-            </section> {/* end of FAQ section */}
-
-            <PublicSeoFooterAndRouteSync />
-
-            {/* Sanctuary Footer */}
-            <footer>
-              {/* existing footer content */}
-            </footer>
-
+                    
+ <PublicSeoFooterAndRouteSync />
+                    
             {/* Sanctuary Footer */}
             <footer
               style={{
