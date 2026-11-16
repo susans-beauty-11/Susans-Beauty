@@ -52,275 +52,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============================================================================
-// GEO AI & SEARCH BOT INTERCEPTOR MIDDLEWARE
-// ============================================================================
-// Detects AI crawlers and search engines to serve pre-rendered semantic HTML,
-// bypassing the React SPA "blank page" limitation for Generative Engine Optimization.
-
-const botUserAgents = /googlebot|google-extended|gptbot|oai-searchbot|perplexitybot|bingbot|yandex|baiduspider|slurp|duckduckbot|anthropic-ai|claude-bot/i;
-
-app.use('/', (req, res, next) => {
-  // Only intercept the root landing page path
-  if (req.path !== '/') {
-    return next();
-  }
-
-  const userAgent = req.headers['user-agent'] || '';
-  
-  if (botUserAgents.test(userAgent)) {
-    console.log(`🤖 GEO Interceptor: Serving pre-rendered semantic HTML to bot -> ${userAgent}`);
-
-    // Replicate the JSON-LD schema payload directly from App.js for bot ingestion
-    const schemaPayload = [
-      {
-        '@context': 'https://schema.org',
-        '@type': 'FAQPage',
-        mainEntity: [
-          {
-            '@type': 'Question',
-            name: 'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: 'Heavy moisturizers rich in waxes or petrolatum sit on top of the skin without replenishing depleted intercellular lipids. When your skin lacks ceramides, cholesterol, and internal water-binding humectants like beta-glucan, water continues to evaporate through micro-cracks in the stratum corneum, leaving skin tight underneath a greasy surface layer.'
-            }
-          },
-          {
-            '@type': 'Question',
-            name: 'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: 'To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.'
-            }
-          },
-          {
-            '@type': 'Question',
-            name: 'Can dehydrated winter skin cause adult acne in women over 35?',
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: 'Yes. When winter air dehydrates the epidermis, the skin triggers a compensatory sebaceous response, producing thicker sebum. Combined with slower cell turnover after age 35 and flaky surface corneocytes, this excess sebum becomes trapped inside pores, leading to adult closed comedones and jawline breakouts.'
-            }
-          },
-          {
-            '@type': 'Question',
-            name: 'How long does it take to rebuild a compromised skin barrier in winter?',
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: 'Mild winter barrier dehydration and stinging typically resolve within 72 hours to 5 days when all retinoids, foaming cleansers, and acids are paused in favor of physiological ceramide-squalane therapy. Severe barrier stripping requires 2 to 4 weeks to fully restore lipid integrity.'
-            }
-          },
-          {
-            '@type': 'Question',
-            name: 'Should you stop using Vitamin C and retinol during a winter skin barrier flare-up?',
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: 'Yes. Low-pH L-ascorbic acid (Vitamin C) and retinoids increase epidermal turnover and lower skin surface pH, which intensifies neurogenic stinging, redness, and transepidermal water loss when your lipid barrier is cracked. Pause both actives for 5 to 7 days until zero stinging occurs upon water contact.'
-            }
-          }
-        ]
-      },
-      {
-        '@context': 'https://schema.org',
-        '@type': 'BeautySalon',
-        name: "Susan's Beauty Consulting",
-        url: 'https://www.susansbeautyconsulting.com',
-        description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
-        hasOfferCatalog: {
-          '@type': 'OfferCatalog',
-          name: 'Founding 50 VIP Memberships & Store Credit Vault',
-          itemListElement: [
-            {
-              '@type': 'Offer',
-              name: 'The Luminary Circle — Founding 50 VIP Membership',
-              price: '49.00',
-              priceCurrency: 'USD',
-              description: 'Lock in $49/mo pricing for life, receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount.'
-            },
-            {
-              '@type': 'Offer',
-              name: 'The Radiance Elite — Founding 50 VIP Membership',
-              price: '119.00',
-              priceCurrency: 'USD',
-              description: 'Lock in $119/mo pricing for life, receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
-            }
-          ]
-        }
-      }
-    ];
-
-    const preRenderedHtml = `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Susan's Beauty Consulting | Clinical Skincare Diagnostics & Personalized Blueprints</title>
-        <meta name="description" content="Leveraging 5 years of regional beauty consulting authority, Susan's Beauty Consulting offers clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships." />
-        <script type="application/ld+json">
-          ${JSON.stringify(schemaPayload)}
-        </script>
-      </head>
-      <body>
-        <h1>Susan's Beauty Consulting</h1>
-        <p>Leveraging 5 years of regional beauty consulting authority, Susan's Beauty Consulting provides clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.</p>
-        
-        <h2>Founding 50 VIP Memberships</h2>
-        <ul>
-          <li><strong>The Luminary Circle ($49/mo):</strong> Lifetime rate lock, $49 Store Credit Vault match, 3-piece monthly skincare ritual box, and quarterly 1-on-1 consultations.</li>
-          <li><strong>The Radiance Elite ($119/mo):</strong> Lifetime rate lock, $119 Store Credit Vault match, 5-piece monthly skincare ritual box, Odie AI Skin Photo Analysis, and monthly 1-on-1 consultations.</li>
-        </ul>
-
-        <h2>Winter Barrier Repair Clinical Monograph</h2>
-        <p>To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.</p>
-      </body>
-      </html>
-    `;
-
-    res.set('Content-Type', 'text/html');
-    return res.send(preRenderedHtml);
-  }
-
-  // Pass non-bot traffic through to the React static server
-  next();
-});
-
-// ============================================================================
-// GEO AI CRAWLER ENDPOINTS (/llms.txt & /llms-full.txt)
-// ============================================================================
-
-app.get('/llms.txt', (req, res) => {
-  res.set('Content-Type', 'text/markdown');
-  
-  const markdown = `# Susan's Beauty Consulting
-
-> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.
-
-## Directory
-- [Main Site](https://susansbeautyconsulting.com/)
-- [AI Diagnostic Quiz & Beauty Blueprint](https://susansbeautyconsulting.com/?tab=Quiz)
-- [Curated Boutique](https://susansbeautyconsulting.com/?tab=Boutique)
-`;
-
-  return res.send(markdown);
-});
-
-app.get('/llms-full.txt', async (req, res) => {
-  try {
-    const products = await Product.find({}).lean();
-    
-    let markdown = `# Susan's Beauty Consulting - Full Catalog Corpus\n\n`;
-    markdown += `> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.\n\n`;
-    markdown += `## Complete Boutique Inventory\n\n`;
-
-    products.forEach(p => {
-      const price = p.variants?.[0]?.price ?? p.price ?? 0;
-      const step = p.ritualStep || 'Step 3: Serum & Essence';
-      const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0 
-        ? p.keyActives.join(', ') 
-        : 'Proprietary Botanical Blend';
-      const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
-      
-      // Strip any residual HTML tags for clean markdown ingestion
-      const rawDesc = String(p.description || '').replace(/<[^>]*>?/gm, '').trim();
-      const description = rawDesc || 'Curated skincare essential for balanced barrier repair.';
-
-      markdown += `### ${p.title || 'Boutique Essential'}\n`;
-      markdown += `- **Price:** $${Number(price).toFixed(2)}\n`;
-      markdown += `- **Ritual Step:** ${step}\n`;
-      markdown += `- **Key Actives:** ${actives}\n`;
-      markdown += `- **Sensitivity Profile:** ${sensitivity}\n`;
-      markdown += `- **Description:** ${description}\n\n`;
-    });
-
-    res.set('Content-Type', 'text/markdown');
-    return res.send(markdown);
-
-  } catch (error) {
-    console.error('⚠️ Error generating /llms-full.txt corpus:', error.message);
-    res.status(500).send('Internal Server Error generating LLM catalog corpus.');
-  }
-});
-
-// ============================================================================
-// ROBOTS.TXT (CRAWLER PERMISSIONS & SITEMAP)
-// ============================================================================
-app.get('/robots.txt', (req, res) => {
-  res.set('Content-Type', 'text/plain');
-  
-  const robotsTxt = `User-agent: *
-Allow: /
-Disallow: /api/
-
-User-agent: Googlebot
-Allow: /
-
-User-agent: GPTBot
-Allow: /
-
-User-agent: OAI-SearchBot
-Allow: /
-
-User-agent: PerplexityBot
-Allow: /
-
-Sitemap: https://susansbeautyconsulting.com/sitemap.xml
-`;
-
-  return res.send(robotsTxt);
-});
-
-// ============================================================================
-// DYNAMIC SITEMAP.XML GENERATOR
-// ============================================================================
-app.get('/sitemap.xml', async (req, res) => {
-  try {
-    res.set('Content-Type', 'application/xml');
-    
-    const baseUrl = 'https://susansbeautyconsulting.com';
-    
-    // Start standard XML sitemap envelope
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-    
-    // 1. Static Core Routes
-    const staticRoutes = [
-      { path: '/', priority: '1.0' },
-      { path: '/?tab=Boutique', priority: '0.8' },
-      { path: '/?tab=Quiz', priority: '0.8' }
-    ];
-
-    staticRoutes.forEach(route => {
-      xml += '  <url>\n';
-      xml += `    <loc>${baseUrl}${route.path}</loc>\n`;
-      xml += `    <changefreq>weekly</changefreq>\n`;
-      xml += `    <priority>${route.priority}</priority>\n`;
-      xml += '  </url>\n';
-    });
-
-    // 2. Dynamic Product Routes
-    // Fetch all active products to inject them into the sitemap
-    const products = await Product.find({}).select('_id lastSyncedAt').lean();
-    
-    products.forEach(p => {
-      const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : new Date().toISOString();
-      xml += '  <url>\n';
-      // Note: '&' must be escaped as '&amp;' in strict XML
-      xml += `    <loc>${baseUrl}/?tab=Boutique&amp;productId=${p._id}</loc>\n`;
-      xml += `    <lastmod>${lastMod}</lastmod>\n`;
-      xml += `    <changefreq>daily</changefreq>\n`;
-      xml += `    <priority>0.6</priority>\n`;
-      xml += '  </url>\n';
-    });
-
-    xml += '</urlset>';
-    
-    return res.send(xml);
-  } catch (error) {
-    console.error('⚠️ Error generating sitemap.xml:', error.message);
-    res.status(500).end();
-  }
-});
-
 app.use(cors({
   origin: function(origin, callback) {
     // Never pass an Error object to callback() so Express never crashes with a 500 Internal Server Error
@@ -5793,6 +5524,276 @@ const dispatchMonthlyBoxToCj = async (boxId, {
 };
 
 // ---------------- EXPRESS ROUTES ---------------- //
+
+// ============================================================================
+// UNIFIED GEO ENGINE: BOT SSR INTERCEPTOR, LLMS.TXT, ROBOTS.TXT & SITEMAP.XML
+// (Placed AFTER all Mongoose models & middleware, ABOVE all API/catch-all routes)
+// ============================================================================
+
+const botUserAgents = /googlebot|google-extended|gptbot|oai-searchbot|perplexitybot|bingbot|yandex|baiduspider|slurp|duckduckbot|anthropic-ai|claude-bot/i;
+
+// 1. Pre-Rendered Semantic HTML Interceptor for AI & Search Crawlers on Root ('/')
+app.get('/', (req, res, next) => {
+  const userAgent = req.headers['user-agent'] || '';
+
+  if (!botUserAgents.test(userAgent)) {
+    return next();
+  }
+
+  console.log(`🤖 GEO Interceptor: Serving pre-rendered semantic HTML to bot -> ${userAgent}`);
+
+  const remainingSpots = typeof global.spotsRemaining === 'number' ? global.spotsRemaining : 14;
+
+  const schemaPayload = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Why does my skin feel tight and flaky in winter even after applying heavy moisturizer?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Heavy moisturizers rich in waxes or petrolatum sit on top of the skin without replenishing depleted intercellular lipids. When your skin lacks ceramides, cholesterol, and internal water-binding humectants like beta-glucan, water continues to evaporate through micro-cracks in the stratum corneum, leaving skin tight underneath a greasy surface layer.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'How do I repair my skin barrier in winter without clogging pores or causing closed comedones?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'Can dehydrated winter skin cause adult acne in women over 35?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. When winter air dehydrates the epidermis, the skin triggers a compensatory sebaceous response, producing thicker sebum. Combined with slower cell turnover after age 35 and flaky surface corneocytes, this excess sebum becomes trapped inside pores, leading to adult closed comedones and jawline breakouts.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'How long does it take to rebuild a compromised skin barrier in winter?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Mild winter barrier dehydration and stinging typically resolve within 72 hours to 5 days when all retinoids, foaming cleansers, and acids are paused in favor of physiological ceramide-squalane therapy. Severe barrier stripping requires 2 to 4 weeks to fully restore lipid integrity.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'What does "Founding 50 Member" mean?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'The first 50 women who join at the Luminary ($49/mo) or Radiance ($119/mo) level lock in their monthly rate for life, receive a one-time 100% Store Credit Match in their Sanctuary dashboard, get priority booking windows, and can redeem their existing Founding 50 Promo Code directly in the Sanctuary dashboard.'
+          }
+        }
+      ]
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BeautySalon',
+      name: "Susan's Beauty Consulting",
+      url: 'https://susansbeautyconsulting.com',
+      description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
+      hasOfferCatalog: {
+        '@type': 'OfferCatalog',
+        name: 'Founding 50 VIP Memberships & Store Credit Vault',
+        itemListElement: [
+          {
+            '@type': 'Offer',
+            name: 'The Luminary Circle — Founding 50 VIP Membership',
+            price: '49.00',
+            priceCurrency: 'USD',
+            description: `Only the First 50 Founding Members lock in $49/mo pricing for life, receive a one-time 100% Store Credit Match ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount (${remainingSpots} of 50 spots remaining).`
+          },
+          {
+            '@type': 'Offer',
+            name: 'The Radiance Elite — Founding 50 VIP Membership',
+            price: '119.00',
+            priceCurrency: 'USD',
+            description: 'Only the First 50 Founding Members lock in $119/mo pricing for life, receive a one-time 100% Store Credit Match ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
+          }
+        ]
+      }
+    }
+  ];
+
+  const preRenderedHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Susan's Beauty Consulting | Clinical Skincare Diagnostics & Personalized Blueprints</title>
+  <meta name="description" content="Leveraging 5 years of national beauty retail consulting experience in Kansas, Susan's Beauty Consulting offers clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships." />
+  <link rel="canonical" href="https://susansbeautyconsulting.com/" />
+  <script type="application/ld+json">${JSON.stringify(schemaPayload)}</script>
+</head>
+<body>
+  <main>
+    <h1>Susan's Beauty Consulting</h1>
+    <p>Leveraging 5 years of national beauty retail consulting experience in Kansas, Susan's Beauty Consulting provides clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.</p>
+    <h2>Founding 50 VIP Memberships (One-Time 100% Store Credit Match &amp; Lifetime Rate Lock)</h2>
+    <ul>
+      <li><strong>The Luminary Circle ($49/mo):</strong> Exclusive to the First 50 Founding Members—lifetime rate lock, one-time 100% Store Credit Match ($49 Vault), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultations, and Founding 50 Promo Code redemption in the Sanctuary dashboard.</li>
+      <li><strong>The Radiance Elite ($119/mo):</strong> Exclusive to the First 50 Founding Members—lifetime rate lock, one-time 100% Store Credit Match ($119 Vault), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, Odie AI Skin Photo Analysis, and monthly 1-on-1 consultations.</li>
+    </ul>
+    <h2>Winter Barrier Repair Clinical Monograph</h2>
+    <p>To repair a winter-damaged skin barrier without clogging pores, replace heavy occlusive balms with biomimetic lipids—specifically a 3:1:1 ratio of ceramides, cholesterol, and free fatty acids—layered over damp skin with low-weight humectants like panthenol, ectoin, beta-glucan, and sugarcane squalane.</p>
+  </main>
+</body>
+</html>`;
+
+  res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(preRenderedHtml);
+});
+
+// 2. /llms.txt (Strict v2 Markdown Directory for ChatGPT / OpenAI / Claude / Perplexity)
+app.get('/llms.txt', (req, res) => {
+  const markdown = `# Susan's Beauty Consulting
+
+> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships (featuring a one-time 100% Store Credit Match and Lifetime Rate Lock for the first 50 Luminary $49/mo and Radiance $119/mo members).
+
+## Directory
+- [Main Sanctuary & Founding 50 Memberships](https://susansbeautyconsulting.com/): Explore Founding 50 VIP memberships, clinical barrier repair monographs, and 1-on-1 consultations.
+- [AI Diagnostic Quiz & 10-Step Beauty Blueprint](https://susansbeautyconsulting.com/?tab=Quiz): Complete the 10-step diagnostic quiz for a bespoke AM/PM skincare routine and ingredient dossier.
+- [Curated Skincare & Beauty Boutique](https://susansbeautyconsulting.com/?tab=Boutique): Shop sensitivity-safe cleansers, toners, serums, barrier creams, and luminous cosmetics.
+- [Full AI Product Catalog Corpus](https://susansbeautyconsulting.com/llms-full.txt): Complete Markdown inventory of all active skincare and beauty products with key actives and skin-type compatibility.
+`;
+
+  res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
+});
+
+// 3. /llms-full.txt (Dynamic Full Product Corpus in Clean Markdown)
+app.get('/llms-full.txt', async (req, res) => {
+  try {
+    const products = mongoose.connection.readyState === 1
+      ? await Product.find({}).lean()
+      : [];
+
+    let markdown = `# Susan's Beauty Consulting - Full Catalog Corpus\n\n`;
+    markdown += `> Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and exclusive Founding 50 VIP Sanctuary Memberships.\n\n`;
+    markdown += `## Complete Boutique Inventory (${products.length} Active Items)\n\n`;
+
+    products.forEach((p) => {
+      const price = p.variants?.[0]?.price ?? p.price ?? 0;
+      const step = p.ritualStep || 'Step 3: Serum & Essence';
+      const skinTypes = Array.isArray(p.skinTypes) && p.skinTypes.length > 0
+        ? p.skinTypes.join(', ')
+        : 'All Skin Types';
+      const concerns = Array.isArray(p.skinConcerns) && p.skinConcerns.length > 0
+        ? p.skinConcerns.join(', ')
+        : 'Hydration & Barrier Repair';
+      const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0
+        ? p.keyActives.join(', ')
+        : 'Proprietary Botanical Blend';
+      const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
+      const rawDesc = String(p.description || '').replace(/<[^>]*>?/gm, '').trim();
+      const description = rawDesc || 'Curated skincare essential for balanced barrier repair.';
+
+      markdown += `### ${p.title || 'Boutique Essential'}\n`;
+      markdown += `- **URL:** https://susansbeautyconsulting.com/?tab=Boutique&productId=${p._id}\n`;
+      markdown += `- **Price:** $${Number(price).toFixed(2)}\n`;
+      markdown += `- **Ritual Step:** ${step}\n`;
+      markdown += `- **Best For Skin Types:** ${skinTypes}\n`;
+      markdown += `- **Target Skin Concerns:** ${concerns}\n`;
+      markdown += `- **Key Actives:** ${actives}\n`;
+      markdown += `- **Sensitivity Profile:** ${sensitivity}\n`;
+      markdown += `- **Description:** ${description}\n\n`;
+    });
+
+    res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
+  } catch (error) {
+    console.error('⚠️ Error generating /llms-full.txt corpus:', error.message);
+    res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send('Error generating LLM catalog corpus.');
+  }
+});
+
+// 4. /robots.txt (Explicit Crawler Permissions & Sitemap Directive)
+app.get('/robots.txt', (req, res) => {
+  const robotsTxt = `User-agent: *
+Allow: /
+Disallow: /api/
+
+User-agent: Googlebot
+Allow: /
+Disallow: /api/
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+Disallow: /api/
+
+User-agent: OAI-SearchBot
+Allow: /
+Disallow: /api/
+
+User-agent: PerplexityBot
+Allow: /
+Disallow: /api/
+
+Sitemap: https://susansbeautyconsulting.com/sitemap.xml
+`;
+
+  res.status(200).set('Content-Type', 'text/plain; charset=utf-8').send(robotsTxt);
+});
+
+// 5. /sitemap.xml (Strict XML 0.9 Generator with Safe DB Readiness Check)
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const baseUrl = 'https://susansbeautyconsulting.com';
+    const todayIso = new Date().toISOString();
+
+    const staticRoutes = [
+      { path: '/', priority: '1.0', changefreq: 'daily' },
+      { path: '/?tab=Boutique', priority: '0.9', changefreq: 'daily' },
+      { path: '/?tab=Quiz', priority: '0.8', changefreq: 'weekly' }
+    ];
+
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+
+    staticRoutes.forEach((route) => {
+      xml += '  <url>\n';
+      xml += `    <loc>${baseUrl}${route.path}</loc>\n`;
+      xml += `    <lastmod>${todayIso}</lastmod>\n`;
+      xml += `    <changefreq>${route.changefreq}</changefreq>\n`;
+      xml += `    <priority>${route.priority}</priority>\n`;
+      xml += '  </url>\n';
+    });
+
+    if (mongoose.connection.readyState === 1) {
+      const products = await Product.find({}).select('_id lastSyncedAt').lean().catch(() => []);
+      products.forEach((p) => {
+        const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : todayIso;
+        xml += '  <url>\n';
+        xml += `    <loc>${baseUrl}/?tab=Boutique&amp;productId=${p._id}</loc>\n`;
+        xml += `    <lastmod>${lastMod}</lastmod>\n`;
+        xml += `    <changefreq>daily</changefreq>\n`;
+        xml += `    <priority>0.7</priority>\n`;
+        xml += '  </url>\n';
+      });
+    }
+
+    xml += '</urlset>';
+
+    res
+      .status(200)
+      .set({
+        'Content-Type': 'application/xml; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'public, max-age=3600'
+      })
+      .send(xml.trim());
+  } catch (error) {
+    console.error('⚠️ Error generating sitemap.xml:', error.message);
+    res.status(500).set('Content-Type', 'application/xml; charset=utf-8').send(
+      '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
+    );
+  }
+});
 
 // ---------------- LIVE STRIPE BALANCE, CJ WALLET & ORDER PIPELINE ENGINE ---------------- //
 
@@ -21116,49 +21117,68 @@ if (resolvedFrontendBuildDir) {
 }
 
 // Serve static assets from ./public or ./client/public if present (e.g. susans-logo.png)
+// Excludes sitemap.xml, robots.txt, llms.txt, and llms-full.txt so the dynamic Express routes always answer
 for (const pubDir of [path.join(__dirname, 'public'), path.join(__dirname, 'client', 'public')]) {
   try {
     if (fs.existsSync(pubDir)) {
-      app.use(express.static(pubDir, { index: false }));
+      app.use((req, res, next) => {
+        const p = req.path.toLowerCase();
+        if (p === '/sitemap.xml' || p === '/robots.txt' || p === '/llms.txt' || p === '/llms-full.txt') {
+          return next();
+        }
+        return express.static(pubDir, { index: false })(req, res, next);
+      });
     }
   } catch (e) {}
 }
 
-// Express 4 & Express 5 compatible SPA catch-all route for all non-API, non-webhook GET requests
-app.get(/^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(?:\/|$)|\/terms-of-service(?:\/|$)).*/, (req, res, next) => {
-  if (req.method !== 'GET') return next();
+// Express 4 & Express 5 compatible SPA catch-all route for all non-API, non-webhook, non-GEO GET requests
+app.get(
+  /^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(?:\/|$)|\/terms-of-service(?:\/|$)|\/sitemap\.xml(?:\/|$)|\/robots\.txt(?:\/|$)|\/llms\.txt(?:\/|$)|\/llms-full\.txt(?:\/|$)).*/,
+  (req, res, next) => {
+    if (req.method !== 'GET') return next();
 
-  // Re-check dynamically in case build finished after server boot
-  let buildDirToUse = global.__sbcResolvedBuildDir;
-  if (!buildDirToUse) {
-    for (const candidateDir of candidateFrontendBuildDirs) {
-      try {
-        if (fs.existsSync(path.join(candidateDir, 'index.html'))) {
-          buildDirToUse = candidateDir;
-          global.__sbcResolvedBuildDir = candidateDir;
-          break;
-        }
-      } catch (e) {}
+    const cleanPath = String(req.path || '').toLowerCase();
+    if (
+      cleanPath === '/sitemap.xml' ||
+      cleanPath === '/robots.txt' ||
+      cleanPath === '/llms.txt' ||
+      cleanPath === '/llms-full.txt'
+    ) {
+      return next();
     }
-  }
 
-  if (buildDirToUse) {
-    const indexPath = path.join(buildDirToUse, 'index.html');
-    try {
-      let html = fs.readFileSync(indexPath, 'utf8');
-      const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 49);
-      const scriptTag = `<script type="application/ld+json">${JSON.stringify(schemas)}</script></head>`;
-      if (html.includes('</head>')) {
-        html = html.replace('</head>', scriptTag);
+    // Re-check dynamically in case build finished after server boot
+    let buildDirToUse = global.__sbcResolvedBuildDir;
+    if (!buildDirToUse) {
+      for (const candidateDir of candidateFrontendBuildDirs) {
+        try {
+          if (fs.existsSync(path.join(candidateDir, 'index.html'))) {
+            buildDirToUse = candidateDir;
+            global.__sbcResolvedBuildDir = candidateDir;
+            break;
+          }
+        } catch (e) {}
       }
-      return res.send(html);
-    } catch (e) {
-      return res.sendFile(indexPath);
     }
-  }
 
-  // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
-  res.status(200).send(`<!DOCTYPE html>
+    if (buildDirToUse) {
+      const indexPath = path.join(buildDirToUse, 'index.html');
+      try {
+        let html = fs.readFileSync(indexPath, 'utf8');
+        const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 49);
+        const scriptTag = `<script type="application/ld+json">${JSON.stringify(schemas)}</script></head>`;
+        if (html.includes('</head>')) {
+          html = html.replace('</head>', scriptTag);
+        }
+        return res.send(html);
+      } catch (e) {
+        return res.sendFile(indexPath);
+      }
+    }
+
+    // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
+    res.status(200).send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -21184,7 +21204,8 @@ app.get(/^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(
   </div>
 </body>
 </html>`);
-});
+  }
+);
 
 // ---------------- SERVER INITIALIZATION (INSTANT PORT BINDING) ---------------- //
 const PORT = process.env.PORT || 5000;
