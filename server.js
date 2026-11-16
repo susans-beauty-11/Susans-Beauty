@@ -5526,6 +5526,569 @@ const dispatchMonthlyBoxToCj = async (boxId, {
 // ---------------- EXPRESS ROUTES ---------------- //
 
 // ============================================================================
+// NATIONWIDE 9-PAGE SEO, SSR PRERENDERING & GEO ENGINE
+// ============================================================================
+
+const BASE_SEO_URL = 'https://susansbeautyconsulting.com';
+
+// Complete 9-Page SEO Architecture & Keyword Map
+const PUBLIC_SEO_PAGES = {
+  '/': {
+    path: '/',
+    title: "Susan's Beauty Consulting | Personalized Beauty Memberships",
+    description: "Explore personalized beauty and skincare guidance, educational resources, and membership options at Susan's Beauty Consulting.",
+    h1: 'Your Personal Beauty Journey Starts Here',
+    mainKeyword: 'Beauty consulting membership',
+    priority: '1.0',
+    changefreq: 'daily',
+    breadcrumbName: 'Home',
+    bodyHtml: `
+      <p>Beauty should feel personal. Discover a membership experience designed to help you explore beauty, skincare, and personalized guidance with confidence.</p>
+      <section>
+        <h2>Personalized Beauty Guidance &amp; Skincare Education</h2>
+        <p>At Susan's Beauty Consulting, we bring together 5 years of national beauty retail consulting experience in Kansas with interactive AI skin diagnostics, curated monthly skincare rituals, and 1-on-1 consultations.</p>
+        <p><a href="/beauty-memberships/">Explore Memberships</a> | <a href="/personalized-beauty-consulting/">Discover Your Beauty Journey</a></p>
+      </section>
+      <section>
+        <h2>Compare Membership Options</h2>
+        <ul>
+          <li><strong>Essential Glow ($19/mo):</strong> 1 AI Skin Scan per month, educational beauty resources, and a 10% Boutique member discount.</li>
+          <li><strong>The Luminary Circle ($49/mo — Founding 50 Eligible):</strong> 3-piece monthly curated skincare ritual box, quarterly 1-on-1 consultation with Susan, unlimited AI diagnostics, 15% Boutique discount, plus a one-time 100% Store Credit Match ($49 Vault) and lifetime rate lock for the First 50 Founding Members.</li>
+          <li><strong>The Radiance Elite ($119/mo — Founding 50 Eligible):</strong> 5-piece luxury monthly skincare ritual box, monthly 30-minute 1-on-1 consultation, AI Skin Photo Analysis, 25% Boutique discount, FREE 3-Piece VIP Mystery Box on first order, and a one-time 100% Store Credit Match ($119 Vault) for the First 50 Founding Members.</li>
+        </ul>
+      </section>`
+  },
+  '/beauty-memberships': {
+    path: '/beauty-memberships/',
+    title: "Beauty Memberships for Personalized Guidance | Susan's",
+    description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations.",
+    h1: 'Discover Your Beauty Membership',
+    mainKeyword: 'Beauty membership',
+    priority: '0.9',
+    changefreq: 'weekly',
+    breadcrumbName: 'Beauty Memberships',
+    bodyHtml: `
+      <p>Your beauty journey is personal, and your beauty guidance should be too. Unlike a one-time free beauty article, a Susan's Beauty Consulting membership provides continuing, season-by-season support tailored to your skin's changing needs.</p>
+      <h2>What Your Membership Includes</h2>
+      <ul>
+        <li><strong>Personalized 10-Step Beauty Blueprint:</strong> Custom AM and PM skincare routines calibrated to your skin type, sensitivity threshold, and local climate.</li>
+        <li><strong>Ongoing 1-on-1 Consultations:</strong> Quarterly video check-ins for Luminary members and monthly 1-on-1 sessions for Radiance members.</li>
+        <li><strong>Curated Monthly Ritual Boxes:</strong> Hand-selected cleansers, serums, and barrier creams matched to your diagnostic profile.</li>
+        <li><strong>Member Boutique Savings &amp; Founding 50 Perks:</strong> Automatic 10% to 25% savings on every product, plus a one-time 100% Store Credit Match for our First 50 Founding Members.</li>
+      </ul>
+      <p><a href="/membership-options/">Compare Membership Tiers &amp; Enroll</a></p>`
+  },
+  '/membership-options': {
+    path: '/membership-options/',
+    title: "Compare Beauty Membership Options | Susan's",
+    description: "Compare Essential Glow ($19/mo), Luminary VIP ($49/mo), and Radiance All-Access ($119/mo) beauty membership options at Susan's Beauty Consulting.",
+    h1: 'Choose the Membership That Fits Your Beauty Journey',
+    mainKeyword: 'Beauty membership options',
+    priority: '0.9',
+    changefreq: 'weekly',
+    breadcrumbName: 'Membership Options',
+    bodyHtml: `
+      <p>Compare our three membership tiers below to find the right level of personalized guidance, monthly product curation, and 1-on-1 consultation support.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Membership Feature</th>
+            <th>Essential Glow ($19/mo)</th>
+            <th>Luminary VIP ($49/mo)</th>
+            <th>Radiance All-Access ($119/mo)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Best For</td>
+            <td>Beginners exploring guided skincare</td>
+            <td>Women seeking a complete monthly ritual &amp; quarterly check-ins</td>
+            <td>All-access luxury care, monthly 1-on-1s &amp; AI photo diagnostics</td>
+          </tr>
+          <tr>
+            <td>10-Step Beauty Blueprint &amp; AI Scans</td>
+            <td>1 AI Scan / month</td>
+            <td>Unlimited AI Scans + Full Blueprint</td>
+            <td>Unlimited AI Scans + AI Skin Photo Analysis</td>
+          </tr>
+          <tr>
+            <td>Monthly Curated Skincare Box</td>
+            <td>Not included</td>
+            <td>3-Piece Curated Box ($85+ value)</td>
+            <td>5-Piece Luxury Box ($200+ value)</td>
+          </tr>
+          <tr>
+            <td>1-on-1 Video Consultations with Susan</td>
+            <td>Standard booking access</td>
+            <td>Quarterly 15-min 1-on-1 check-in</td>
+            <td>Monthly 30-min 1-on-1 consultation</td>
+          </tr>
+          <tr>
+            <td>Boutique Member Discount</td>
+            <td>10% Off</td>
+            <td>15% Off</td>
+            <td>25% Off</td>
+          </tr>
+          <tr>
+            <td>Founding 50 Lifetime Lock &amp; Credit Match</td>
+            <td>Standard rate</td>
+            <td>$49 One-Time Store Credit Match + Lifetime Lock</td>
+            <td>$119 One-Time Store Credit Match + Free 3pc VIP Mystery Box</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><a href="/?tab=Pricing">Choose Your Membership</a></p>`
+  },
+  '/personalized-beauty-consulting': {
+    path: '/personalized-beauty-consulting/',
+    title: "Personalized Beauty Consulting Online | Susan's",
+    description: "Experience 1-on-1 online beauty consulting tailored to your complexion, undertone, skin sensitivity, and daily lifestyle.",
+    h1: 'A More Personalized Approach to Beauty',
+    mainKeyword: 'Personalized beauty consultation',
+    priority: '0.8',
+    changefreq: 'weekly',
+    breadcrumbName: 'Personalized Beauty Consulting',
+    bodyHtml: `
+      <p>Stop guessing which products work together. Our online beauty consulting combines diagnostic precision with warm, human guidance from Susan.</p>
+      <h2>How Personalized Beauty Consulting Works</h2>
+      <ol>
+        <li><strong>Complete Your 10-Step Diagnostic:</strong> Share your skin type, primary goal, climate, sensitivity level, undertone, and routine preference.</li>
+        <li><strong>Receive Your Custom Dossier:</strong> Instantly review your AM/PM ritual steps, hero ingredients to seek, and irritating ingredients to avoid.</li>
+        <li><strong>Meet 1-on-1 with Susan:</strong> Luminary and Radiance members meet directly with Susan via private video sanctuary sessions to refine their routine as seasons change.</li>
+      </ol>
+      <p><a href="/beauty-memberships/">Explore Membership Access</a> | <a href="/?tab=Quiz">Take the 10-Step Beauty Quiz</a></p>`
+  },
+  '/personalized-skincare-guidance': {
+    path: '/personalized-skincare-guidance/',
+    title: "Personalized Skincare Guidance | Susan's Beauty Consulting",
+    description: "Learn how to build a consistent, sensitivity-safe skincare routine with personalized ingredient guidance from Susan's Beauty Consulting.",
+    h1: 'Discover Skincare Guidance That Fits Your Needs',
+    mainKeyword: 'Personalized skincare guidance',
+    priority: '0.8',
+    changefreq: 'weekly',
+    breadcrumbName: 'Personalized Skincare Guidance',
+    bodyHtml: `
+      <p>Effective skincare does not require a complicated 12-step shelf—it requires the right ingredients in the right order for your unique skin barrier.</p>
+      <h2>Core Pillars of Our Skincare Guidance</h2>
+      <ul>
+        <li><strong>Understanding Individual Skin Needs:</strong> Distinguishing between dry skin (oil-depleted) and dehydrated skin (water-depleted) in dry, humid, cold, or temperate climates.</li>
+        <li><strong>Building a Consistent Routine:</strong> Structured Step 1 Cleanser, Step 2 Toner &amp; Mist, Step 3 Serum &amp; Essence, Step 4 Moisturizer, and Step 5 Eye, Lip &amp; SPF protocols.</li>
+        <li><strong>Evaluating Skincare Ingredients:</strong> Pairing barrier-supporting ceramides, hyaluronic acid, niacinamide, and soothing Centella Asiatica while avoiding harsh unbuffered acids on sensitive skin.</li>
+        <li><strong>When to Consult a Dermatologist:</strong> Our guidance is educational and cosmetic; we always help members recognize when persistent clinical symptoms warrant a licensed dermatologist.</li>
+      </ul>
+      <p><a href="/beauty-resources/">Browse Beauty Resources</a> | <a href="/membership-options/">View Skincare Memberships</a></p>`
+  },
+  '/about-susan': {
+    path: '/about-susan/',
+    title: "Meet Susan | Susan's Beauty Consulting",
+    description: "Meet Susan Coke, founder of Susan's Beauty Consulting, and learn how her 5 years of national beauty retail experience inspired a more personal membership sanctuary.",
+    h1: 'Meet Susan',
+    mainKeyword: "Susan's Beauty Consulting",
+    priority: '0.8',
+    changefreq: 'monthly',
+    breadcrumbName: 'About Susan',
+    bodyHtml: `
+      <p>Susan Coke founded Susan's Beauty Consulting after 5 years of hands-on national beauty retail consulting experience in Kansas, helping hundreds of women navigate overwhelming cosmetic aisles and conflicting ingredient advice.</p>
+      <h2>Our Consulting Philosophy</h2>
+      <p>Too often, women are sold trendy, high-markup products that strip their moisture barrier or clash with their natural undertone. Susan created the Sanctuary Membership program so every woman can access honest, ongoing 1-on-1 guidance, ingredient transparency, and sensitivity-safe formulations in one welcoming place.</p>
+      <p><a href="/beauty-memberships/">Explore Susan's Membership Program</a> | <a href="/contact/">Contact Susan</a></p>`
+  },
+  '/beauty-resources': {
+    path: '/beauty-resources/',
+    title: "Beauty and Skincare Resources | Susan's",
+    description: "Explore educational guides on skincare routines, winter barrier repair, cosmetic ingredient literacy, and personalized beauty care.",
+    h1: 'Your Beauty and Skincare Resource Center',
+    mainKeyword: 'Beauty and skincare advice',
+    priority: '0.8',
+    changefreq: 'weekly',
+    breadcrumbName: 'Beauty Resources',
+    bodyHtml: `
+      <p>Explore our educational monographs and practical guides designed to help you make informed, confident skincare and makeup decisions.</p>
+      <h2>Featured Educational Guides &amp; Categories</h2>
+      <ul>
+        <li><strong>Skincare Education:</strong> How to Repair Your Skin Barrier in Winter Without Clogging Pores (3:1:1 Ceramide, Cholesterol &amp; Fatty Acid Protocol).</li>
+        <li><strong>Beauty Routines:</strong> How to Build a Personalized AM &amp; PM Beauty Routine (Minimalist 3-Step vs. Balanced 4-Step vs. Luxurious 5-Step).</li>
+        <li><strong>Ingredient Literacy:</strong> Understanding Hyaluronic Acid, Niacinamide, Vitamin C, Peptides, Bakuchiol, and Barrier Ceramides.</li>
+        <li><strong>Membership Education:</strong> What to Look for in an Online Beauty Membership &amp; How 1-on-1 Consultations Work.</li>
+      </ul>
+      <p><a href="/personalized-skincare-guidance/">Read Skincare Guidance</a> | <a href="/membership-options/">Join the Sanctuary</a></p>`
+  },
+  '/membership-faq': {
+    path: '/membership-faq/',
+    title: "Beauty Membership Questions & FAQ | Susan's Beauty Consulting",
+    description: "Find clear answers to common questions about Susan's Beauty Consulting memberships, billing, cancellation, Monthly Mystery Boxes, and 1-on-1 consultations.",
+    h1: 'Membership Frequently Asked Questions',
+    mainKeyword: 'Beauty membership questions',
+    priority: '0.8',
+    changefreq: 'monthly',
+    breadcrumbName: 'Membership FAQ',
+    bodyHtml: `
+      <dl>
+        <dt><strong>What is Susan's Beauty Consulting?</strong></dt>
+        <dd>Susan's Beauty Consulting is an online beauty and skincare membership sanctuary founded by Susan Coke, combining a 10-step AI skin diagnostic, curated monthly skincare boxes, and 1-on-1 consultations.</dd>
+        <dt><strong>What does a membership include?</strong></dt>
+        <dd>Depending on your tier, membership includes your personalized Beauty Blueprint, monthly curated full-size skincare products, 10% to 25% Boutique discounts, and quarterly or monthly 1-on-1 video consultations with Susan.</dd>
+        <dt><strong>What are the differences between membership tiers?</strong></dt>
+        <dd>Essential Glow ($19/mo) provides digital diagnostics and a 10% discount; Luminary VIP ($49/mo) adds a 3-piece monthly box, quarterly 1-on-1 consultations, and 15% off; Radiance All-Access ($119/mo) includes a 5-piece luxury box, monthly 1-on-1 consultations, AI Skin Photo Analysis, and 25% off.</dd>
+        <dt><strong>What does "Founding 50 Member" mean?</strong></dt>
+        <dd>Only the First 50 Founding Members who join at the Luminary ($49/mo) or Radiance ($119/mo) tier lock in their monthly rate for life, receive a one-time 100% Store Credit Match ($49 or $119) in their Sanctuary dashboard, and can redeem their Founding 50 Promo Code.</dd>
+        <dt><strong>Can I pause, upgrade, or cancel my membership anytime?</strong></dt>
+        <dd>Yes. There are zero long-term contracts or cancellation penalties. You can manage, switch, or cancel your monthly subscription anytime from your Account Info tab.</dd>
+      </dl>
+      <p><a href="/membership-options/">Compare Membership Tiers</a> | <a href="/contact/">Still Have Questions? Contact Us</a></p>`
+  },
+  '/contact': {
+    path: '/contact/',
+    title: "Contact Susan's Beauty Consulting | Personalized Support",
+    description: "Get in touch with Susan's Beauty Consulting for questions about personalized beauty memberships, skincare consultations, or order support.",
+    h1: "Contact Susan's Beauty Consulting",
+    mainKeyword: "Contact Susan's Beauty Consulting",
+    priority: '0.7',
+    changefreq: 'monthly',
+    breadcrumbName: 'Contact',
+    bodyHtml: `
+      <p>Have a question about which membership tier is right for your skin, or need assistance with your Beauty Blueprint? We are here to help.</p>
+      <ul>
+        <li><strong>Direct Email:</strong> <a href="mailto:Susan.Coke@SusansBeautyConsulting.com">Susan.Coke@SusansBeautyConsulting.com</a></li>
+        <li><strong>Expected Response Time:</strong> Within 1 business day (Monday–Friday, US Central Time).</li>
+        <li><strong>On-Site Concierge:</strong> Use the Ask Lily Concierge tab inside the Sanctuary for instant help-desk support and ticket escalation to Susan.</li>
+      </ul>
+      <p><a href="/membership-options/">Explore Membership Options</a> | <a href="/membership-faq/">Read Membership FAQs</a></p>`
+  }
+};
+
+// Normalizes an incoming path (e.g. '/beauty-memberships/' -> '/beauty-memberships')
+const resolveSeoPageConfig = (rawPath = '/') => {
+  const clean = String(rawPath || '/').split('?')[0].replace(/\/+$/, '').toLowerCase() || '/';
+  return PUBLIC_SEO_PAGES[clean] || null;
+};
+
+// Builds comprehensive Organization, WebSite, BreadcrumbList, FAQPage & OfferCatalog JSON-LD
+const buildComprehensiveSeoSchemas = (pageConfig) => {
+  const canonicalUrl = `${BASE_SEO_URL}${pageConfig.path}`;
+  const remainingSpots = typeof global.spotsRemaining === 'number' ? global.spotsRemaining : 14;
+
+  const schemas = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'Organization',
+      '@id': `${BASE_SEO_URL}/#organization`,
+      name: "Susan's Beauty Consulting",
+      url: BASE_SEO_URL,
+      logo: `${BASE_SEO_URL}/susans-logo.png`,
+      email: 'Susan.Coke@SusansBeautyConsulting.com',
+      description: 'Personalized beauty consulting, skincare education, and curated monthly skincare memberships.'
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'WebSite',
+      '@id': `${BASE_SEO_URL}/#website`,
+      url: BASE_SEO_URL,
+      name: "Susan's Beauty Consulting",
+      publisher: { '@id': `${BASE_SEO_URL}/#organization` }
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        {
+          '@type': 'ListItem',
+          position: 1,
+          name: 'Home',
+          item: `${BASE_SEO_URL}/`
+        },
+        ...(pageConfig.path !== '/'
+          ? [
+              {
+                '@type': 'ListItem',
+                position: 2,
+                name: pageConfig.breadcrumbName,
+                item: canonicalUrl
+              }
+            ]
+          : [])
+      ]
+    }
+  ];
+
+  // Attach OfferCatalog on Homepage and Membership pages
+  if (['/', '/beauty-memberships/', '/membership-options/'].includes(pageConfig.path)) {
+    schemas.push({
+      '@context': 'https://schema.org',
+      '@type': 'Service',
+      name: "Susan's Beauty Consulting Memberships",
+      provider: { '@id': `${BASE_SEO_URL}/#organization` },
+      url: canonicalUrl,
+      hasOfferCatalog: {
+        '@type': 'OfferCatalog',
+        name: 'Beauty Consulting Membership Tiers',
+        itemListElement: [
+          {
+            '@type': 'Offer',
+            name: 'Essential Glow Membership',
+            price: '19.00',
+            priceCurrency: 'USD',
+            description: 'Monthly AI skin diagnostic scan, educational resources, and 10% Boutique discount.'
+          },
+          {
+            '@type': 'Offer',
+            name: 'The Luminary Circle — Founding 50 VIP Membership',
+            price: '49.00',
+            priceCurrency: 'USD',
+            description: `3-piece monthly curated skincare box, quarterly 1-on-1 consultation, 15% Boutique discount, plus a one-time 100% Store Credit Match ($49) and lifetime rate lock for the First 50 Founding Members (${remainingSpots} spots left).`
+          },
+          {
+            '@type': 'Offer',
+            name: 'The Radiance Elite — Founding 50 VIP Membership',
+            price: '119.00',
+            priceCurrency: 'USD',
+            description: '5-piece luxury monthly skincare box, monthly 30-min 1-on-1 consultation, AI Skin Photo Analysis, 25% Boutique discount, FREE 3-piece VIP Mystery Box on first order, and a one-time 100% Store Credit Match ($119) for the First 50 Founding Members.'
+          }
+        ]
+      }
+    });
+  }
+
+  // Attach FAQPage schema on Homepage and FAQ page
+  if (['/', '/membership-faq/'].includes(pageConfig.path)) {
+    schemas.push({
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'What actually comes inside the Monthly Mystery Box?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Every box is hand-curated by Susan around seasonal skin Needs. The Luminary VIP box ($49/mo) includes 3 boutique products worth $85+ in retail value, while the Radiance All-Access box ($119/mo) features 5 full-size luxury treatments worth $200+.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'What does "Founding 50 Member" mean?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Only the First 50 Founding Members who join at the Luminary ($49/mo) or Radiance ($119/mo) level lock in their monthly rate for life, receive a one-time 100% Store Credit Match in their Sanctuary dashboard, and can redeem their Founding 50 Promo Code.'
+          }
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I pause, upgrade, or cancel my membership anytime?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. There are zero long-term contracts or cancellation penalties. You can switch tiers or cancel your monthly renewal anytime from your member dashboard.'
+          }
+        }
+      ]
+    });
+  }
+
+  return schemas;
+};
+
+// Builds the crawlable semantic HTML block injected inside <div id="root">...</div>
+const buildCrawlableSeoBodyHtml = (pageConfig) => {
+  const navLinks = Object.values(PUBLIC_SEO_PAGES)
+    .map((p) => `<a href="${p.path}" style="color:#B38B8F;margin:0 8px;">${p.breadcrumbName}</a>`)
+    .join(' | ');
+
+  return `
+    <div class="seo-prerendered-shell" style="max-width:960px;margin:0 auto;padding:40px 24px;font-family:'Cormorant Garamond',Georgia,serif;color:#5C5454;line-height:1.7;">
+      <header style="border-bottom:1px solid #E8C5C8;padding-bottom:18px;margin-bottom:28px;text-align:center;">
+        <nav aria-label="Primary SEO Navigation" style="font-size:0.95rem;line-height:1.8;">
+          ${navLinks}
+        </nav>
+      </header>
+      <main>
+        <h1 style="color:#2C1E18;font-size:2.4rem;margin-bottom:14px;">${pageConfig.h1}</h1>
+        ${pageConfig.bodyHtml}
+      </main>
+      <footer style="margin-top:48px;padding-top:20px;border-top:1px solid #E8C5C8;text-align:center;font-size:0.9rem;color:#8A797A;">
+        <p>&copy; ${new Date().getFullYear()} Susan's Beauty Consulting. Personalized beauty guidance, skincare education, and ongoing membership support.</p>
+      </footer>
+    </div>`;
+};
+
+// Injects route-specific <title>, <meta>, <link rel="canonical">, Open Graph, JSON-LD, and crawlable #root HTML
+const renderSeoHydratedIndexHtml = (rawIndexHtml, pageConfig) => {
+  const canonicalUrl = `${BASE_SEO_URL}${pageConfig.path}`;
+  const schemas = buildComprehensiveSeoSchemas(pageConfig);
+  const crawlableBody = buildCrawlableSeoBodyHtml(pageConfig);
+
+  const headInjection = `
+    <title>${pageConfig.title}</title>
+    <meta name="description" content="${pageConfig.description}" />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="${pageConfig.title}" />
+    <meta property="og:description" content="${pageConfig.description}" />
+    <meta property="og:url" content="${canonicalUrl}" />
+    <meta property="og:image" content="${BASE_SEO_URL}/susans-logo.png" />
+    <script type="application/ld+json">${JSON.stringify(schemas)}</script>
+  `;
+
+  if (!rawIndexHtml || typeof rawIndexHtml !== 'string') {
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />${headInjection}</head><body><div id="root">${crawlableBody}</div></body></html>`;
+  }
+
+  let html = rawIndexHtml
+    .replace(/<title>[\s\S]*?<\/title>/gi, '')
+    .replace(/<meta\s+name=["']description["'][^>]*>/gi, '')
+    .replace(/<link\s+rel=["']canonical["'][^>]*>/gi, '');
+
+  if (html.includes('</head>')) {
+    html = html.replace('</head>', `${headInjection}\n</head>`);
+  }
+
+  // Replace empty <div id="root"></div> with pre-rendered semantic HTML so crawlers never see a blank placeholder
+  if (/<div\s+id=["']root["']\s*><\/div>/i.test(html)) {
+    html = html.replace(
+      /<div\s+id=["']root["']\s*><\/div>/i,
+      `<div id="root">${crawlableBody}</div>`
+    );
+  }
+
+  return html;
+};
+
+// 1. /llms.txt (v2 Markdown Directory including all 9 Nationwide SEO Pages)
+app.get('/llms.txt', (req, res) => {
+  const pageBullets = Object.values(PUBLIC_SEO_PAGES)
+    .map((p) => `- [${p.breadcrumbName}](${BASE_SEO_URL}${p.path}): ${p.description}`)
+    .join('\n');
+
+  const markdown = `# Susan's Beauty Consulting
+
+> Personalized beauty guidance, skincare education, and ongoing membership support in one place. Founding 50 Luminary ($49/mo) and Radiance ($119/mo) members receive a one-time 100% Store Credit Match and Lifetime Rate Lock.
+
+## Public SEO Pages & Membership Directory
+${pageBullets}
+- [Full AI Product Catalog Corpus](${BASE_SEO_URL}/llms-full.txt): Complete Markdown inventory of all active skincare and beauty products.
+`;
+
+  res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
+});
+
+// 2. /llms-full.txt (Dynamic Full Product Corpus in Clean Markdown)
+app.get('/llms-full.txt', async (req, res) => {
+  try {
+    const products = mongoose.connection.readyState === 1
+      ? await Product.find({}).lean()
+      : [];
+
+    let markdown = `# Susan's Beauty Consulting - Full Catalog Corpus\n\n`;
+    markdown += `> Personalized beauty guidance, skincare education, and ongoing membership support.\n\n`;
+    markdown += `## Complete Boutique Inventory (${products.length} Active Items)\n\n`;
+
+    products.forEach((p) => {
+      const price = p.variants?.[0]?.price ?? p.price ?? 0;
+      const step = p.ritualStep || 'Step 3: Serum & Essence';
+      const skinTypes = Array.isArray(p.skinTypes) && p.skinTypes.length > 0 ? p.skinTypes.join(', ') : 'All Skin Types';
+      const concerns = Array.isArray(p.skinConcerns) && p.skinConcerns.length > 0 ? p.skinConcerns.join(', ') : 'Hydration';
+      const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0 ? p.keyActives.join(', ') : 'Botanical Complex';
+      const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
+      const rawDesc = String(p.description || '').replace(/<[^>]*>?/gm, '').trim();
+
+      markdown += `### ${p.title || 'Boutique Essential'}\n`;
+      markdown += `- **URL:** ${BASE_SEO_URL}/?tab=Boutique&productId=${p._id}\n`;
+      markdown += `- **Price:** $${Number(price).toFixed(2)}\n`;
+      markdown += `- **Ritual Step:** ${step}\n`;
+      markdown += `- **Best For Skin Types:** ${skinTypes}\n`;
+      markdown += `- **Target Skin Concerns:** ${concerns}\n`;
+      markdown += `- **Key Actives:** ${actives}\n`;
+      markdown += `- **Sensitivity Profile:** ${sensitivity}\n`;
+      markdown += `- **Description:** ${rawDesc || 'Curated skincare essential.'}\n\n`;
+    });
+
+    res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
+  } catch (error) {
+    res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send('Error generating LLM catalog corpus.');
+  }
+});
+
+// 3. /robots.txt (Allows Public SEO Pages, Protects Member Dashboards & /api/)
+app.get('/robots.txt', (req, res) => {
+  const robotsTxt = `User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+Disallow: /sanctuary/
+
+User-agent: Googlebot
+Allow: /
+Disallow: /api/
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+Disallow: /api/
+
+User-agent: OAI-SearchBot
+Allow: /
+Disallow: /api/
+
+User-agent: PerplexityBot
+Allow: /
+Disallow: /api/
+
+Sitemap: ${BASE_SEO_URL}/sitemap.xml
+`;
+
+  res.status(200).set('Content-Type', 'text/plain; charset=utf-8').send(robotsTxt);
+});
+
+// 4. /sitemap.xml (Includes All 9 Public SEO Routes + Dynamic Boutique Products)
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const todayIso = new Date().toISOString();
+
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+
+    // Include all 9 Nationwide SEO Pages
+    Object.values(PUBLIC_SEO_PAGES).forEach((page) => {
+      xml += '  <url>\n';
+      xml += `    <loc>${BASE_SEO_URL}${page.path}</loc>\n`;
+      xml += `    <lastmod>${todayIso}</lastmod>\n`;
+      xml += `    <changefreq>${page.changefreq}</changefreq>\n`;
+      xml += `    <priority>${page.priority}</priority>\n`;
+      xml += '  </url>\n';
+    });
+
+    // Include Dynamic Product Pages if MongoDB is connected
+    if (mongoose.connection.readyState === 1) {
+      const products = await Product.find({}).select('_id lastSyncedAt').lean().catch(() => []);
+      products.forEach((p) => {
+        const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : todayIso;
+        xml += '  <url>\n';
+        xml += `    <loc>${BASE_SEO_URL}/?tab=Boutique&amp;productId=${p._id}</loc>\n`;
+        xml += `    <lastmod>${lastMod}</lastmod>\n`;
+        xml += '    <changefreq>daily</changefreq>\n';
+        xml += '    <priority>0.6</priority>\n';
+        xml += '  </url>\n';
+      });
+    }
+
+    xml += '</urlset>';
+
+    res
+      .status(200)
+      .set({
+        'Content-Type': 'application/xml; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'public, max-age=3600'
+      })
+      .send(xml.trim());
+  } catch (error) {
+    res.status(500).set('Content-Type', 'application/xml; charset=utf-8').send(
+      '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
+    );
+  }
+});
+
+// ============================================================================
 // UNIFIED GEO ENGINE: BOT SSR INTERCEPTOR, LLMS.TXT, ROBOTS.TXT & SITEMAP.XML
 // (Placed AFTER all Mongoose models & middleware, ABOVE all API/catch-all routes)
 // ============================================================================
@@ -21162,20 +21725,24 @@ app.get(
       }
     }
 
+  const pageConfig = resolveSeoPageConfig(req.path) || PUBLIC_SEO_PAGES['/'];
+
     if (buildDirToUse) {
       const indexPath = path.join(buildDirToUse, 'index.html');
       try {
-        let html = fs.readFileSync(indexPath, 'utf8');
-        const schemas = buildGeoJsonLdSchema(DEFAULT_GEO_MASTER_ARTICLE.faqs, 49);
-        const scriptTag = `<script type="application/ld+json">${JSON.stringify(schemas)}</script></head>`;
-        if (html.includes('</head>')) {
-          html = html.replace('</head>', scriptTag);
-        }
-        return res.send(html);
+        const rawHtml = fs.readFileSync(indexPath, 'utf8');
+        const hydratedHtml = renderSeoHydratedIndexHtml(rawHtml, pageConfig);
+        return res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(hydratedHtml);
       } catch (e) {
         return res.sendFile(indexPath);
       }
     }
+
+    // Even if build/index.html is not present locally, return full pre-rendered SEO HTML for all 9 public routes!
+    return res
+      .status(200)
+      .set('Content-Type', 'text/html; charset=utf-8')
+      .send(renderSeoHydratedIndexHtml('', pageConfig));
 
     // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
     res.status(200).send(`<!DOCTYPE html>
