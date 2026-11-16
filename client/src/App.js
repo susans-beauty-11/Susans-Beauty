@@ -17169,11 +17169,14 @@ function App() {
             />
                 
 const CLIENT_SEO_ROUTE_META = {
-  '/'}: {
-    title}: "Susan's Beauty Consulting | Personalized Beauty Memberships",
+  '/': {
+    title: "Susan's Beauty Consulting | Personalized Beauty Memberships",
     description: "Explore personalized beauty and skincare guidance, educational resources, and membership options at Susan's Beauty Consulting."
   },
   '/beauty-memberships': {
+    title: "Beauty Memberships for Personalized Guidance | Susan's",
+    description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations."
+  },
     title: "Beauty Memberships for Personalized Guidance | Susan's",
     description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations."
   },
