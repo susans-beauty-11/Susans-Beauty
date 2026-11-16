@@ -108,7 +108,7 @@ const AboutSusan = ({
                 margin: '0 0 14px 0'
               }}
             >
-              Hi, I’m <strong>Susan Coke</strong>, founder of <strong>Susan’s Beauty Consulting</strong>. During my five years serving as a 5-time recognized Regional Beauty Consultant at Walgreens in Salina, Kansas, I spoke with hundreds of women over 35 who had drawers full of expensive creams that either left their skin tight and flaky by midday or triggered stubborn breakouts.
+              Hi, I’m <strong>Susan Coke</strong>, founder of <strong>Susan’s Beauty Consulting</strong>. During my five years serving as a 5-time recognized Regional Beauty Consultant for a major national health and beauty retailer in Kansas, I spoke with hundreds of women over 35 who had drawers full of expensive creams that either left their skin tight and flaky by midday or triggered stubborn breakouts.
             </p>
 
             <p
@@ -120,7 +120,7 @@ const AboutSusan = ({
                 margin: '0 0 20px 0'
               }}
             >
-              Most sudden fine lines, dullness, and sensitivity in your 30s, 40s, and 50s aren’t permanent aging—they’re subclinical barrier dehydration paired with natural lipid decline. I built the Sanctuary so you never have to guess in a store aisle again: our <strong>60-Second VIP AI Skin Diagnostic</strong> and <strong>10-Step Beauty Blueprint</strong> pinpoint whether your skin needs water-binding humectants or barrier-sealing ceramides, and match every dollar of your Founding Membership 100% in your Boutique Vault.
+              Most sudden fine lines, dullness, and sensitivity in your 30s, 40s, and 50s aren’t permanent aging—they’re subclinical barrier dehydration paired with natural lipid decline. I built the Sanctuary so you never have to guess in a store aisle again: our <strong>60-Second VIP AI Skin Diagnostic</strong> and <strong>10-Step Beauty Blueprint</strong> pinpoint whether your skin needs water-binding humectants or barrier-sealing ceramides, while the <strong>First 50 Founding Members</strong> on our <strong>Luminary VIP ($49/mo)</strong> or <strong>Radiance All-Access ($119/mo)</strong> tiers receive a <strong>one-time 100% dollar-for-dollar Store Credit Match</strong> in their Boutique Vault and a <strong>Locked-In Lifetime Founding Rate</strong> (with Founding 50 promo codes redeemable directly in your Member Sanctuary).
             </p>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
