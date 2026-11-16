@@ -9,12 +9,12 @@ const TIERS = [
     period: '/month',
     badge: 'ESSENTIAL TIER',
     highlight: false,
-    creditMatch: '100% Store Credit Match ($19/mo added to your Vault)',
+    creditMatch: 'Standard Monthly Access • 10% Boutique Member Discount',
     ctaLabel: 'Start Essential ($19/mo) ✧',
     features: [
+      '1 Monthly AI Skin Analysis & Digital Regimen Update',
       'Full 10-Step Beauty Blueprint Skin Diagnostic Quiz',
-      '$19 Monthly Boutique Store Credit (rolls over)',
-      'Member-Only 20% Savings on Curated Skincare',
+      'Member-Only 10% Savings on Curated Skincare',
       '24/7 Access to Ask Lily AI Skincare Concierge',
       'Seasonal Winter & Summer Barrier Transition Guides'
     ]
@@ -22,37 +22,37 @@ const TIERS = [
   {
     id: 'luminary',
     name: 'The Luminary Circle VIP',
-    tagline: 'Curated 3-Piece Monthly Ritual + Founding Perks',
+    tagline: 'Curated 3-Piece Monthly Ritual + First 50 Founders Perks',
     price: 49,
     period: '/month',
-    badge: 'MOST POPULAR • FOUNDING 50',
+    badge: 'MOST POPULAR • FIRST 50 FOUNDERS',
     highlight: true,
-    creditMatch: '100% Store Credit Match ($49/mo added to your Vault)',
+    creditMatch: 'First 50 Founders: One-Time $49 Store Credit Match + Lifetime Rate Lock',
     ctaLabel: 'Claim Luminary VIP Spot ($49/mo) ✧',
     features: [
-      'Everything in Essential + Founding 50 Lifetime Price Lock',
+      'First 50 Founding Members: Locked-In $49/mo Rate for Life',
+      'First 50 Founding Members: One-Time 100% Store Credit Match ($49 Added Once to Vault)',
       'Curated 3-Piece Monthly Skincare Ritual Box Shipped Free',
-      '100% Dollar-for-Dollar Store Credit Match ($49/mo)',
-      'Quarterly 1-on-1 Consultation with Susan Coke',
-      'Priority Access to Limited-Batch Clinical Formulations'
+      'Quarterly 1-on-1 Consultation with Susan + 15% Boutique Discount',
+      'Redeem Your Founding 50 Promo Code Inside Your Member Sanctuary'
     ]
   },
   {
     id: 'radiance',
     name: 'The Radiance Elite All-Access',
-    tagline: '5-Piece Ritual Box + VIP AI Photo Analysis + Mystery Box',
+    tagline: '5-Piece Ritual Box + VIP AI Photo Analysis + Founders Mystery Box',
     price: 119,
     period: '/month',
-    badge: 'ALL-ACCESS + FREE MYSTERY BOX',
+    badge: 'ALL-ACCESS • FIRST 50 FOUNDERS + MYSTERY BOX',
     highlight: false,
-    creditMatch: '100% Store Credit Match ($119/mo) + Free Mystery Box',
+    creditMatch: 'First 50 Founders: One-Time $119 Store Credit Match + Lifetime Rate Lock',
     ctaLabel: 'Claim Radiance Elite + Mystery Box ($119/mo) ✧',
     features: [
-      '60-Second VIP AI Skin Photo Barrier & Hydration Analysis',
-      'Curated 5-Piece Full-Size Monthly Skincare Ritual Box',
-      'Complimentary Luxury Founder’s Mystery Box ($150+ Value)',
-      'Monthly 1-on-1 Private Video or Sanctuary Consultation with Susan',
-      '100% Store Credit Match ($119/mo) + 35% VIP Boutique Discount'
+      'First 50 Founding Members: Locked-In $119/mo Rate for Life',
+      'First 50 Founding Members: One-Time 100% Store Credit Match ($119 Added Once to Vault)',
+      'First 50 Founders Bonus: One-Time FREE 3pc Luxury Mystery Box ($150+ Value)',
+      '60-Second VIP AI Skin Photo Analysis + Curated 5-Piece Full-Size Monthly Ritual Box',
+      'Monthly 1-on-1 Private Consultation with Susan + 25% VIP Boutique Discount'
     ]
   }
 ];
@@ -204,13 +204,30 @@ const PricingChart = ({
             fontFamily: 'sans-serif',
             fontSize: '0.96rem',
             color: '#736A6A',
-            maxWidth: '680px',
-            margin: '0 auto',
+            maxWidth: '720px',
+            margin: '0 auto 14px auto',
             lineHeight: '1.6'
           }}
         >
-          Every Founding Membership includes a <strong>100% Dollar-for-Dollar Store Credit Match</strong> in your Boutique Vault and a <strong>Lifetime Founding Price Lock</strong>. Cancel or switch tiers anytime in one click.
+          Exclusively for our <strong>First 50 Founding Members</strong> on the <strong>Luminary VIP ($49/mo)</strong> and <strong>Radiance All-Access ($119/mo)</strong> tiers: lock in your <strong>Lifetime Founding Price</strong> and receive a <strong>One-Time 100% Dollar-for-Dollar Store Credit Match</strong> ($49 or $119 added once to your Boutique Vault). Cancel or switch tiers anytime in one click.
         </p>
+
+        <div
+          style={{
+            maxWidth: '720px',
+            margin: '0 auto',
+            backgroundColor: '#FFF0F2',
+            border: '1px dashed #B38B8F',
+            borderRadius: '14px',
+            padding: '10px 16px',
+            fontFamily: 'sans-serif',
+            fontSize: '0.84rem',
+            color: '#5C5454',
+            lineHeight: '1.5'
+          }}
+        >
+          🎟️ <strong>Already have a Founding 50 Promo Code?</strong> Sign in at the top of the page and enter your code inside your <strong>Member Sanctuary Dashboard</strong> to activate your One-Time 100% Store Credit Match &amp; Lifetime Rate Lock.
+        </div>
       </div>
 
       {checkoutError && (
