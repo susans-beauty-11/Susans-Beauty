@@ -17167,6 +17167,108 @@ function App() {
                 scrollToSection('membership-tiers');
               }}
             />
+                
+const CLIENT_SEO_ROUTE_META = {
+  '/': {
+    title: "Susan's Beauty Consulting | Personalized Beauty Memberships",
+    description: "Explore personalized beauty and skincare guidance, educational resources, and membership options at Susan's Beauty Consulting."
+  },
+  '/beauty-memberships': {
+    title: "Beauty Memberships for Personalized Guidance | Susan's",
+    description: "Discover how a Susan's Beauty Consulting membership delivers ongoing personalized skincare guidance, curated monthly boxes, and 1-on-1 consultations."
+  },
+  '/membership-options': {
+    title: "Compare Beauty Membership Options | Susan's",
+    description: "Compare Essential Glow ($19/mo), Luminary VIP ($49/mo), and Radiance All-Access ($119/mo) beauty membership options at Susan's Beauty Consulting."
+  },
+  '/personalized-beauty-consulting': {
+    title: "Personalized Beauty Consulting Online | Susan's",
+    description: "Experience 1-on-1 online beauty consulting tailored to your complexion, undertone, skin sensitivity, and daily lifestyle."
+  },
+  '/personalized-skincare-guidance': {
+    title: "Personalized Skincare Guidance | Susan's Beauty Consulting",
+    description: "Learn how to build a consistent, sensitivity-safe skincare routine with personalized ingredient guidance from Susan's Beauty Consulting."
+  },
+  '/about-susan': {
+    title: "Meet Susan | Susan's Beauty Consulting",
+    description: "Meet Susan Coke, founder of Susan's Beauty Consulting, and learn how her 5 years of national beauty retail experience inspired a more personal membership sanctuary."
+  },
+  '/beauty-resources': {
+    title: "Beauty and Skincare Resources | Susan's",
+    description: "Explore educational guides on skincare routines, winter barrier repair, cosmetic ingredient literacy, and personalized beauty care."
+  },
+  '/membership-faq': {
+    title: "Beauty Membership Questions & FAQ | Susan's Beauty Consulting",
+    description: "Find clear answers to common questions about Susan's Beauty Consulting memberships, billing, cancellation, Monthly Mystery Boxes, and 1-on-1 consultations."
+  },
+  '/contact': {
+    title: "Contact Susan's Beauty Consulting | Personalized Support",
+    description: "Get in touch with Susan's Beauty Consulting for questions about personalized beauty memberships, skincare consultations, or order support."
+  }
+};
+
+const PublicSeoFooterAndRouteSync = () => {
+  useEffect(() => {
+    const cleanPath = String(window.location.pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+    const matched = CLIENT_SEO_ROUTE_META[cleanPath];
+    if (matched) {
+      document.title = matched.title;
+      let descEl = document.querySelector('meta[name="description"]');
+      if (!descEl) {
+        descEl = document.createElement('meta');
+        descEl.setAttribute('name', 'description');
+        document.head.appendChild(descEl);
+      }
+      descEl.setAttribute('content', matched.description);
+
+      let canonEl = document.querySelector('link[rel="canonical"]');
+      if (!canonEl) {
+        canonEl = document.createElement('link');
+        canonEl.setAttribute('rel', 'canonical');
+        document.head.appendChild(canonEl);
+      }
+      canonEl.setAttribute('href', `https://susansbeautyconsulting.com${cleanPath === '/' ? '/' : `${cleanPath}/`}`);
+    }
+  }, []);
+
+  return (
+    <footer
+      aria-label="Nationwide SEO Directory"
+      style={{
+        marginTop: '48px',
+        padding: '28px 20px',
+        borderTop: '1px solid #E8C5C8',
+        backgroundColor: 'rgba(255, 249, 249, 0.92)',
+        borderRadius: '20px',
+        textAlign: 'center',
+        fontFamily: "'Cormorant Garamond', serif"
+      }}
+    >
+      <div style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#2C1E18', marginBottom: '12px' }}>
+        Explore Susan&apos;s Beauty Consulting Sanctuary
+      </div>
+      <nav
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+          gap: '14px 22px',
+          fontSize: '1.05rem'
+        }}
+      >
+        <a href="/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Home</a>
+        <a href="/beauty-memberships/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Beauty Memberships</a>
+        <a href="/membership-options/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Compare Membership Options</a>
+        <a href="/personalized-beauty-consulting/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Personalized Beauty Consulting</a>
+        <a href="/personalized-skincare-guidance/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Personalized Skincare Guidance</a>
+        <a href="/about-susan/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Meet Susan</a>
+        <a href="/beauty-resources/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Beauty &amp; Skincare Resources</a>
+        <a href="/membership-faq/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Membership FAQs</a>
+        <a href="/contact/" style={{ color: '#B38B8F', textDecoration: 'underline' }}>Contact</a>
+      </nav>
+    </footer>
+  );
+};
 
             {/* 7. TRANSPARENT FAQ SECTION (ROSE-GOLD SANCTUARY STYLING) */}
             <section
