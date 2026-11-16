@@ -23,7 +23,7 @@ const FAQ_ITEMS = [
   {
     question: 'What does "Founding 50 Member" mean?',
     answer:
-      'The first 50 women who join at the Luminary or Radiance level lock in their monthly rate for life, receive priority salon & virtual booking windows, and get a complimentary Founding Member Welcome Gift added to their first shipment.',
+      'Exclusively for the first 50 women who join at the Luminary VIP ($49/mo) or Radiance All-Access ($119/mo) level (or redeem their Founding 50 promo code in the Member Sanctuary): they lock in their monthly rate for life, receive a one-time 100% Store Credit Match ($49 or $119 added once to their Boutique Vault), and Radiance Founders receive a complimentary 3pc VIP Mystery Box on their first order.',
   },
 ];
 
@@ -208,30 +208,36 @@ const GlobalPublicLaunchStyles = () => (
         flex-direction: column !important;
       }
       .sanctuary-sidebar {
-        width: 100% !important;
-        height: auto !important;
-        max-height: 210px !important;
-        border-right: none !important;
-        border-bottom: 1px solid #E8C5C8 !important;
-        padding: 15px 12px !important;
+        width: calc(100% - 20px) !important;
+        margin: 10px auto 0 auto !important;
+        height: fit-content !important;
+        max-height: none !important;
+        position: sticky !important;
+        top: 8px !important;
+        z-index: 600 !important;
+        border-radius: 18px !important;
+        padding: 12px !important;
       }
       .sanctuary-nav-list {
         flex-direction: row !important;
         overflow-x: auto !important;
         gap: 8px !important;
-        padding: 0 8px !important;
+        padding: 0 4px !important;
+        align-items: center !important;
       }
       .sanctuary-nav-list button {
         white-space: nowrap !important;
         padding: 8px 14px !important;
-        font-size: 1.05rem !important;
+        font-size: 1.02rem !important;
       }
       .sanctuary-main {
-        padding: 22px 16px !important;
+        padding: 20px 14px !important;
       }
       .ritual-bag-drawer {
-        width: 100vw !important;
+        width: calc(100vw - 24px) !important;
         max-width: 380px !important;
+        right: 12px !important;
+        top: 12px !important;
       }
     }
   `}</style>
@@ -303,14 +309,14 @@ const GEOSchemaAndMetaInjector = () => {
                 name: 'The Luminary Circle — Founding 50 VIP Membership',
                 price: '49.00',
                 priceCurrency: 'USD',
-                description: `Lock in $49/mo pricing for life, receive 100% back in Store Credit ($49 Store Credit Vault redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 10% Boutique discount (${remainingSpots} of 50 spots remaining).`
+                description: `First 50 Founding Members only: lock in $49/mo pricing for life, receive a one-time 100% Store Credit Match ($49 added once to your Store Credit Vault, redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 15% Boutique discount (${remainingSpots} of 50 spots remaining).`
               },
               {
                 '@type': 'Offer',
                 name: 'The Radiance Elite — Founding 50 VIP Membership',
                 price: '119.00',
                 priceCurrency: 'USD',
-                description: 'Lock in $119/mo pricing for life, receive 100% back in Store Credit ($119 Store Credit Vault redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
+                description: 'First 50 Founding Members only: lock in $119/mo pricing for life, receive a one-time 100% Store Credit Match ($119 added once to your Store Credit Vault, redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
               }
             ]
           }
@@ -473,7 +479,7 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
             👑 Limited to First 50 Members • {remainingSpots} of 50 Spots Remaining
           </span>
           <span style={{ fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#B38B8F', fontWeight: 'bold' }}>
-            Lifetime Rate Lock + 100% Store Credit Vault
+            First 50 Founders Only: Lifetime Rate Lock + One-Time 100% Credit Match
           </span>
         </div>
 
@@ -481,7 +487,7 @@ const Founding50AndGeoAuthoritySection = ({ onClaimFoundingSpot }) => {
           Founding 50 VIP Membership &amp; Store Credit Vault
         </h2>
         <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.18rem', color: '#5C5454', lineHeight: '1.65', margin: '0 0 16px 0' }}>
-          Lock in <strong>$49/mo The Luminary Circle</strong> or <strong>$119/mo The Radiance Elite</strong> pricing for life, receive <strong>100% back in Store Credit</strong> (<strong>$49</strong> or <strong>$119</strong> in your Store Credit Vault, redeemable dollar-for-dollar on orders), unlock the <strong>AI Beauty &amp; Ritual Consultation</strong>, plus Radiance Founders receive a <strong>FREE 3pc VIP Mystery Box</strong> on their first order.
+          Exclusively for our <strong>First 50 Founding Members</strong>: lock in <strong>$49/mo The Luminary Circle</strong> or <strong>$119/mo The Radiance Elite</strong> pricing for life, receive a <strong>one-time 100% Store Credit Match</strong> (<strong>$49</strong> or <strong>$119</strong> added once to your Store Credit Vault, redeemable dollar-for-dollar on orders), unlock the <strong>AI Beauty &amp; Ritual Consultation</strong>, plus Radiance Founders receive a <strong>FREE 3pc VIP Mystery Box</strong> on their first order. Existing promo codes can be redeemed inside your Member Sanctuary.
         </p>
 
         {/* Progress Bar */}
@@ -12332,23 +12338,23 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
   return (
     <div className="sanctuary-shell" style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
       
-      {/* Sidebar Navigation */}
-      <div className="sanctuary-sidebar" style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
-        <div style={{ textAlign: 'center', marginBottom: '25px' }}>
-          <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '3rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
-          <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '5px 0 0 0', fontStyle: 'italic' }}>Susan's Beauty Consulting</p>
+      {/* Sidebar Navigation — Finite Sticky Box */}
+      <div className="sanctuary-sidebar" style={{ width: '250px', height: 'fit-content', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto', position: 'sticky', top: '16px', alignSelf: 'flex-start', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.94)', backdropFilter: 'blur(8px)', border: '1.5px solid #E8C5C8', borderRadius: '22px', margin: '16px 0 16px 16px', display: 'flex', flexDirection: 'column', padding: '18px 14px', boxShadow: '0 8px 24px rgba(232, 197, 200, 0.25)', boxSizing: 'border-box' }}>
+        <div style={{ textAlign: 'center', marginBottom: '14px' }}>
+          <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.4rem', margin: 0, fontWeight: '400' }}>Admin Portal</h2>
+          <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#A89999', margin: '2px 0 0 0', fontStyle: 'italic', fontSize: '0.95rem' }}>Susan's Beauty Consulting</p>
         </div>
         
-        <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+        <div className="sanctuary-nav-list" style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 4px' }}>
           {tabs.map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
               style={{
-                padding: '12px 20px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                padding: '10px 14px', textAlign: 'left', border: 'none', borderRadius: '12px',
                 backgroundColor: activeTab === tab ? '#F2D4D7' : 'transparent',
                 color: activeTab === tab ? '#5C5454' : '#8A797A',
-                fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', cursor: 'pointer',
+                fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer',
                 transition: 'all 0.3s ease', fontWeight: activeTab === tab ? 'bold' : 'normal',
                 boxShadow: activeTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none'
               }}
@@ -12368,10 +12374,8 @@ const AdminDashboard = ({ adminData, onLogout, backendProducts, onProductDeleted
               {tab}
             </button>
           ))}
-        </div>
 
-        <div style={{ padding: '20px 20px 0 20px' }}>
-          <button onClick={onLogout} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
+          <button onClick={onLogout} style={{ width: '100%', marginTop: '6px', padding: '10px 14px', border: '1px solid #B38B8F', backgroundColor: '#FFF9F9', color: '#5C5454', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = '#FFF9F9'; }}>
             Sign Out
           </button>
         </div>
@@ -13083,16 +13087,16 @@ export function FoundingMemberPromoAndCartModule({
                 fontWeight: 'bold'
               }}
             >
-              👑 Limited to First 50 Members • Lifetime Rate Lock
+              👑 First 50 Founders Only • One-Time Credit Match + Lifetime Rate Lock
             </span>
             <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: compact ? '1.45rem' : '1.85rem', margin: '4px 0 6px 0', color: '#ffffff' }}>
               Founding 50 VIP Membership &amp; Store Credit Vault
             </h3>
             <p style={{ fontSize: '0.86rem', color: '#e6dad2', margin: 0, lineHeight: '1.5' }}>
-              Lock in <strong>$49 Luminary</strong> or <strong>$119 Radiance</strong> pricing for life, receive{' '}
-              <strong>100% back in Store Credit</strong> (redeemable dollar-for-dollar on orders), unlock the{' '}
+              Exclusively for the <strong>First 50 Founding Members</strong>: lock in <strong>$49 Luminary</strong> or <strong>$119 Radiance</strong> pricing for life, receive a{' '}
+              <strong>one-time 100% Store Credit Match</strong> (redeemable dollar-for-dollar on orders), unlock the{' '}
               <strong>AI Beauty &amp; Ritual Consultation</strong>, plus Radiance Founders receive a{' '}
-              <strong>FREE 3pc VIP Mystery Box</strong> on their first order.
+              <strong>FREE 3pc VIP Mystery Box</strong> on their first order. Redeem your existing Founding 50 code below.
             </p>
           </div>
 
@@ -16316,14 +16320,14 @@ function App() {
         />
       )}
 
-      {step === 1 && (
-        <div style={{ position: 'fixed', top: '30px', right: '30px', zIndex: 1000 }}>
+      {(step === 0 || step === 1 || step === 4) && (
+        <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 1000 }}>
           <button
             onClick={() => setIsCartOpen(!isCartOpen)}
-            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '30px', padding: '10px 22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', cursor: 'pointer', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.4)', display: 'flex', alignItems: 'center', gap: '8px' }}
+            style={{ backgroundColor: '#F2D4D7', border: '1.5px solid #B38B8F', borderRadius: '30px', padding: '9px 18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', color: '#5C5454', cursor: 'pointer', boxShadow: '0 4px 15px rgba(232, 197, 200, 0.45)', display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             <span>🛍️ Ritual Bag</span>
-            <span style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', borderRadius: '50%', padding: '2px 8px', fontSize: '0.9rem', fontWeight: 'bold' }}>
+            <span style={{ backgroundColor: '#B38B8F', color: '#FFFFFF', borderRadius: '50%', padding: '2px 8px', fontSize: '0.88rem', fontWeight: 'bold' }}>
               {cart.reduce((sum, item) => sum + item.quantity, 0)}
             </span>
           </button>
@@ -16331,38 +16335,14 @@ function App() {
       )}
 
       {isCartOpen && (
-        <div className="ritual-bag-drawer" style={{ position: 'fixed', top: 0, right: 0, width: '380px', height: '100vh', backgroundColor: '#FFF9F9', borderLeft: '1px solid #E8C5C8', boxShadow: '-5px 0 25px rgba(232, 197, 200, 0.3)', zIndex: 1100, display: 'flex', flexDirection: 'column', padding: '25px', boxSizing: 'border-box', animation: 'fadeIn 0.3s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E8C5C8', paddingBottom: '15px' }}>
-            <h3 style={{ fontFamily: "'Alex Brush', cursive", fontSize: '2.5rem', color: '#B38B8F', margin: 0 }}>Your Ritual Bag</h3>
-            <button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A' }}>✕</button>
+        <div className="ritual-bag-drawer" style={{ position: 'fixed', top: '12px', right: '12px', width: '380px', maxWidth: 'calc(100vw - 24px)', height: 'auto', maxHeight: 'calc(100dvh - 24px)', overflowY: 'auto', backgroundColor: '#FFF9F9', border: '1.5px solid #B38B8F', borderRadius: '22px', boxShadow: '0 16px 42px rgba(92, 84, 84, 0.28)', zIndex: 1100, display: 'flex', flexDirection: 'column', padding: '20px', boxSizing: 'border-box', animation: 'fadeIn 0.25s ease' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E8C5C8', paddingBottom: '10px', marginBottom: '12px' }}>
+            <h3 style={{ fontFamily: "'Alex Brush', cursive", fontSize: '2.2rem', color: '#B38B8F', margin: 0 }}>Your Ritual Bag</h3>
+            <button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.4rem', cursor: 'pointer', color: '#8A797A' }}>✕</button>
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', margin: '20px 0' }}>
-            {cart.length === 0 ? (
-              <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', fontStyle: 'italic', textAlign: 'center', marginTop: '50px' }}>Your ritual bag is currently empty.</p>
-            ) : (
-              cart.map((item) => (
-                <div key={item.sku} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '1px solid rgba(232, 197, 200, 0.3)', paddingBottom: '15px' }}>
-                  <div style={{ flex: 1, paddingRight: '10px' }}>
-                    <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454', margin: '0 0 5px 0' }}>
-                      {item.title || 'Product'} {item.selectedVariantName && item.selectedVariantName !== item.sku ? `(${item.selectedVariantName})` : ''}
-                    </h4>
-                    <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', color: '#B38B8F', margin: 0, fontWeight: 'bold' }}>
-                      ${(item.price * item.quantity).toFixed(2)}
-                    </p>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <button onClick={() => handleUpdateQuantity(item.sku, -1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>-</button>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', color: '#5C5454' }}>{item.quantity}</span>
-                    <button onClick={() => handleUpdateQuantity(item.sku, 1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>+</button>
-                    <button onClick={() => handleRemoveFromCart(item.sku)} style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '1rem', marginLeft: '5px' }}>🗑️</button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div style={{ borderTop: '1px solid #E8C5C8', paddingTop: '18px' }}>
+          {/* TOP-PINNED CHECKOUT & SUMMARY (ALWAYS VISIBLE ON MOBILE WITHOUT SCROLLING) */}
+          <div style={{ borderBottom: '1px solid #E8C5C8', paddingBottom: '14px', marginBottom: '14px' }}>
             {(() => {
               const subtotal = calculateCartSubtotal();
               const { rate, label } = getActiveMemberDiscount();
@@ -16383,25 +16363,42 @@ function App() {
 
               return (
                 <>
+                  <button
+                    onClick={handleCartCheckout}
+                    disabled={cart.length === 0}
+                    style={{ width: '100%', backgroundColor: cart.length === 0 ? '#E8C5C8' : '#B38B8F', border: '1px solid #B38B8F', borderRadius: '25px', padding: '12px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', fontWeight: 'bold', color: '#FFFFFF', cursor: cart.length === 0 ? 'not-allowed' : 'pointer', marginBottom: '12px', boxShadow: cart.length === 0 ? 'none' : '0 6px 18px rgba(179, 139, 143, 0.35)' }}
+                  >
+                    Secure Checkout ✧ ({cart.reduce((sum, item) => sum + item.quantity, 0)})
+                  </button>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', color: '#5C5454' }}>
+                      {appliedCreditUsd > 0 ? 'Cash Due Today:' : 'Total:'}
+                    </span>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.45rem', fontWeight: 'bold', color: '#B38B8F' }}>
+                      ${finalCashDueUsd.toFixed(2)}
+                    </span>
+                  </div>
+
                   {foundingPreview.includesVipMysteryBox && cart.length > 0 && (
-                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#FFFDF5', borderRadius: '10px', border: '1.5px solid #D4AF37', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C4308' }}>
+                    <div style={{ marginBottom: '10px', padding: '9px 11px', backgroundColor: '#FFFDF5', borderRadius: '10px', border: '1.5px solid #D4AF37', fontFamily: 'sans-serif', fontSize: '0.78rem', color: '#5C4308' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold' }}>
                         <span>🎁 Founders 3pc VIP Mystery Box Set</span>
-                        <span style={{ backgroundColor: '#D4AF37', color: '#2C1E18', padding: '2px 7px', borderRadius: '6px', fontSize: '0.72rem' }}>FREE ($0.00)</span>
+                        <span style={{ backgroundColor: '#D4AF37', color: '#2C1E18', padding: '2px 7px', borderRadius: '6px', fontSize: '0.7rem' }}>FREE ($0.00)</span>
                       </div>
-                      <div style={{ fontSize: '0.73rem', color: '#7A6356', marginTop: '3px' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#7A6356', marginTop: '3px' }}>
                         Radiance Founder Exclusive • Auto-injected into your first shipment
                       </div>
                     </div>
                   )}
 
                   {rate > 0 && cart.length > 0 && (
-                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#FFF0F2', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: '#736A6A', marginBottom: '4px' }}>
+                    <div style={{ marginBottom: '10px', padding: '8px 10px', backgroundColor: '#FFF0F2', borderRadius: '10px', border: '1px solid #E8C5C8' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', color: '#736A6A', marginBottom: '3px' }}>
                         <span>Subtotal:</span>
                         <span>${subtotal.toFixed(2)}</span>
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', color: '#B38B8F', fontWeight: 'bold' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', color: '#B38B8F', fontWeight: 'bold' }}>
                         <span>✧ {label}:</span>
                         <span>-${discountAmount.toFixed(2)}</span>
                       </div>
@@ -16409,8 +16406,8 @@ function App() {
                   )}
 
                   {availableVaultCredit > 0 && cart.length > 0 && (
-                    <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#F4FBF5', borderRadius: '10px', border: '1px solid #A5D6A7', fontFamily: 'sans-serif', fontSize: '0.8rem' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', fontWeight: 'bold', color: '#2E7D32', marginBottom: '6px' }}>
+                    <div style={{ marginBottom: '10px', padding: '9px 11px', backgroundColor: '#F4FBF5', borderRadius: '10px', border: '1px solid #A5D6A7', fontFamily: 'sans-serif', fontSize: '0.78rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', fontWeight: 'bold', color: '#2E7D32', marginBottom: '4px' }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <input
                             type="checkbox"
@@ -16421,48 +16418,38 @@ function App() {
                         </span>
                         <span>-${appliedCreditUsd.toFixed(2)}</span>
                       </label>
-                      <div style={{ fontSize: '0.72rem', color: '#4A6B4D', lineHeight: '1.4' }}>
-                        Dollar-for-Dollar Rule: Up to 50% of cart matched with Store Credit. Vault remaining after order: <strong>${remainingVaultUsd.toFixed(2)}</strong>
+                      <div style={{ fontSize: '0.7rem', color: '#4A6B4D', lineHeight: '1.35' }}>
+                        Up to 50% of cart matched with Store Credit. Remaining Vault: <strong>${remainingVaultUsd.toFixed(2)}</strong>
                       </div>
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.3rem', color: '#5C5454' }}>
-                      {appliedCreditUsd > 0 ? 'Cash Due Today:' : 'Total:'}
-                    </span>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.5rem', fontWeight: 'bold', color: '#B38B8F' }}>
-                      ${finalCashDueUsd.toFixed(2)}
-                    </span>
-                  </div>
                   {cart.length > 0 && (
-                    <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '9px 11px', marginBottom: '12px', fontFamily: 'sans-serif', fontSize: '0.76rem', color: '#5C5454' }}>
+                    <div style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', borderRadius: '10px', padding: '8px 10px', marginBottom: '6px', fontFamily: 'sans-serif', fontSize: '0.74rem', color: '#5C5454' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
-                        <span>
-                          ✈️ <strong>Auto-Selected Optimal Shipping:</strong>
-                        </span>
+                        <span>✈️ <strong>Optimal Shipping:</strong></span>
                         <span style={{ color: '#2E7D32', fontWeight: 'bold' }}>
                           Included (${Number(cartShippingInfo.shippingCostUsd || 7.84).toFixed(2)})
                         </span>
                       </div>
-                      <div style={{ marginTop: '3px', color: '#2E7D32', fontWeight: 'bold', fontSize: '0.78rem' }}>
-                        ★ {cartShippingInfo.selectedLogisticName} ({cartShippingInfo.optimalCarrier?.deliveryTime || '5-11 Days'} • Least Expensive & Most Efficient)
+                      <div style={{ marginTop: '2px', color: '#2E7D32', fontWeight: 'bold', fontSize: '0.74rem' }}>
+                        ★ {cartShippingInfo.selectedLogisticName} ({cartShippingInfo.optimalCarrier?.deliveryTime || '5-11 Days'})
                       </div>
                       <button
                         type="button"
                         onClick={() => setCartShippingInfo(prev => ({ ...prev, showAllMethods: !prev.showAllMethods }))}
-                        style={{ marginTop: '5px', background: 'none', border: 'none', padding: 0, color: '#B38B8F', fontSize: '0.72rem', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
+                        style={{ marginTop: '4px', background: 'none', border: 'none', padding: 0, color: '#B38B8F', fontSize: '0.7rem', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
                       >
                         {cartShippingInfo.showAllMethods
                           ? '▲ Hide all CJ shipping methods'
-                          : `▼ View all ${(cartShippingInfo.rates || []).length} available CJ shipping methods & prices`}
+                          : `▼ View all ${(cartShippingInfo.rates || []).length} CJ shipping methods`}
                       </button>
                       {cartShippingInfo.showAllMethods && (
-                        <div style={{ marginTop: '6px', maxHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '3px', borderTop: '1px solid #E8C5C8', paddingTop: '5px' }}>
+                        <div style={{ marginTop: '5px', maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '3px', borderTop: '1px solid #E8C5C8', paddingTop: '4px' }}>
                           {(cartShippingInfo.rates || []).map((r, idx) => {
                             const isOpt = r.logisticName === cartShippingInfo.selectedLogisticName;
                             return (
-                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', padding: '2px 4px', borderRadius: '4px', backgroundColor: isOpt ? '#FFFFFF' : 'transparent', fontWeight: isOpt ? 'bold' : 'normal', color: isOpt ? '#2E7D32' : '#736A6A' }}>
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', padding: '2px 4px', borderRadius: '4px', backgroundColor: isOpt ? '#FFFFFF' : 'transparent', fontWeight: isOpt ? 'bold' : 'normal', color: isOpt ? '#2E7D32' : '#736A6A' }}>
                                 <span>{isOpt ? '★ ' : ''}{r.logisticName} ({r.deliveryTime || '5-11d'})</span>
                                 <span>${Number(r.shippingCostUsd || 0).toFixed(2)}</span>
                               </div>
@@ -16472,19 +16459,38 @@ function App() {
                       )}
                     </div>
                   )}
-                  <p style={{ margin: '0 0 14px 0', fontSize: '0.78rem', color: '#8A797A', textAlign: 'center', fontFamily: 'sans-serif' }}>
-                    ✈️ Shipping address & phone collected securely at Stripe Checkout
+                  <p style={{ margin: '4px 0 0 0', fontSize: '0.74rem', color: '#8A797A', textAlign: 'center', fontFamily: 'sans-serif' }}>
+                    ✈️ Shipping address &amp; phone collected securely at Stripe Checkout
                   </p>
                 </>
               );
             })()}
-            <button 
-              onClick={handleCartCheckout}
-              disabled={cart.length === 0}
-              style={{ width: '100%', backgroundColor: cart.length === 0 ? '#E8C5C8' : '#F2D4D7', border: '1px solid #B38B8F', borderRadius: '25px', padding: '12px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', cursor: cart.length === 0 ? 'not-allowed' : 'pointer' }}
-            >
-              Secure Checkout ✧
-            </button>
+          </div>
+
+          {/* AUTO-EXPANDING PRODUCT LIST BELOW CHECKOUT */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {cart.length === 0 ? (
+              <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', fontStyle: 'italic', textAlign: 'center', margin: '14px 0' }}>Your ritual bag is currently empty.</p>
+            ) : (
+              cart.map((item) => (
+                <div key={item.sku} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(232, 197, 200, 0.35)', paddingBottom: '10px' }}>
+                  <div style={{ flex: 1, paddingRight: '10px' }}>
+                    <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', color: '#5C5454', margin: '0 0 4px 0' }}>
+                      {item.title || 'Product'} {item.selectedVariantName && item.selectedVariantName !== item.sku ? `(${item.selectedVariantName})` : ''}
+                    </h4>
+                    <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '0.98rem', color: '#B38B8F', margin: 0, fontWeight: 'bold' }}>
+                      ${(item.price * item.quantity).toFixed(2)}
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button onClick={() => handleUpdateQuantity(item.sku, -1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>-</button>
+                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454' }}>{item.quantity}</span>
+                    <button onClick={() => handleUpdateQuantity(item.sku, 1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>+</button>
+                    <button onClick={() => handleRemoveFromCart(item.sku)} style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '1rem', marginLeft: '5px' }}>🗑️</button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -16686,7 +16692,7 @@ function App() {
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '15px' }}>
-                <img src={logo} alt="Susan's Beauty Consulting Logo" style={{ width: '100px', height: '100px', objectFit: 'contain' }} />
+                <img src={logo} alt="Susan's Beauty Consulting Logo" style={{ width: '300px', height: '300px', maxWidth: '82vw', maxHeight: '300px', objectFit: 'contain', display: 'block', margin: '0 auto' }} />
               </div>
               <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>
                 Welcome Back
@@ -17566,14 +17572,14 @@ function App() {
         {step === 5 && (
           <div className="sanctuary-shell" style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: 'inherit', backgroundColor: 'transparent', position: 'fixed', top: 0, left: 0, zIndex: 500, boxSizing: 'border-box' }}>
             
-            {/* Sidebar Navigation */}
-            <div className="sanctuary-sidebar" style={{ width: '260px', height: '100%', overflowY: 'auto', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.78)', backdropFilter: 'blur(8px)', borderRight: '1px solid #E8C5C8', display: 'flex', flexDirection: 'column', padding: '30px 0', boxShadow: '2px 0 15px rgba(232, 197, 200, 0.2)', boxSizing: 'border-box' }}>
-              <div style={{ textAlign: 'center', marginBottom: '25px' }}>
-                <img src={logo} alt="Susan's Logo" style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '10px' }} />
-                <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.5rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
+            {/* Sidebar Navigation — Finite Sticky Box */}
+            <div className="sanctuary-sidebar" style={{ width: '250px', height: 'fit-content', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto', position: 'sticky', top: '16px', alignSelf: 'flex-start', flexShrink: 0, backgroundColor: 'rgba(255, 255, 255, 0.94)', backdropFilter: 'blur(8px)', border: '1.5px solid #E8C5C8', borderRadius: '22px', margin: '16px 0 16px 16px', display: 'flex', flexDirection: 'column', padding: '18px 14px', boxShadow: '0 8px 24px rgba(232, 197, 200, 0.25)', boxSizing: 'border-box' }}>
+              <div style={{ textAlign: 'center', marginBottom: '14px' }}>
+                <img src={logo} alt="Susan's Logo" style={{ width: '64px', height: '64px', objectFit: 'contain', marginBottom: '6px' }} />
+                <h2 style={{ fontFamily: "'Alex Brush', cursive", color: '#B38B8F', fontSize: '2.2rem', margin: 0, fontWeight: '400' }}>My Sanctuary</h2>
               </div>
 
-              <div className="sanctuary-nav-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', padding: '0 20px' }}>
+              <div className="sanctuary-nav-list" style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 4px' }}>
                 {['Blueprint', 'Boutique', 'Ask Lily', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
                   const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
                   return (
@@ -17586,10 +17592,10 @@ function App() {
                         }
                       }}
                       style={{
-                        padding: '12px 18px', textAlign: 'left', border: 'none', borderRadius: '12px',
+                        padding: '10px 14px', textAlign: 'left', border: 'none', borderRadius: '12px',
                         backgroundColor: activeMemberTab === tab ? '#F2D4D7' : 'transparent',
                         color: activeMemberTab === tab ? '#5C5454' : '#8A797A',
-                        fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', cursor: 'pointer',
+                        fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer',
                         transition: 'all 0.3s ease', fontWeight: activeMemberTab === tab ? 'bold' : 'normal',
                         boxShadow: activeMemberTab === tab ? '0 4px 10px rgba(232, 197, 200, 0.3)' : 'none',
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between'
@@ -17623,10 +17629,8 @@ function App() {
                     </button>
                   );
                 })}
-              </div>
 
-              <div style={{ padding: '20px 20px 0 20px' }}>
-                <button onClick={handleLogOut} style={{ width: '100%', padding: '12px', border: '1px solid #E8C5C8', backgroundColor: 'transparent', color: '#736A6A', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = 'transparent'; }}>
+                <button onClick={handleLogOut} style={{ width: '100%', marginTop: '6px', padding: '10px 14px', border: '1px solid #B38B8F', backgroundColor: '#FFF9F9', color: '#5C5454', borderRadius: '12px', cursor: 'pointer', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', transition: 'all 0.3s ease' }} onMouseOver={(e) => { e.target.style.backgroundColor = '#FFF0F2'; }} onMouseOut={(e) => { e.target.style.backgroundColor = '#FFF9F9'; }}>
                   Sign Out
                 </button>
               </div>
