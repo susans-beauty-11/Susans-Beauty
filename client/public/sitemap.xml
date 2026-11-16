@@ -6,13 +6,43 @@
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://susansbeautyconsulting.com/?tab=Boutique</loc>
-    <changefreq>daily</changefreq>
+    <loc>https://susansbeautyconsulting.com/beauty-memberships/</loc>
+    <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://susansbeautyconsulting.com/?tab=Quiz</loc>
+    <loc>https://susansbeautyconsulting.com/membership-options/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/personalized-beauty-consulting/</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/personalized-skincare-guidance/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/about-susan/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/beauty-resources/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/membership-faq/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://susansbeautyconsulting.com/contact/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
   </url>
 </urlset>
