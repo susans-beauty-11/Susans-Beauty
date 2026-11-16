@@ -34,6 +34,25 @@ const isAllowedCorsOrigin = (origin) => {
 };
 
 // ============================================================================
+// DOMAIN CANONICALIZATION & HTTPS ENFORCEMENT
+// ============================================================================
+app.use((req, res, next) => {
+  const host = req.headers.host || '';
+  
+  // 1. Redirect www to non-www
+  if (host === 'www.susansbeautyconsulting.com') {
+    return res.redirect(301, `https://susansbeautyconsulting.com${req.originalUrl}`);
+  }
+
+  // 2. Enforce HTTPS (trusting the x-forwarded-proto header from Render/Heroku)
+  if (req.headers['x-forwarded-proto'] === 'http') {
+    return res.redirect(301, `https://${host}${req.originalUrl}`);
+  }
+
+  next();
+});
+
+// ============================================================================
 // GEO AI & SEARCH BOT INTERCEPTOR MIDDLEWARE
 // ============================================================================
 // Detects AI crawlers and search engines to serve pre-rendered semantic HTML,
@@ -219,6 +238,86 @@ app.get('/llms-full.txt', async (req, res) => {
   } catch (error) {
     console.error('⚠️ Error generating /llms-full.txt corpus:', error.message);
     res.status(500).send('Internal Server Error generating LLM catalog corpus.');
+  }
+});
+
+// ============================================================================
+// ROBOTS.TXT (CRAWLER PERMISSIONS & SITEMAP)
+// ============================================================================
+app.get('/robots.txt', (req, res) => {
+  res.set('Content-Type', 'text/plain');
+  
+  const robotsTxt = `User-agent: *
+Allow: /
+Disallow: /api/
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+Sitemap: https://susansbeautyconsulting.com/sitemap.xml
+`;
+
+  return res.send(robotsTxt);
+});
+
+// ============================================================================
+// DYNAMIC SITEMAP.XML GENERATOR
+// ============================================================================
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    res.set('Content-Type', 'application/xml');
+    
+    const baseUrl = 'https://susansbeautyconsulting.com';
+    
+    // Start standard XML sitemap envelope
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+    
+    // 1. Static Core Routes
+    const staticRoutes = [
+      { path: '/', priority: '1.0' },
+      { path: '/?tab=Boutique', priority: '0.8' },
+      { path: '/?tab=Quiz', priority: '0.8' }
+    ];
+
+    staticRoutes.forEach(route => {
+      xml += '  <url>\n';
+      xml += `    <loc>${baseUrl}${route.path}</loc>\n`;
+      xml += `    <changefreq>weekly</changefreq>\n`;
+      xml += `    <priority>${route.priority}</priority>\n`;
+      xml += '  </url>\n';
+    });
+
+    // 2. Dynamic Product Routes
+    // Fetch all active products to inject them into the sitemap
+    const products = await Product.find({}).select('_id lastSyncedAt').lean();
+    
+    products.forEach(p => {
+      const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : new Date().toISOString();
+      xml += '  <url>\n';
+      // Note: '&' must be escaped as '&amp;' in strict XML
+      xml += `    <loc>${baseUrl}/?tab=Boutique&amp;productId=${p._id}</loc>\n`;
+      xml += `    <lastmod>${lastMod}</lastmod>\n`;
+      xml += `    <changefreq>daily</changefreq>\n`;
+      xml += `    <priority>0.6</priority>\n`;
+      xml += '  </url>\n';
+    });
+
+    xml += '</urlset>';
+    
+    return res.send(xml);
+  } catch (error) {
+    console.error('⚠️ Error generating sitemap.xml:', error.message);
+    res.status(500).end();
   }
 });
 
