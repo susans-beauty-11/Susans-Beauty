@@ -1392,6 +1392,10 @@ const productSchema = new mongoose.Schema({
   }],
   rawCjData: { type: mongoose.Schema.Types.Mixed }
 });
+// Compound & sort indexes for fast DB-backed Boutique queries and 3:00 AM stale-item pruning
+productSchema.index({ skinTypes: 1, skinConcerns: 1, ritualStep: 1 });
+productSchema.index({ purchaseCount: -1, viewCount: -1, _id: 1 });
+productSchema.index({ lastSyncedAt: -1 });
 const Product = mongoose.model('Product', productSchema);
 
 const orderSchema = new mongoose.Schema({
@@ -13085,9 +13089,22 @@ app.delete('/api/admin/products/:id', authenticateToken, requireAdmin, async (re
 
 app.get('/api/products', async (req, res) => {
   try {
-    const { category, skinType, skinConcern, ritualStep } = req.query;
+    const {
+      category,
+      skinType,
+      skinConcern,
+      ritualStep,
+      search,
+      sort,
+      page,
+      limit,
+      paginated,
+      includeAdminFields,
+      full
+    } = req.query;
+
     const filter = {};
-    if (category) {
+    if (category && category !== 'All') {
       filter.tags = new RegExp(`^${escapeRegex(category)}$`, 'i');
     }
     if (skinType && skinType !== 'All') {
@@ -13099,10 +13116,78 @@ app.get('/api/products', async (req, res) => {
     if (ritualStep && ritualStep !== 'All') {
       filter.ritualStep = new RegExp(escapeRegex(ritualStep), 'i');
     }
-    const products = await Product.find(filter);
-    res.status(200).json(products);
+    if (search && String(search).trim()) {
+      const searchRegex = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [
+        { title: searchRegex },
+        { description: searchRegex },
+        { tags: searchRegex },
+        { keyActives: searchRegex }
+      ];
+    }
+
+    // Default popularity sort uses the { purchaseCount: -1, viewCount: -1, _id: 1 } index
+    let sortSpec = { purchaseCount: -1, viewCount: -1, _id: 1 };
+    if (sort === 'price_asc') sortSpec = { price: 1, _id: 1 };
+    else if (sort === 'price_desc') sortSpec = { price: -1, _id: 1 };
+    else if (sort === 'newest') sortSpec = { lastSyncedAt: -1, _id: 1 };
+
+    // Admin requests can opt in to full raw CJ / logistics / GEO fields; storefront gets a lightweight payload
+    const isAdminPayload = includeAdminFields === 'true' || full === 'true';
+    const projection = isAdminPayload
+      ? '-__v'
+      : '-rawCjData -availableLogistics -seoAnswerCapsule -__v';
+
+    if (isAdminPayload) {
+      res.set('Cache-Control', 'no-store');
+    } else {
+      res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    }
+
+    // Backward-compatible optional pagination: returns { products, pagination } only when explicitly requested
+    const wantsPagination = paginated === 'true' || page !== undefined;
+    if (wantsPagination) {
+      const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+      const parsedLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 24));
+      const skip = (parsedPage - 1) * parsedLimit;
+
+      const [products, total] = await Promise.all([
+        Product.find(filter)
+          .select(projection)
+          .sort(sortSpec)
+          .skip(skip)
+          .limit(parsedLimit)
+          .lean(),
+        Product.countDocuments(filter)
+      ]);
+
+      const totalPages = Math.max(1, Math.ceil(total / parsedLimit));
+      res.set('X-Total-Count', String(total));
+      return res.status(200).json({
+        products,
+        pagination: {
+          page: parsedPage,
+          limit: parsedLimit,
+          total,
+          totalPages,
+          hasMore: parsedPage < totalPages
+        }
+      });
+    }
+
+    // Default array response for full backward compatibility with existing frontend callers
+    const query = Product.find(filter).select(projection).sort(sortSpec);
+    if (limit !== undefined) {
+      const parsedLimit = Math.min(500, Math.max(1, parseInt(limit, 10) || 300));
+      query.limit(parsedLimit);
+    }
+
+    const products = await query.lean();
+    res.set('X-Total-Count', String(products.length));
+    return res.status(200).json(products);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch products' });
+    console.error('Error fetching products:', error);
+    return res.status(500).json({ error: 'Failed to fetch products' });
   }
 });
 
