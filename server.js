@@ -1820,11 +1820,13 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION (UNCAPPED STRICT SKINCARE & BEAUTY SYNC) ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (CURATED STRICT SKINCARE & BEAUTY SYNC) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 80);
-const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 5000);
+const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 500);
 const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
+const CJ_DEFAULT_CATALOG_CAP = Math.max(25, Number(cleanEnv(process.env.CJ_MAX_CATALOG_CAP)) || 300);
+const CJ_STALE_PRUNE_DAYS = Math.max(1, Number(cleanEnv(process.env.CJ_STALE_PRUNE_DAYS)) || 7);
 
 // Normalizes a product title into a canonical alphanumeric key so near-identical CJ seller clones collapse into one item
 const normalizeCjTitleForDedupe = (rawTitle = '') =>
@@ -3094,51 +3096,79 @@ let cjCatalogSyncTelemetry = {
   lastSanitizedAt: null,
   lastDuplicatesPurgedCount: 0,
   lastNonBeautyPurgedCount: 0,
+  lastExcessCapPrunedCount: 0,
+  lastStalePrunedCount: 0,
+  maxCatalogCap: CJ_DEFAULT_CATALOG_CAP,
   activeCatalogTotal: 0,
   nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)',
   timezone: 'America/Chicago'
 };
 
-// Scans the entire MongoDB Product collection, purges non-beauty items, backfills cjPid/cjSku/normalizedTitleKey,
-// groups duplicate products (by cjPid, cjSku, normalizedTitleKey, or identical CJ image), merges analytics counters,
-// re-points all foreign keys in Order, InboxItem, User.recommendedProducts, and MemberMonthlyBox, and deletes duplicates.
-const sanitizeAndDeduplicateCatalog = async () => {
+// Removes foreign-key references across InboxItem, User.recommendedProducts, and MemberMonthlyBox for pruned products
+const cleanupPrunedProductReferences = async (prunedIds = []) => {
+  if (!Array.isArray(prunedIds) || prunedIds.length === 0) return;
+  await Promise.all([
+    InboxItem.deleteMany({ productId: { $in: prunedIds } }).catch(() => {}),
+    User.updateMany(
+      { recommendedProducts: { $in: prunedIds } },
+      { $pull: { recommendedProducts: { $in: prunedIds } } }
+    ).catch(() => {}),
+    MemberMonthlyBox.updateMany(
+      { 'items.productId': { $in: prunedIds } },
+      { $pull: { items: { productId: { $in: prunedIds } } } }
+    ).catch(() => {})
+  ]);
+};
+
+// Scans MongoDB Product collection, purges non-beauty items, deduplicates & merges analytics counters,
+// and enforces maxCatalogCap (default 300) while always preserving customTitleLocked & custom non-CJ items.
+const sanitizeAndDeduplicateCatalog = async (options = {}) => {
   if (isCatalogSanitizeRunning) {
     return {
       status: 'already_running',
       nonBeautyPurgedCount: 0,
       duplicatesPurged: 0,
+      excessPrunedCount: 0,
       groupsMerged: 0,
+      maxCatalogCap: cjCatalogSyncTelemetry.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP,
       activeCatalogTotal: await Product.countDocuments()
     };
   }
 
+  const parsedCap = Number(options?.maxCatalogCap);
+  const effectiveCap = Number.isFinite(parsedCap) && parsedCap >= 25
+    ? Math.floor(parsedCap)
+    : CJ_DEFAULT_CATALOG_CAP;
+
   isCatalogSanitizeRunning = true;
   try {
-    // 1. Purge any non-Health/Beauty or $0 CJ items first
+    // 1. Purge any non-Skincare/Beauty or $0 CJ items first
     const nonBeautyPurgedCount = await purgeNonBeautyCjProducts();
 
-    // 2. Load all products and backfill canonical keys if missing
+    // 2. Load all products and sort by retention priority:
+    //    (a) customTitleLocked or non-CJ custom items first
+    //    (b) highest engagement score (purchases, curations, cart adds, views)
+    //    (c) most recently synced (lastSyncedAt), then oldest _id
     const allProducts = await Product.find({}).lean();
     const totalScanned = allProducts.length;
 
-    // Sort so preferred canonical survivor comes first:
-    // 1) customTitleLocked === true, 2) highest engagement (purchases + cart adds + curations + views), 3) oldest _id
+    const getRetentionScore = (p) =>
+      (Number(p.purchaseCount || 0) * 100) +
+      (Number(p.curatedCount || 0) * 25) +
+      (Number(p.cartAddCount || 0) * 10) +
+      Number(p.viewCount || 0);
+
+    const isProtectedItem = (p) =>
+      Boolean(p.customTitleLocked) || (!p.cjPid && !p.rawCjData);
+
     const sortedProducts = [...allProducts].sort((a, b) => {
-      if (Boolean(b.customTitleLocked) !== Boolean(a.customTitleLocked)) {
-        return Number(Boolean(b.customTitleLocked)) - Number(Boolean(a.customTitleLocked));
-      }
-      const scoreA =
-        (Number(a.purchaseCount || 0) * 100) +
-        (Number(a.curatedCount || 0) * 25) +
-        (Number(a.cartAddCount || 0) * 10) +
-        Number(a.viewCount || 0);
-      const scoreB =
-        (Number(b.purchaseCount || 0) * 100) +
-        (Number(b.curatedCount || 0) * 25) +
-        (Number(b.cartAddCount || 0) * 10) +
-        Number(b.viewCount || 0);
-      if (scoreB !== scoreA) return scoreB - scoreA;
+      const protDiff = Number(isProtectedItem(b)) - Number(isProtectedItem(a));
+      if (protDiff !== 0) return protDiff;
+      const scoreDiff = getRetentionScore(b) - getRetentionScore(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      const syncA = a.lastSyncedAt ? new Date(a.lastSyncedAt).getTime() : 0;
+      const syncB = b.lastSyncedAt ? new Date(b.lastSyncedAt).getTime() : 0;
+      if (syncB !== syncA) return syncB - syncA;
       return String(a._id).localeCompare(String(b._id));
     });
 
@@ -3146,8 +3176,9 @@ const sanitizeAndDeduplicateCatalog = async () => {
     const canonicalBySku = new Map();
     const canonicalByNormTitle = new Map();
     const canonicalByImage = new Map();
-    const duplicateGroups = new Map(); // canonicalIdStr -> { survivor, duplicates: [] }
+    const duplicateGroups = new Map();
     const metadataUpdates = [];
+    const survivors = [];
 
     for (const prod of sortedProducts) {
       const rawPid = String(prod.cjPid || prod.rawCjData?.pid || '').trim();
@@ -3186,6 +3217,7 @@ const sanitizeAndDeduplicateCatalog = async () => {
         }
         duplicateGroups.get(canonIdStr).duplicates.push(prod);
       } else {
+        survivors.push(prod);
         if (pidKey) canonicalByPid.set(pidKey, prod);
         if (skuKey) canonicalBySku.set(skuKey, prod);
         if (normTitle) canonicalByNormTitle.set(normTitle, prod);
@@ -3214,7 +3246,7 @@ const sanitizeAndDeduplicateCatalog = async () => {
     }
 
     if (metadataUpdates.length > 0) {
-      await Product.bulkWrite(metadataUpdates).catch(() => {});
+      await Product.bulkWrite(metadataUpdates, { ordered: false }).catch(() => {});
     }
 
     let duplicatesPurged = 0;
@@ -3229,7 +3261,6 @@ const sanitizeAndDeduplicateCatalog = async () => {
       const dupIdStrings = dupIds.map((id) => String(id));
       duplicatesPurged += dupIds.length;
 
-      // Sum engagement counters from duplicates into survivor
       const addedViews = duplicates.reduce((s, d) => s + Number(d.viewCount || 0), 0);
       const addedCartAdds = duplicates.reduce((s, d) => s + Number(d.cartAddCount || 0), 0);
       const addedPurchases = duplicates.reduce((s, d) => s + Number(d.purchaseCount || 0), 0);
@@ -3244,13 +3275,11 @@ const sanitizeAndDeduplicateCatalog = async () => {
         }
       }).catch(() => {});
 
-      // Re-point InboxItem references to survivor._id
       await InboxItem.updateMany(
         { productId: { $in: dupIds } },
         { $set: { productId: survivor._id } }
       ).catch(() => {});
 
-      // Re-point User.recommendedProducts references to survivor._id
       const affectedUsers = await User.find({ recommendedProducts: { $in: dupIds } }).select('_id recommendedProducts');
       for (const u of affectedUsers) {
         const currentIds = (u.recommendedProducts || []).map((id) => String(id));
@@ -3262,12 +3291,22 @@ const sanitizeAndDeduplicateCatalog = async () => {
         await u.save().catch(() => {});
       }
 
-      // Re-point MemberMonthlyBox.curatedProducts references to survivor._id
       const affectedBoxes = await MemberMonthlyBox.find({
-        'curatedProducts.productId': { $in: dupIds }
+        $or: [
+          { 'items.productId': { $in: dupIds } },
+          { 'curatedProducts.productId': { $in: dupIds } }
+        ]
       });
       for (const bx of affectedBoxes) {
         let boxChanged = false;
+        if (Array.isArray(bx.items)) {
+          for (const it of bx.items) {
+            if (it.productId && dupIdStrings.includes(String(it.productId))) {
+              it.productId = survivor._id;
+              boxChanged = true;
+            }
+          }
+        }
         if (Array.isArray(bx.curatedProducts)) {
           for (const cp of bx.curatedProducts) {
             if (cp.productId && dupIdStrings.includes(String(cp.productId))) {
@@ -3281,8 +3320,25 @@ const sanitizeAndDeduplicateCatalog = async () => {
         }
       }
 
-      // Delete duplicate Product documents
       await Product.deleteMany({ _id: { $in: dupIds } }).catch(() => {});
+    }
+
+    // 3. Enforce maxCatalogCap: keep all protected custom/locked items + highest-ranked CJ items up to effectiveCap
+    let excessPrunedCount = 0;
+    if (survivors.length > effectiveCap) {
+      const protectedSurvivors = survivors.filter(isProtectedItem);
+      const cjSurvivors = survivors.filter((p) => !isProtectedItem(p));
+      const allowedCjSlots = Math.max(0, effectiveCap - protectedSurvivors.length);
+
+      if (cjSurvivors.length > allowedCjSlots) {
+        const excessItems = cjSurvivors.slice(allowedCjSlots);
+        const excessIds = excessItems.map((p) => p._id);
+        if (excessIds.length > 0) {
+          await Product.deleteMany({ _id: { $in: excessIds } }).catch(() => {});
+          await cleanupPrunedProductReferences(excessIds);
+          excessPrunedCount = excessIds.length;
+        }
+      }
     }
 
     const activeCatalogTotal = await Product.countDocuments();
@@ -3293,11 +3349,13 @@ const sanitizeAndDeduplicateCatalog = async () => {
       lastSanitizedAt: nowIso,
       lastDuplicatesPurgedCount: duplicatesPurged,
       lastNonBeautyPurgedCount: nonBeautyPurgedCount,
+      lastExcessCapPrunedCount: excessPrunedCount,
+      maxCatalogCap: effectiveCap,
       activeCatalogTotal
     };
 
     console.log(
-      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned} items, purged ${nonBeautyPurgedCount} non-skincare/perfume items, merged ${groupsMerged} duplicate groups (${duplicatesPurged} duplicates removed) -> ${activeCatalogTotal} unique Skincare & Beauty products active.`
+      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned}, purged ${nonBeautyPurgedCount} non-skincare, merged ${groupsMerged} duplicate groups (${duplicatesPurged} removed), pruned ${excessPrunedCount} over-cap items (cap=${effectiveCap}) -> ${activeCatalogTotal} active.`
     );
 
     return {
@@ -3306,6 +3364,8 @@ const sanitizeAndDeduplicateCatalog = async () => {
       nonBeautyPurgedCount,
       groupsMerged,
       duplicatesPurged,
+      excessPrunedCount,
+      maxCatalogCap: effectiveCap,
       activeCatalogTotal,
       sanitizedAt: nowIso,
       telemetry: cjCatalogSyncTelemetry
@@ -3317,7 +3377,9 @@ const sanitizeAndDeduplicateCatalog = async () => {
       error: err.message,
       nonBeautyPurgedCount: 0,
       duplicatesPurged: 0,
+      excessPrunedCount: 0,
       groupsMerged: 0,
+      maxCatalogCap: effectiveCap,
       activeCatalogTotal: await Product.countDocuments().catch(() => 0)
     };
   } finally {
@@ -3325,9 +3387,8 @@ const sanitizeAndDeduplicateCatalog = async () => {
   }
 };
 
-// Pulls all Skincare & Beauty products across CJ Dropshipping categories and targeted queries,
-// upserting by canonical cjPid / cjSku / normalizedTitleKey (respecting customTitleLocked),
-// and immediately runs sanitizeAndDeduplicateCatalog() so MongoDB has zero duplicates.
+// Pulls verified Skincare & Beauty products from CJ Dropshipping using batched MongoDB bulkWrite upserts,
+// prunes stale/discontinued CJ listings via lastSyncedAt, and enforces maxCatalogCap (default 300).
 const syncCJCatalog = async (options = {}) => {
   if (isCjSyncRunning) {
     console.log('⏳ CJ catalog sync is already in progress; skipping duplicate trigger.');
@@ -3336,6 +3397,8 @@ const syncCJCatalog = async (options = {}) => {
       purgedCount: 0,
       syncedCount: 0,
       duplicatesPurged: 0,
+      excessPrunedCount: 0,
+      stalePrunedCount: 0,
       activeTotal: await Product.countDocuments().catch(() => 0),
       telemetry: cjCatalogSyncTelemetry
     };
@@ -3344,17 +3407,22 @@ const syncCJCatalog = async (options = {}) => {
   isCjSyncRunning = true;
   const fullCatalog = options.fullCatalog !== undefined ? Boolean(options.fullCatalog) : true;
   const sanitizeAfter = options.sanitizeAfter !== undefined ? Boolean(options.sanitizeAfter) : true;
+  const parsedCap = Number(options.maxCatalogCap);
+  const effectiveCap = Number.isFinite(parsedCap) && parsedCap >= 25
+    ? Math.floor(parsedCap)
+    : CJ_DEFAULT_CATALOG_CAP;
   const maxPages = fullCatalog
     ? Math.max(50, Number(options.maxPages) || CJ_MAX_PAGES)
     : Math.max(1, Number(options.maxPages) || 35);
-  const maxProducts = fullCatalog
-    ? Math.max(500, Number(options.maxProducts) || CJ_MAX_PRODUCTS)
-    : Math.max(1, Number(options.maxProducts) || 500);
+  const maxProducts = Math.max(
+    effectiveCap,
+    Number(options.maxProducts) || Math.min(CJ_MAX_PRODUCTS, Math.ceil(effectiveCap * 1.5))
+  );
   const pageSize = CJ_PAGE_SIZE;
 
   try {
     // 1. Pre-sanitize existing catalog before pulling new CJ batches
-    const preSanitize = await sanitizeAndDeduplicateCatalog();
+    const preSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: effectiveCap });
     const purgedCount = preSanitize.nonBeautyPurgedCount || 0;
 
     const headers = getCjHeaders();
@@ -3364,14 +3432,41 @@ const syncCJCatalog = async (options = {}) => {
         purgedCount,
         syncedCount: 0,
         duplicatesPurged: preSanitize.duplicatesPurged || 0,
+        excessPrunedCount: preSanitize.excessPrunedCount || 0,
+        stalePrunedCount: 0,
         activeTotal: preSanitize.activeCatalogTotal || 0,
         telemetry: cjCatalogSyncTelemetry
       };
     }
 
     console.log(
-      `🔄 Starting Full CJ Beauty & Skincare Pull (fullCatalog=${fullCatalog}, maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`
+      `🔄 Starting Curated CJ Beauty & Skincare Pull (cap=${effectiveCap}, maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`
     );
+
+    // Pre-load existing products into memory Maps once so processCjBatch does O(1) lookups instead of N findOne queries
+    const existingCatalog = await Product.find({})
+      .select(
+        '_id title cjPid cjSku normalizedTitleKey customTitleLocked description seoAnswerCapsule markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics variants.sku rawCjData.pid'
+      )
+      .lean();
+
+    const existingByPid = new Map();
+    const existingBySku = new Map();
+    const existingByNormTitle = new Map();
+    const existingByTitle = new Map();
+
+    const indexExistingProduct = (p) => {
+      if (!p) return;
+      const pid = String(p.cjPid || p.rawCjData?.pid || '').trim().toLowerCase();
+      const sku = String(p.cjSku || p.variants?.[0]?.sku || '').trim().toLowerCase();
+      const normTitle = String(p.normalizedTitleKey || normalizeCjTitleForDedupe(p.title || '')).trim().toLowerCase();
+      const exactTitle = String(p.title || '').trim().toLowerCase();
+      if (pid) existingByPid.set(pid, p);
+      if (sku) existingBySku.set(sku, p);
+      if (normTitle) existingByNormTitle.set(normTitle, p);
+      if (exactTitle) existingByTitle.set(exactTitle, p);
+    };
+    existingCatalog.forEach(indexExistingProduct);
 
     let pagesFetched = 0;
     let totalProcessed = 0;
@@ -3380,10 +3475,12 @@ const syncCJCatalog = async (options = {}) => {
     const seenKeys = new Set();
     const retailMarkup = 6.5;
 
-    // Helper to process a batch of CJ products from any endpoint query
-    const processCjBatch = async (cjProducts, fromBeautySource = false, sourceLabel = '') => {
+    // Batched processor: builds bulkWrite operations for the entire CJ page instead of sequential DB round-trips
+    const processCjBatch = async (cjProducts, _fromBeautySource = false, sourceLabel = '') => {
       if (!Array.isArray(cjProducts) || cjProducts.length === 0) return 0;
       let batchSaved = 0;
+      const bulkOps = [];
+      const syncTimestamp = new Date();
 
       for (const item of cjProducts) {
         if (totalProcessed >= maxProducts) break;
@@ -3393,7 +3490,7 @@ const syncCJCatalog = async (options = {}) => {
         const baseSku = (item.productSku || item.sku || cjPid || '').toString().trim();
         const realCjCategory = (item.categoryName || '').toString().trim();
         const category = realCjCategory || sourceLabel || 'Skincare & Beauty';
-        const desc = item.description || item.productDescription || '';
+        const rawDesc = item.description || item.productDescription || '';
 
         if (!rawTitle || !baseSku) continue;
 
@@ -3410,8 +3507,7 @@ const syncCJCatalog = async (options = {}) => {
           continue;
         }
 
-        // Evaluate strictly against the item's real title and real CJ category (never let synthetic sourceLabel bypass filtering)
-        if (!isStrictHealthAndBeautyProduct(rawTitle, realCjCategory, desc)) {
+        if (!isStrictHealthAndBeautyProduct(rawTitle, realCjCategory, rawDesc)) {
           continue;
         }
 
@@ -3433,7 +3529,7 @@ const syncCJCatalog = async (options = {}) => {
           30,
           Number(parseFloat(String(item.productWeight || item.packWeight || item.weight || '120').split('-')[0].trim())) || 120
         );
-        const defaultLogisticName = 'CJPacket Sensitive';
+        const defaultLogisticName = 'CJPacket Sensitive Pro';
         const fallbackLogistics = buildDeterministicCjBeautyCarriers({
           weightGrams,
           quantity: 1,
@@ -3442,28 +3538,15 @@ const syncCJCatalog = async (options = {}) => {
         });
         const matchedCarrier =
           fallbackLogistics.find((c) => c.logisticName === defaultLogisticName) || fallbackLogistics[0];
-        const shippingCostUsd = Number(matchedCarrier?.shippingCostUsd ?? 4.49);
+        const shippingCostUsd = Number(matchedCarrier?.shippingCostUsd ?? 7.84);
 
-        // Match existing product in MongoDB by cjPid, cjSku, normalizedTitleKey, or exact title
-        const matchOrClauses = [];
-        if (cjPid) {
-          matchOrClauses.push({ cjPid });
-          matchOrClauses.push({ 'rawCjData.pid': cjPid });
-        }
-        if (baseSku) {
-          matchOrClauses.push({ cjSku: baseSku });
-          matchOrClauses.push({ 'variants.sku': baseSku });
-        }
-        if (normTitleKey) {
-          matchOrClauses.push({ normalizedTitleKey: normTitleKey });
-        }
-        matchOrClauses.push({ title: rawTitle });
-
-        const existingProd = await Product.findOne({ $or: matchOrClauses })
-          .select(
-            '_id title cjPid cjSku normalizedTitleKey customTitleLocked markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics'
-          )
-          .lean();
+        // O(1) lookup against in-memory Maps
+        const existingProd =
+          (cjPid && existingByPid.get(cjPid.toLowerCase())) ||
+          existingBySku.get(baseSku.toLowerCase()) ||
+          (normTitleKey && existingByNormTitle.get(normTitleKey.toLowerCase())) ||
+          existingByTitle.get(rawTitle.toLowerCase()) ||
+          null;
 
         const effectiveTitle =
           existingProd && existingProd.customTitleLocked && existingProd.title
@@ -3514,7 +3597,17 @@ const syncCJCatalog = async (options = {}) => {
           mappedVariants[0]?.price ||
             ((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
         );
-        const blueprintLabels = classifyProductForBlueprint(effectiveTitle, category, desc);
+        const blueprintLabels = classifyProductForBlueprint(effectiveTitle, category, rawDesc);
+        const cleanedCopy = extractAndCleanProductDescription({
+          title: effectiveTitle,
+          description: existingProd?.customTitleLocked ? existingProd.description : rawDesc,
+          seoAnswerCapsule: existingProd?.seoAnswerCapsule || '',
+          rawCjData: { description: rawDesc },
+          ritualStep: blueprintLabels.ritualStep,
+          skinTypes: blueprintLabels.skinTypes,
+          skinConcerns: blueprintLabels.skinConcerns,
+          keyActives: blueprintLabels.keyActives
+        });
 
         const updatePayload = {
           title: effectiveTitle,
@@ -3522,8 +3615,9 @@ const syncCJCatalog = async (options = {}) => {
           cjSku: baseSku || existingProd?.cjSku || '',
           normalizedTitleKey: effectiveNormTitle,
           customTitleLocked: Boolean(existingProd?.customTitleLocked),
-          lastSyncedAt: new Date(),
-          description: desc,
+          lastSyncedAt: syncTimestamp,
+          description: cleanedCopy.description,
+          seoAnswerCapsule: cleanedCopy.seoAnswerCapsule,
           imageUrl: img,
           price: primaryRetailPrice,
           wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
@@ -3550,14 +3644,22 @@ const syncCJCatalog = async (options = {}) => {
         };
 
         if (existingProd?._id) {
-          await Product.findByIdAndUpdate(existingProd._id, { $set: updatePayload });
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: existingProd._id },
+              update: { $set: updatePayload }
+            }
+          });
           updatedProductsCount++;
         } else {
-          await Product.findOneAndUpdate(
-            { normalizedTitleKey: effectiveNormTitle },
-            { $set: updatePayload },
-            { upsert: true, returnDocument: 'after' }
-          );
+          bulkOps.push({
+            updateOne: {
+              filter: { normalizedTitleKey: effectiveNormTitle },
+              update: { $set: updatePayload },
+              upsert: true
+            }
+          });
+          indexExistingProduct(updatePayload);
           newProductsAdded++;
         }
 
@@ -3568,10 +3670,13 @@ const syncCJCatalog = async (options = {}) => {
         batchSaved++;
       }
 
+      if (bulkOps.length > 0) {
+        await Product.bulkWrite(bulkOps, { ordered: false });
+      }
+
       return batchSaved;
     };
 
-    // Helper to fetch a CJ product list URL with rate-limit retry
     const fetchCjProductPage = async (url) => {
       try {
         const response = await axios.get(url, { headers, timeout: 15000 });
@@ -3586,7 +3691,8 @@ const syncCJCatalog = async (options = {}) => {
       }
     };
 
-    // Stage A: Pull directly from all discovered CJ Beauty & Skincare Category IDs
+    // Stage A: Pull directly from discovered CJ Skincare & Beauty Category IDs
+    // (No redundant delay(380) needed — axios request interceptor enforces CJ_RATE_LIMIT_MS = 1100ms globally)
     const beautyCategories = await fetchCjBeautyCategoryIds(headers);
     for (const cat of beautyCategories) {
       if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
@@ -3594,13 +3700,10 @@ const syncCJCatalog = async (options = {}) => {
       const url = `${CJ_BASE_URL}/product/list?categoryId=${encodeURIComponent(cat.id)}&pageNum=1&pageSize=${pageSize}`;
       const list = await fetchCjProductPage(url);
       const saved = await processCjBatch(list, true, cat.name);
-      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total processed: ${totalProcessed})`);
-      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
-        await delay(380);
-      }
+      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total processed: ${totalProcessed}/${maxProducts})`);
     }
 
-    // Stage B: Sweep strictly curated Skincare & Facial/Cosmetic Beauty keyword queries using CJ v2 keyWord + productNameEn
+    // Stage B: Sweep strictly curated Skincare & Facial/Cosmetic Beauty keyword queries
     for (const query of CJ_BEAUTY_SEARCH_QUERIES) {
       if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
       pagesFetched++;
@@ -3608,25 +3711,49 @@ const syncCJCatalog = async (options = {}) => {
       const list = await fetchCjProductPage(url);
       const saved = await processCjBatch(list, false, `Skincare & Beauty > ${query}`);
       console.log(`🔍 CJ Skincare Keyword "${query}" -> +${saved} verified items (Total processed: ${totalProcessed}/${maxProducts})`);
-      if (pagesFetched < maxPages && totalProcessed < maxProducts) {
-        await delay(380);
+    }
+
+    // Stage C: Stale CJ Product Pruning (only if this sync successfully processed >= 50 items so an API outage never wipes inventory)
+    let stalePrunedCount = 0;
+    if (totalProcessed >= 50) {
+      const staleCutoff = new Date(Date.now() - CJ_STALE_PRUNE_DAYS * 24 * 60 * 60 * 1000);
+      const staleDocs = await Product.find({
+        customTitleLocked: { $ne: true },
+        rawCjData: { $exists: true, $ne: null },
+        $or: [
+          { lastSyncedAt: { $lt: staleCutoff } },
+          { lastSyncedAt: null },
+          { lastSyncedAt: { $exists: false } }
+        ]
+      })
+        .select('_id')
+        .lean();
+
+      if (staleDocs.length > 0) {
+        const staleIds = staleDocs.map((d) => d._id);
+        await Product.deleteMany({ _id: { $in: staleIds } }).catch(() => {});
+        await cleanupPrunedProductReferences(staleIds);
+        stalePrunedCount = staleIds.length;
+        console.log(`🗑️ Pruned ${stalePrunedCount} stale/unlisted CJ product(s) older than ${CJ_STALE_PRUNE_DAYS} days.`);
       }
     }
 
-    // Stage C: Post-Sync Sanitization, Deduplication & Curated Cap Enforcement
+    // Stage D: Post-Sync Sanitization, Deduplication & Curated Cap Enforcement
     let postSanitize = null;
     if (sanitizeAfter) {
-      postSanitize = await sanitizeAndDeduplicateCatalog();
+      postSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: effectiveCap });
     }
 
     await backfillProductBlueprintLabels(false);
-    await backfillProductShippingAndCustomLabelMeta(true);
+    await backfillProductShippingAndCustomLabelMeta(false);
 
     const totalInDb = await Product.countDocuments();
     const totalDuplicatesPurged =
       (preSanitize.duplicatesPurged || 0) + (postSanitize?.duplicatesPurged || 0);
     const totalNonBeautyPurged =
       (preSanitize.nonBeautyPurgedCount || 0) + (postSanitize?.nonBeautyPurgedCount || 0);
+    const totalExcessPruned =
+      (preSanitize.excessPrunedCount || 0) + (postSanitize?.excessPrunedCount || 0);
 
     cjCatalogSyncTelemetry = {
       ...cjCatalogSyncTelemetry,
@@ -3638,18 +3765,24 @@ const syncCJCatalog = async (options = {}) => {
       lastSanitizedAt: postSanitize?.sanitizedAt || new Date().toISOString(),
       lastDuplicatesPurgedCount: totalDuplicatesPurged,
       lastNonBeautyPurgedCount: totalNonBeautyPurged,
+      lastExcessCapPrunedCount: totalExcessPruned,
+      lastStalePrunedCount: stalePrunedCount,
+      maxCatalogCap: effectiveCap,
       activeCatalogTotal: totalInDb,
       nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
     };
 
     console.log(
-      `🚀 CJ Beauty & Skincare sync + sanitization complete! Processed ${totalProcessed} items (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-beauty & ${totalDuplicatesPurged} duplicate records -> ${totalInDb} sanitized products in MongoDB.`
+      `🚀 CJ Sync Complete! Processed ${totalProcessed} (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-beauty, ${totalDuplicatesPurged} duplicates, ${stalePrunedCount} stale, ${totalExcessPruned} over-cap -> ${totalInDb} active (cap=${effectiveCap}).`
     );
 
     return {
       status: 'completed',
       purgedCount: totalNonBeautyPurged,
       duplicatesPurged: totalDuplicatesPurged,
+      excessPrunedCount: totalExcessPruned,
+      stalePrunedCount,
+      maxCatalogCap: effectiveCap,
       syncedCount: totalProcessed,
       newProductsAdded,
       updatedProductsCount,
@@ -3669,6 +3802,8 @@ const syncCJCatalog = async (options = {}) => {
       error: error?.response?.data?.message || error.message,
       purgedCount: 0,
       duplicatesPurged: 0,
+      excessPrunedCount: 0,
+      stalePrunedCount: 0,
       syncedCount: 0,
       telemetry: cjCatalogSyncTelemetry
     };
@@ -4669,12 +4804,12 @@ const recalculateProductRetailPrice = (productDoc, overrides = {}) => {
 // customLabelConfig, and shipping-included retail prices across all existing products in MongoDB.
 const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
   try {
-    const allProducts = await Product.find({});
+    const allProducts = await Product.find({}).lean();
     if (!allProducts.length) {
       return { updatedCount: 0, totalCount: 0 };
     }
 
-    let updatedCount = 0;
+    const bulkOps = [];
     for (const prod of allProducts) {
       const currentAllInCost = Number(prod.wholesalePriceUsd || 2.00) + Math.max(7.84, Number(prod.shippingCostUsd || 7.84));
       const needsBackfill =
@@ -4706,7 +4841,8 @@ const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
       const rawWeight = parseFloat(String(prod.rawCjData?.productWeight || prod.rawCjData?.packWeight || prod.estimatedWeightGrams || '120').split('-')[0].trim());
       const weightGrams = Math.max(30, Number(rawWeight) || 120);
 
-      recalculateProductRetailPrice(prod, {
+      const workingProd = { ...prod };
+      recalculateProductRetailPrice(workingProd, {
         wholesalePriceUsd: inferredWholesale,
         estimatedWeightGrams: weightGrams,
         autoSelectOptimalCarrier: true,
@@ -4721,14 +4857,37 @@ const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
         })
       });
 
-      await prod.save();
-      updatedCount++;
+      bulkOps.push({
+        updateOne: {
+          filter: { _id: prod._id },
+          update: {
+            $set: {
+              wholesalePriceUsd: workingProd.wholesalePriceUsd,
+              markupMultiplier: workingProd.markupMultiplier,
+              estimatedWeightGrams: workingProd.estimatedWeightGrams,
+              originCountryCode: workingProd.originCountryCode,
+              selectedLogisticName: workingProd.selectedLogisticName,
+              shippingCostUsd: workingProd.shippingCostUsd,
+              shippingIncludedInPrice: workingProd.shippingIncludedInPrice,
+              availableLogistics: workingProd.availableLogistics,
+              customLabelConfig: workingProd.customLabelConfig,
+              price: workingProd.price,
+              variants: workingProd.variants
+            }
+          }
+        }
+      });
     }
 
-    if (updatedCount > 0) {
-      console.log(`✈️ Backfilled CJ shipping rates, wholesale prices & custom label metadata on ${updatedCount} product(s).`);
+    const CHUNK_SIZE = 200;
+    for (let i = 0; i < bulkOps.length; i += CHUNK_SIZE) {
+      await Product.bulkWrite(bulkOps.slice(i, i + CHUNK_SIZE), { ordered: false });
     }
-    return { updatedCount, totalCount: allProducts.length };
+
+    if (bulkOps.length > 0) {
+      console.log(`✈️ Backfilled CJ shipping rates, wholesale prices & custom label metadata on ${bulkOps.length} product(s) via bulkWrite.`);
+    }
+    return { updatedCount: bulkOps.length, totalCount: allProducts.length };
   } catch (err) {
     console.warn('⚠️ Error in backfillProductShippingAndCustomLabelMeta:', err.message);
     return { updatedCount: 0, totalCount: 0, error: err.message };
@@ -11874,7 +12033,7 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
   try {
     const { purgeOnly, sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (purgeOnly || sanitizeOnly) {
-      const sanitizeRes = await sanitizeAndDeduplicateCatalog();
+      const sanitizeRes = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
         message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeRes.duplicatesPurged || 0} duplicates, and ${sanitizeRes.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
@@ -11908,7 +12067,7 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
   try {
     const { sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
     if (sanitizeOnly) {
-      const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+      const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
       const products = await Product.find({}).sort({ _id: -1 });
       return res.status(200).json({
         message: `🧹 Strict Skincare & Beauty Sanitization Complete! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed), and pruned ${sanitizeResult.excessPrunedCount || 0} over-cap items → ${products.length} unique Skincare & Beauty products active ✧`,
@@ -11944,7 +12103,7 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
 app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincare-purge'], authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { maxCatalogCap } = req.body || {};
-    const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+    const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
     const products = await Product.find({}).sort({ _id: -1 });
     res.status(200).json({
       message: `🧹 Strict Skincare & Beauty Purge + Cap Enforcement Complete! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeResult.duplicatesPurged || 0} duplicates, and ${sanitizeResult.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
