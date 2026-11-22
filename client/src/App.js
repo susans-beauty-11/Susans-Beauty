@@ -2201,6 +2201,24 @@ const MembershipUpgradeModal = ({
   );
 };
 
+const formatCustomerProductDescription = (product = {}) => {
+  const candidates = [product?.description, product?.rawCjData?.description];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const cleaned = candidate
+      .replace(/(?:\*\*)?\s*Semantic\s+AI\s+Answer\s+Capsule\s*:?\s*(?:\*\*)?[\s\S]*?(?=\n\n|$)/gi, '')
+      .replace(/(?:\*\*)?\s*Semantic\s+AI\s+Answer\s+Capsule\s*:?\s*(?:\*\*)?/gi, '')
+      .replace(/<[^>]*>?/gm, ' ')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/[#*_`~]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  return '';
+};
+
 const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
@@ -2217,8 +2235,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
 
   const itemPrice = activeVariant?.price || product.price || 0;
 
-  const rawInfo = product.rawCjData?.description || product.description || '';
-  const unformattedInfo = typeof rawInfo === 'string' ? rawInfo.replace(/<[^>]*>?/gm, '') : '';
+  const unformattedInfo = formatCustomerProductDescription(product);
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
 
   const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
@@ -2470,8 +2487,7 @@ const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasComp
   
   const itemPrice = activeVariant?.price || product.price || 0;
 
-  const rawInfo = product.rawCjData?.description || product.description || '';
-  const unformattedInfo = typeof rawInfo === 'string' ? rawInfo.replace(/<[^>]*>?/gm, '') : '';
+  const unformattedInfo = formatCustomerProductDescription(product);
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
 
   const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
