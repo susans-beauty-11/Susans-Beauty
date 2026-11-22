@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import AboutSusan from './components/AboutSusan';
 import PricingChart from './components/PricingChart';
 import './App.css';
@@ -1416,6 +1416,7 @@ const generateClientBlueprintDossier = (bp = {}, serverAnalysis = null) => {
 // Reusable Boutique Smart Filter Bar & Filtered Grid (shared by Member Boutique Tab & Public Boutique)
 const BoutiqueSmartFilterSection = ({
   products = [],
+  isLoadingProducts = false,
   quizAnswers = {},
   hasCompletedQuiz = false,
   boutiqueFilters,
@@ -1460,10 +1461,17 @@ const BoutiqueSmartFilterSection = ({
     }
   };
 
-  const decoratedProducts = products.map(prod => ({
-    product: prod,
-    match: evaluateBlueprintMatch(prod, quizAnswers, hasCompletedQuiz)
-  }));
+  const BOUTIQUE_PAGE_SIZE = 24;
+  const [visibleCount, setVisibleCount] = useState(BOUTIQUE_PAGE_SIZE);
+
+  useEffect(() => {
+    setVisibleCount(BOUTIQUE_PAGE_SIZE);
+  }, [boutiqueFilters]);
+
+  const decoratedProducts = useMemo(
+    () => products.map(prod => ({ product: prod, match: evaluateBlueprintMatch(prod, quizAnswers, hasCompletedQuiz) })),
+    [products, quizAnswers, hasCompletedQuiz]
+  );
 
   const blueprintMatchCount = decoratedProducts.filter(item => item.match.isMatch).length;
 
@@ -1887,7 +1895,9 @@ const BoutiqueSmartFilterSection = ({
       {/* Product Grid */}
       {products.length === 0 ? (
         <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>
-          Fetching live boutique inventory...
+          {isLoadingProducts
+            ? "Loading Susan's curated boutique..."
+            : "Our curated skincare boutique is being refreshed. Please check back in a moment."}
         </p>
       ) : filteredList.length === 0 ? (
         <div style={{ padding: '40px 25px', textAlign: 'center', backgroundColor: '#FFFFFF', borderRadius: '16px', border: '1px dashed #E8C5C8' }}>
@@ -1903,18 +1913,47 @@ const BoutiqueSmartFilterSection = ({
           </button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
-          {filteredList.map(({ product }) => (
-            <ProductCard
-              key={product._id || product.title}
-              product={product}
-              onAddToCart={onAddToCart}
-              onCardClick={onCardClick}
-              userBlueprint={quizAnswers}
-              hasCompletedQuiz={hasCompletedQuiz}
-            />
-          ))}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
+            {filteredList.slice(0, visibleCount).map(({ product, match }) => (
+              <ProductCard
+                key={product._id || product.title}
+                product={product}
+                onAddToCart={onAddToCart}
+                onCardClick={onCardClick}
+                userBlueprint={quizAnswers}
+                hasCompletedQuiz={hasCompletedQuiz}
+                precomputedMatch={match}
+              />
+            ))}
+          </div>
+
+          {filteredList.length > visibleCount && (
+            <div style={{ textAlign: 'center', marginTop: '32px' }}>
+              <p style={{ fontSize: '0.88rem', color: '#7A6365', marginBottom: '12px' }}>
+                Showing {Math.min(visibleCount, filteredList.length)} of {filteredList.length} curated products
+              </p>
+              <button
+                type="button"
+                onClick={() => setVisibleCount(prev => prev + BOUTIQUE_PAGE_SIZE)}
+                style={{
+                  backgroundColor: '#FFF9F9',
+                  color: '#8E6268',
+                  border: '1px solid #B38B8F',
+                  borderRadius: '999px',
+                  padding: '12px 28px',
+                  fontFamily: "'Cormorant Garamond', Georgia, serif",
+                  fontSize: '1.05rem',
+                  fontWeight: 600,
+                  letterSpacing: '0.04em',
+                  cursor: 'pointer'
+                }}
+              >
+                Load More Products ({filteredList.length - visibleCount} remaining)
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -2475,7 +2514,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
   );
 };
 
-const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasCompletedQuiz }) => {
+const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasCompletedQuiz, precomputedMatch = null }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   const hasVariants = product.variants && product.variants.length > 0;
@@ -2490,7 +2529,10 @@ const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasComp
   const unformattedInfo = formatCustomerProductDescription(product);
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
 
-  const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
+  const bpMatch = useMemo(
+    () => precomputedMatch || evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz),
+    [precomputedMatch, product, userBlueprint, hasCompletedQuiz]
+  );
   const enrichedProduct = { ...product, title, activeVariant };
 
   return (
@@ -4542,7 +4584,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
   const fetchInventory = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/products`);
+      const res = await fetch(`${API_BASE_URL}/api/products?includeAdminFields=true`);
       if (res.ok) {
         const list = await res.json();
         setInventory(list);
@@ -15249,6 +15291,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSubscribing, setIsSubscribing] = useState(false); 
   const [backendProducts, setBackendProducts] = useState([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
   const [selectedTier, setSelectedTier] = useState('luminary');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -15361,6 +15404,7 @@ function App() {
   // General Boot Sequence
   useEffect(() => {
     const fetchBackendData = async () => {
+      setIsLoadingProducts(true);
       try {
         const response = await fetch(`${API_BASE_URL}/api/products`);
         if (response.ok) {
@@ -15369,6 +15413,8 @@ function App() {
         }
       } catch (error) {
         console.error('Failed to connect to backend data:', error);
+      } finally {
+        setIsLoadingProducts(false);
       }
     };
     fetchBackendData();
@@ -17485,6 +17531,7 @@ function App() {
 
             <BoutiqueSmartFilterSection
               products={backendProducts}
+              isLoadingProducts={isLoadingProducts}
               quizAnswers={quizAnswers}
               hasCompletedQuiz={hasCompletedQuiz}
               boutiqueFilters={boutiqueFilters}
@@ -18670,6 +18717,7 @@ function App() {
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
                   <BoutiqueSmartFilterSection
                     products={backendProducts}
+                    isLoadingProducts={isLoadingProducts}
                     quizAnswers={quizAnswers}
                     hasCompletedQuiz={hasCompletedQuiz}
                     boutiqueFilters={boutiqueFilters}
