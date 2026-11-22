@@ -1398,6 +1398,26 @@ productSchema.index({ purchaseCount: -1, viewCount: -1, _id: 1 });
 productSchema.index({ lastSyncedAt: -1 });
 const Product = mongoose.model('Product', productSchema);
 
+// Persists CJ Catalog Sync & Sanitization telemetry across Render restarts
+const catalogSyncStateSchema = new mongoose.Schema({
+  key: { type: String, default: 'primary', unique: true },
+  lastSyncAt: { type: Date, default: null },
+  lastSyncStatus: { type: String, default: 'IDLE' },
+  lastSyncedCount: { type: Number, default: 0 },
+  lastNewAddedCount: { type: Number, default: 0 },
+  lastUpdatedCount: { type: Number, default: 0 },
+  lastSanitizedAt: { type: Date, default: null },
+  lastDuplicatesPurgedCount: { type: Number, default: 0 },
+  lastNonBeautyPurgedCount: { type: Number, default: 0 },
+  lastExcessCapPrunedCount: { type: Number, default: 0 },
+  lastStalePrunedCount: { type: Number, default: 0 },
+  maxCatalogCap: { type: Number, default: 300 },
+  activeCatalogTotal: { type: Number, default: 0 },
+  lastError: { type: String, default: '' },
+  updatedAt: { type: Date, default: Date.now }
+});
+const CatalogSyncState = mongoose.models.CatalogSyncState || mongoose.model('CatalogSyncState', catalogSyncStateSchema);
+
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   customerEmail: { type: String, index: true },
@@ -3109,6 +3129,69 @@ let cjCatalogSyncTelemetry = {
 };
 
 // Removes foreign-key references across InboxItem, User.recommendedProducts, and MemberMonthlyBox for pruned products
+const persistCatalogSyncTelemetry = async (updates = {}) => {
+  cjCatalogSyncTelemetry = {
+    ...cjCatalogSyncTelemetry,
+    ...updates
+  };
+  try {
+    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
+    await CatalogSyncState.findOneAndUpdate(
+      { key: 'primary' },
+      {
+        $set: {
+          lastSyncAt: cjCatalogSyncTelemetry.lastSyncAt ? new Date(cjCatalogSyncTelemetry.lastSyncAt) : null,
+          lastSyncStatus: String(cjCatalogSyncTelemetry.lastSyncStatus || 'IDLE'),
+          lastSyncedCount: Number(cjCatalogSyncTelemetry.lastSyncedCount || 0),
+          lastNewAddedCount: Number(cjCatalogSyncTelemetry.lastNewAddedCount || 0),
+          lastUpdatedCount: Number(cjCatalogSyncTelemetry.lastUpdatedCount || 0),
+          lastSanitizedAt: cjCatalogSyncTelemetry.lastSanitizedAt ? new Date(cjCatalogSyncTelemetry.lastSanitizedAt) : null,
+          lastDuplicatesPurgedCount: Number(cjCatalogSyncTelemetry.lastDuplicatesPurgedCount || 0),
+          lastNonBeautyPurgedCount: Number(cjCatalogSyncTelemetry.lastNonBeautyPurgedCount || 0),
+          lastExcessCapPrunedCount: Number(cjCatalogSyncTelemetry.lastExcessCapPrunedCount || 0),
+          lastStalePrunedCount: Number(cjCatalogSyncTelemetry.lastStalePrunedCount || 0),
+          maxCatalogCap: Number(cjCatalogSyncTelemetry.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP),
+          activeCatalogTotal: Number(cjCatalogSyncTelemetry.activeCatalogTotal || 0),
+          lastError: String(cjCatalogSyncTelemetry.lastError || ''),
+          updatedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.warn('⚠️ Failed to persist CatalogSyncState:', err.message);
+  }
+  return cjCatalogSyncTelemetry;
+};
+
+const loadCatalogSyncTelemetry = async () => {
+  try {
+    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
+    const saved = await CatalogSyncState.findOne({ key: 'primary' }).lean();
+    if (saved) {
+      cjCatalogSyncTelemetry = {
+        ...cjCatalogSyncTelemetry,
+        lastSyncAt: saved.lastSyncAt ? new Date(saved.lastSyncAt).toISOString() : null,
+        lastSyncStatus: saved.lastSyncStatus || 'IDLE',
+        lastSyncedCount: Number(saved.lastSyncedCount || 0),
+        lastNewAddedCount: Number(saved.lastNewAddedCount || 0),
+        lastUpdatedCount: Number(saved.lastUpdatedCount || 0),
+        lastSanitizedAt: saved.lastSanitizedAt ? new Date(saved.lastSanitizedAt).toISOString() : null,
+        lastDuplicatesPurgedCount: Number(saved.lastDuplicatesPurgedCount || 0),
+        lastNonBeautyPurgedCount: Number(saved.lastNonBeautyPurgedCount || 0),
+        lastExcessCapPrunedCount: Number(saved.lastExcessCapPrunedCount || 0),
+        lastStalePrunedCount: Number(saved.lastStalePrunedCount || 0),
+        maxCatalogCap: Number(saved.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP),
+        activeCatalogTotal: Number(saved.activeCatalogTotal || 0),
+        lastError: saved.lastError || ''
+      };
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to load CatalogSyncState:', err.message);
+  }
+  return cjCatalogSyncTelemetry;
+};
+
 const cleanupPrunedProductReferences = async (prunedIds = []) => {
   if (!Array.isArray(prunedIds) || prunedIds.length === 0) return;
   await Promise.all([
@@ -3348,15 +3431,14 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
     const activeCatalogTotal = await Product.countDocuments();
     const nowIso = new Date().toISOString();
 
-    cjCatalogSyncTelemetry = {
-      ...cjCatalogSyncTelemetry,
+    await persistCatalogSyncTelemetry({
       lastSanitizedAt: nowIso,
       lastDuplicatesPurgedCount: duplicatesPurged,
       lastNonBeautyPurgedCount: nonBeautyPurgedCount,
       lastExcessCapPrunedCount: excessPrunedCount,
       maxCatalogCap: effectiveCap,
       activeCatalogTotal
-    };
+    });
 
     console.log(
       `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned}, purged ${nonBeautyPurgedCount} non-skincare, merged ${groupsMerged} duplicate groups (${duplicatesPurged} removed), pruned ${excessPrunedCount} over-cap items (cap=${effectiveCap}) -> ${activeCatalogTotal} active.`
@@ -3759,8 +3841,7 @@ const syncCJCatalog = async (options = {}) => {
     const totalExcessPruned =
       (preSanitize.excessPrunedCount || 0) + (postSanitize?.excessPrunedCount || 0);
 
-    cjCatalogSyncTelemetry = {
-      ...cjCatalogSyncTelemetry,
+    await persistCatalogSyncTelemetry({
       lastSyncAt: new Date().toISOString(),
       lastSyncStatus: 'COMPLETED',
       lastSyncedCount: totalProcessed,
@@ -3773,8 +3854,9 @@ const syncCJCatalog = async (options = {}) => {
       lastStalePrunedCount: stalePrunedCount,
       maxCatalogCap: effectiveCap,
       activeCatalogTotal: totalInDb,
+      lastError: '',
       nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
-    };
+    });
 
     console.log(
       `🚀 CJ Sync Complete! Processed ${totalProcessed} (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-beauty, ${totalDuplicatesPurged} duplicates, ${stalePrunedCount} stale, ${totalExcessPruned} over-cap -> ${totalInDb} active (cap=${effectiveCap}).`
@@ -3795,12 +3877,11 @@ const syncCJCatalog = async (options = {}) => {
     };
   } catch (error) {
     console.error('❌ Error during CJ sync:', error?.response?.data || error.message);
-    cjCatalogSyncTelemetry = {
-      ...cjCatalogSyncTelemetry,
+    await persistCatalogSyncTelemetry({
       lastSyncAt: new Date().toISOString(),
       lastSyncStatus: 'ERROR',
       lastError: error?.response?.data?.message || error.message
-    };
+    });
     return {
       status: 'error',
       error: error?.response?.data?.message || error.message,
@@ -12125,6 +12206,9 @@ app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincar
 // GET /api/admin/products/sync-status — Returns live catalog sanitization & 3:00 AM CST schedule telemetry
 app.get('/api/admin/products/sync-status', authenticateToken, requireAdmin, async (req, res) => {
   try {
+    if (!cjCatalogSyncTelemetry.lastSyncAt && !cjCatalogSyncTelemetry.lastSanitizedAt) {
+      await loadCatalogSyncTelemetry();
+    }
     const activeTotal = await Product.countDocuments();
     cjCatalogSyncTelemetry.activeCatalogTotal = activeTotal;
     res.status(200).json({
@@ -21914,6 +21998,7 @@ const startDatabaseAndBackgroundServices = async () => {
     // Run non-blocking startup migrations & verifications safely in background
     (async () => {
       try {
+        await loadCatalogSyncTelemetry();
         await ensureDefaultOdieMemories();
         await seedFounding50PromoCodes().catch((err) => console.warn('⚠️ Founding 50 startup seed notice:', err.message));
         await sanitizeExistingTestAccountMemberships().catch((err) => console.warn('⚠️ Test account sanitizer notice:', err.message));

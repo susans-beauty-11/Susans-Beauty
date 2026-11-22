@@ -4561,10 +4561,12 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
   const [selectedMaxCatalogCap, setSelectedMaxCatalogCap] = useState(300);
   const [syncStatusTelemetry, setSyncStatusTelemetry] = useState({
     lastSyncAt: null,
+    lastSyncStatus: 'IDLE',
     lastSanitizedAt: null,
     lastDuplicatesPurgedCount: 0,
     lastNonBeautyPurgedCount: 0,
     lastExcessCapPrunedCount: 0,
+    lastStalePrunedCount: 0,
     maxCatalogCap: 300,
     activeCatalogTotal: 0,
     nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
@@ -5211,31 +5213,44 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
-      {/* Strict Uncapped Skincare & Beauty Catalog Sync & Perfume Purge Command Bar */}
+      {/* Curated Skincare & Beauty Catalog Sync, Cap & Telemetry Command Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '22px 26px', borderRadius: '20px', border: '2px solid #B38B8F', boxShadow: '0 8px 25px rgba(179, 139, 143, 0.18)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '14px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.95rem', color: '#5C5454', margin: 0 }}>
-                ✨ Strict Skincare & Beauty Catalog Sync & Sanitization
+                ✨ Curated Skincare & Beauty Catalog Sync & Sanitization
               </h2>
               <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '4px 12px', borderRadius: '14px', fontSize: '0.78rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
                 🚫 Perfume, Hair, Nail & Oral Blocked • ⏰ 3:00 AM CST Sync
               </span>
             </div>
             <p style={{ margin: '5px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
-              Pulls every genuine <strong>Skincare & Facial/Cosmetic Beauty</strong> product from CJ Dropshipping without an artificial cap, blocks perfumes, fragrances, hair/wig items, nail drills/gels, and oral care, and merges multi-size seller clones into one canonical product.
+              Maintains a fast, curated <strong>Skincare & Facial/Cosmetic Beauty</strong> catalog capped at <strong>{selectedMaxCatalogCap}</strong> products (plus locked custom items), automatically prunes stale discontinued CJ listings, and merges multi-size seller clones.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', padding: '6px 10px', borderRadius: '16px' }}>
+              <span>Cap:</span>
+              <select
+                value={selectedMaxCatalogCap}
+                onChange={(e) => setSelectedMaxCatalogCap(Number(e.target.value) || 300)}
+                style={{ border: 'none', background: 'transparent', color: '#5C5454', fontWeight: 'bold', fontSize: '0.82rem', outline: 'none', cursor: 'pointer' }}
+              >
+                <option value={150}>150</option>
+                <option value={200}>200</option>
+                <option value={300}>300</option>
+                <option value={500}>500</option>
+              </select>
+            </label>
             <button
               type="button"
               disabled={isSyncingAndSanitizing || isSanitizingOnly}
               onClick={() => handleFullSyncAndSanitize(false)}
               style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer', boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)' }}
             >
-              {isSyncingAndSanitizing ? '⏳ Syncing All Skincare & Beauty...' : '✨ Sync All Skincare & Beauty'}
+              {isSyncingAndSanitizing ? '⏳ Syncing Curated Catalog...' : '✨ Sync Skincare & Beauty'}
             </button>
             <button
               type="button"
@@ -5243,18 +5258,33 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
               onClick={() => handleFullSyncAndSanitize(true)}
               style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer' }}
             >
-              {isSanitizingOnly ? '⏳ Purging Non-Skincare & Duplicates...' : '🧹 Purge Perfume & Non-Skincare Now'}
+              {isSanitizingOnly ? '⏳ Sanitizing & Capping...' : '🧹 Purge & Enforce Cap Now'}
             </button>
           </div>
         </div>
 
-        {/* Live Telemetry Status Bar */}
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', backgroundColor: '#FFF9F9', padding: '10px 14px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454' }}>
+        {/* Live Persisted Telemetry Status Bar */}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', backgroundColor: '#FFF9F9', padding: '10px 14px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454' }}>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px', fontWeight: 'bold' }}>
-            📦 Active Skincare & Beauty: <strong style={{ color: '#B38B8F' }}>{inventory.length} unique products</strong>
+            📦 Active Catalog: <strong style={{ color: '#B38B8F' }}>{inventory.length} / {syncStatusTelemetry.maxCatalogCap || selectedMaxCatalogCap}</strong>
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
-            🚫 Perfume / Non-Skincare Purged: <strong style={{ color: '#C62828' }}>{syncStatusTelemetry.lastNonBeautyPurgedCount || 0}</strong>
+            🕒 Last CJ Sync:{' '}
+            <strong>
+              {syncStatusTelemetry.lastSyncAt
+                ? new Date(syncStatusTelemetry.lastSyncAt).toLocaleString()
+                : 'Awaiting Next 3:00 AM CST Sync'}
+            </strong>
+            {syncStatusTelemetry.lastSyncStatus && syncStatusTelemetry.lastSyncStatus !== 'IDLE' ? ` (${syncStatusTelemetry.lastSyncStatus})` : ''}
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            ✂️ Over-Cap Pruned: <strong style={{ color: '#B26A00' }}>{syncStatusTelemetry.lastExcessCapPrunedCount || 0}</strong>
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            🗑️ Stale Pruned: <strong style={{ color: '#736A6A' }}>{syncStatusTelemetry.lastStalePrunedCount || 0}</strong>
+          </span>
+          <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
+            🚫 Non-Skincare Purged: <strong style={{ color: '#C62828' }}>{syncStatusTelemetry.lastNonBeautyPurgedCount || 0}</strong>
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
             ♻️ Duplicates Merged: <strong style={{ color: '#2E7D32' }}>{syncStatusTelemetry.lastDuplicatesPurgedCount || 0}</strong>
