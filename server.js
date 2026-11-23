@@ -21899,6 +21899,9 @@ for (const pubDir of [path.join(__dirname, 'public'), path.join(__dirname, 'clie
   } catch (e) {}
 }
 
+const { registerOrganicGrowthEngine } = require("./middleware/organicGrowthEngine");
+registerOrganicGrowthEngine(app, Product);
+
 // Express 4 & Express 5 compatible SPA catch-all route for all non-API, non-webhook, non-GEO GET requests
 app.get(
   /^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(?:\/|$)|\/terms-of-service(?:\/|$)|\/sitemap\.xml(?:\/|$)|\/robots\.txt(?:\/|$)|\/llms\.txt(?:\/|$)|\/llms-full\.txt(?:\/|$)).*/,
