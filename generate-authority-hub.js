@@ -4,7 +4,7 @@ const { Concern, Ingredient } = require("./models/SkinKnowledge");
 
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const MODEL = "gemini-2.5-flash";
+const MODEL = "gemini-3.8-flash";
 
 // High-traffic skincare topics to build authority around
 const CONCERNS_TO_GENERATE = [
