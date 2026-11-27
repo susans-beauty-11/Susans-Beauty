@@ -1869,7 +1869,12 @@ const CJ_MAX_PAGES = Math.max(0, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 0
 const CJ_MAX_PRODUCTS = Math.max(0, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 0);
 const CJ_DEFAULT_CATALOG_CAP = 0;
 // Safety ceiling per individual category/keyword to prevent infinite loops on malformed CJ pagination
-const CJ_MAX_PAGES_PER_SOURCE = Math.max(5, Number(cleanEnv(process.env.CJ_MAX_PAGES_PER_SOURCE)) || 200);
+// CJ /product/list enforces a hard 6,000-item max offset per query (60 pages at pageSize=100)
+const CJ_API_MAX_OFFSET = 6000;
+const CJ_MAX_PAGES_PER_SOURCE = Math.min(
+  Math.floor(CJ_API_MAX_OFFSET / CJ_PAGE_SIZE),
+  Math.max(5, Number(cleanEnv(process.env.CJ_MAX_PAGES_PER_SOURCE)) || 60)
+);
 const CJ_STALE_PRUNE_DAYS = Math.max(1, Number(cleanEnv(process.env.CJ_STALE_PRUNE_DAYS)) || 7);
 
 // Normalizes a product title into a canonical alphanumeric key so near-identical CJ seller clones collapse into one item
@@ -3944,7 +3949,8 @@ const syncCJCatalog = async (options = {}) => {
       let sourceSavedTotal = 0;
       let prevFirstSignature = null;
 
-      for (let pageNum = 1; pageNum <= maxPagesPerSource; pageNum++) {
+      const safeMaxPagesForOffset = Math.min(maxPagesPerSource, Math.floor(6000 / pageSize));
+      for (let pageNum = 1; pageNum <= safeMaxPagesForOffset; pageNum++) {
         if (cjSyncCancelRequested) break;
         if (maxPages > 0 && pagesFetched >= maxPages) break;
         if (maxProducts > 0 && totalProcessed >= maxProducts) break;
@@ -3963,6 +3969,10 @@ const syncCJCatalog = async (options = {}) => {
         const pageRes = await fetchCjProductPage(url);
 
         if (!pageRes.ok) {
+          if (/max\s+offset/i.test(String(pageRes.error || ''))) {
+            console.log(`ℹ️ Reached CJ 6,000-item query offset ceiling on "${sourceLabel}" (page ${pageNum}) — moving to next source.`);
+            break;
+          }
           crawlErrorCount++;
           console.warn(`⚠️ CJ crawl error on ${sourceLabel} (page ${pageNum}): ${pageRes.error}`);
           break;
