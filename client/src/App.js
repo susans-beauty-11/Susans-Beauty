@@ -1425,7 +1425,9 @@ const BoutiqueSmartFilterSection = ({
   onResetFilters,
   onAddToCart,
   onCardClick,
-  onGoToBlueprintTab
+  onGoToBlueprintTab,
+  favoriteProductIds = null,
+  onToggleFavorite = null
 }) => {
   const {
     onlyBlueprintMatch = false,
@@ -1974,6 +1976,8 @@ const BoutiqueSmartFilterSection = ({
                 userBlueprint={quizAnswers}
                 hasCompletedQuiz={hasCompletedQuiz}
                 precomputedMatch={match}
+                isFavorite={Boolean(favoriteProductIds && favoriteProductIds.has(String(product._id)))}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
@@ -2309,7 +2313,7 @@ const formatCustomerProductDescription = (product = {}) => {
   return '';
 };
 
-const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz }) => {
+const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz, isFavorite = false, onToggleFavorite = null }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   if (!product) return null;
@@ -2560,12 +2564,35 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
         >
           Add to Ritual ✧
         </button>
+
+        {onToggleFavorite && (
+          <button
+            type="button"
+            onClick={() => onToggleFavorite(product)}
+            style={{
+              backgroundColor: isFavorite ? '#FFF0F2' : '#FFFFFF',
+              border: isFavorite ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+              color: isFavorite ? '#B38B8F' : '#5C5454',
+              padding: '10px 20px',
+              borderRadius: '25px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1.1rem',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              width: '100%',
+              marginTop: '10px',
+              transition: 'all 0.25s ease'
+            }}
+          >
+            {isFavorite ? '♥ Saved to Favorites' : '♡ Save to Favorites'}
+          </button>
+        )}
       </div>
     </div>
   );
 };
 
-const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasCompletedQuiz, precomputedMatch = null }) => {
+const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasCompletedQuiz, precomputedMatch = null , isFavorite = false, onToggleFavorite = null }) => {
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
 
   const hasVariants = product.variants && product.variants.length > 0;
@@ -2761,6 +2788,31 @@ const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasComp
       >
         Add to Ritual ✧
       </button>
+      {onToggleFavorite && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleFavorite(product);
+          }}
+          style={{
+            backgroundColor: isFavorite ? '#FFF0F2' : '#FFFFFF',
+            border: isFavorite ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
+            color: isFavorite ? '#B38B8F' : '#736A6A',
+            padding: '8px 14px',
+            borderRadius: '20px',
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '0.98rem',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            width: '100%',
+            marginTop: '8px',
+            transition: 'all 0.25s ease'
+          }}
+        >
+          {isFavorite ? '♥ Saved to Favorites' : '♡ Save to Favorites'}
+        </button>
+      )}
     </div>
   );
 };
@@ -15786,6 +15838,43 @@ function App() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [adminData, setAdminData] = useState({ users: [], blueprints: [], orders: [] });
   const [userRecommendations, setUserRecommendations] = useState([]);
+  const [userFavorites, setUserFavorites] = useState([]);
+  const favoriteProductIdSet = useMemo(
+    () => new Set((Array.isArray(userFavorites) ? userFavorites : []).map(p => String(p?._id || p))),
+    [userFavorites]
+  );
+
+  const handleToggleFavorite = async (product) => {
+    const token = localStorage.getItem('token');
+    const pid = String(product?._id || '').trim();
+    if (!token || !pid) return;
+
+    const wasFavorite = favoriteProductIdSet.has(pid);
+    setUserFavorites(prev => {
+      const list = Array.isArray(prev) ? prev : [];
+      if (wasFavorite) return list.filter(item => String(item?._id || item) !== pid);
+      return [product, ...list];
+    });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/users/me/favorites/toggle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ productId: pid })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.favoriteProducts)) {
+          setUserFavorites(data.favoriteProducts);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to toggle favorite product:', err);
+    }
+  };
   const [userOrders, setUserOrders] = useState([]);
   const [inboxItems, setInboxItems] = useState([]);
   const [memberVideoLink, setMemberVideoLink] = useState('');
@@ -16103,6 +16192,7 @@ function App() {
       routineFocus: ''
     });
     setUserRecommendations([]);
+    setUserFavorites([]);
     localStorage.removeItem('hasCompletedQuiz');
     localStorage.removeItem('quizAnswers');
     localStorage.removeItem('blueprintAnalysis');
@@ -16453,6 +16543,44 @@ function App() {
       }
       return item;
     }).filter(Boolean));
+  };
+
+  // Resolves full product details for a Ritual Bag item (hydrating older localStorage items from backendProducts)
+  const resolveFullCartProduct = (cartItem = {}) => {
+    if (!cartItem) return cartItem;
+    const match = (Array.isArray(backendProducts) ? backendProducts : []).find(
+      (p) =>
+        (cartItem._id && String(p._id) === String(cartItem._id)) ||
+        (cartItem.productId && String(p._id) === String(cartItem.productId)) ||
+        (cartItem.sku && (p.sku === cartItem.sku || p.cjSku === cartItem.sku || (Array.isArray(p.variants) && p.variants.some((v) => v.sku === cartItem.sku)))) ||
+        (cartItem.title && p.title === cartItem.title)
+    );
+    if (!match) return cartItem;
+    return {
+      ...match,
+      ...cartItem,
+      description: cartItem.description || match.description || '',
+      imageUrl: cartItem.imageUrl || match.imageUrl || match.variants?.[0]?.imageUrl || '',
+      variants: (Array.isArray(match.variants) && match.variants.length > 0) ? match.variants : cartItem.variants,
+      skinTypes: (Array.isArray(match.skinTypes) && match.skinTypes.length > 0) ? match.skinTypes : cartItem.skinTypes,
+      skinConcerns: (Array.isArray(match.skinConcerns) && match.skinConcerns.length > 0) ? match.skinConcerns : cartItem.skinConcerns,
+      keyActives: (Array.isArray(match.keyActives) && match.keyActives.length > 0) ? match.keyActives : cartItem.keyActives,
+      ritualStep: match.ritualStep || cartItem.ritualStep,
+      sensitivityLabel: match.sensitivityLabel || cartItem.sensitivityLabel
+    };
+  };
+
+  const getCleanRitualBagSnippet = (productObj = {}) => {
+    if (typeof formatCustomerProductDescription === 'function') {
+      return formatCustomerProductDescription(productObj);
+    }
+    const raw = String(productObj?.description || productObj?.rawCjData?.description || '');
+    return raw
+      .replace(/(?:\*\*)?\s*Semantic\s+AI\s+Answer\s+Capsule\s*:?\s*(?:\*\*)?[\s\S]*?(?=\n\n|$)/gi, '')
+      .replace(/<[^>]*>?/gm, ' ')
+      .replace(/[#*_`~]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   };
 
   const handleRemoveFromCart = (sku) => {
@@ -17042,7 +17170,7 @@ function App() {
         onSelectUpgradeTier={handleTriggerStripeUpgrade}
       />
 
-      <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} />
+      <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onAddToCart={handleAddToCart} userBlueprint={quizAnswers} hasCompletedQuiz={hasCompletedQuiz} isFavorite={Boolean(selectedProduct && favoriteProductIdSet.has(String(selectedProduct._id)))} onToggleFavorite={localStorage.getItem('token') ? handleToggleFavorite : null} />
 
       <LiveOrderTrackingModal
         trackingModal={liveTrackingModal}
@@ -17234,29 +17362,119 @@ function App() {
             })()}
           </div>
 
-          {/* AUTO-EXPANDING PRODUCT LIST BELOW CHECKOUT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {/* AUTO-EXPANDING PRODUCT LIST BELOW CHECKOUT (WITH THUMBNAIL, DESCRIPTION & CLICK-TO-MODAL) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {cart.length === 0 ? (
               <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', fontStyle: 'italic', textAlign: 'center', margin: '14px 0' }}>Your ritual bag is currently empty.</p>
             ) : (
-              cart.map((item) => (
-                <div key={item.sku} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(232, 197, 200, 0.35)', paddingBottom: '10px' }}>
-                  <div style={{ flex: 1, paddingRight: '10px' }}>
-                    <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', color: '#5C5454', margin: '0 0 4px 0' }}>
-                      {item.title || 'Product'} {item.selectedVariantName && item.selectedVariantName !== item.sku ? `(${item.selectedVariantName})` : ''}
-                    </h4>
-                    <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '0.98rem', color: '#B38B8F', margin: 0, fontWeight: 'bold' }}>
-                      ${(item.price * item.quantity).toFixed(2)}
-                    </p>
+              cart.map((item) => {
+                const hydratedProduct = resolveFullCartProduct(item);
+                const rawImg = hydratedProduct?.imageUrl || item.imageUrl || '';
+                const formattedThumb = rawImg && rawImg.startsWith('//') ? `https:${rawImg}` : rawImg;
+                const snippet = getCleanRitualBagSnippet(hydratedProduct);
+                return (
+                  <div
+                    key={item.sku}
+                    onClick={() => setSelectedProduct(hydratedProduct)}
+                    title="Click to view full product details"
+                    style={{
+                      display: 'flex',
+                      gap: '12px',
+                      alignItems: 'flex-start',
+                      borderBottom: '1px solid rgba(232, 197, 200, 0.45)',
+                      padding: '8px 6px 12px 6px',
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      transition: 'background-color 0.2s ease'
+                    }}
+                    onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#FFF0F2'; }}
+                    onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+                  >
+                    <div
+                      style={{
+                        width: '58px',
+                        height: '58px',
+                        borderRadius: '10px',
+                        backgroundColor: '#FFF0F2',
+                        border: '1px solid #E8C5C8',
+                        overflow: 'hidden',
+                        flexShrink: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      {formattedThumb ? (
+                        <img
+                          src={formattedThumb}
+                          alt={item.title || 'Product'}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <span style={{ color: '#B38B8F', fontSize: '1.1rem' }}>✧</span>
+                      )}
+                    </div>
+
+                    <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                      <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.06rem', color: '#5C5454', margin: '0 0 3px 0', lineHeight: '1.25' }}>
+                        {item.title || 'Product'} {item.selectedVariantName && item.selectedVariantName !== item.sku ? `(${item.selectedVariantName})` : ''}
+                      </h4>
+                      {snippet && (
+                        <p
+                          style={{
+                            fontFamily: 'sans-serif',
+                            fontSize: '0.74rem',
+                            color: '#736A6A',
+                            margin: '0 0 6px 0',
+                            lineHeight: '1.35',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          {snippet}
+                        </p>
+                      )}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', color: '#B38B8F', fontWeight: 'bold' }}>
+                            ${(item.price * item.quantity).toFixed(2)}
+                          </span>
+                          <span style={{ fontFamily: 'sans-serif', fontSize: '0.68rem', color: '#B38B8F', textDecoration: 'underline' }}>
+                            View Details ↗
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleUpdateQuantity(item.sku, -1); }}
+                            style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '24px', height: '24px' }}
+                          >
+                            -
+                          </button>
+                          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', color: '#5C5454' }}>{item.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleUpdateQuantity(item.sku, 1); }}
+                            style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '24px', height: '24px' }}
+                          >
+                            +
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleRemoveFromCart(item.sku); }}
+                            style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '0.98rem', marginLeft: '2px' }}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <button onClick={() => handleUpdateQuantity(item.sku, -1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>-</button>
-                    <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', color: '#5C5454' }}>{item.quantity}</span>
-                    <button onClick={() => handleUpdateQuantity(item.sku, 1)} style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '5px', cursor: 'pointer', width: '25px', height: '25px' }}>+</button>
-                    <button onClick={() => handleRemoveFromCart(item.sku)} style={{ background: 'none', border: 'none', color: '#A89999', cursor: 'pointer', fontSize: '1rem', marginLeft: '5px' }}>🗑️</button>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -18495,7 +18713,7 @@ function App() {
               </div>
 
               <div className="sanctuary-nav-list" style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 4px' }}>
-                {['Blueprint', 'Boutique', 'Ask Lily', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
+                {['Blueprint', 'Boutique', 'Favorites', 'Ask Lily', 'Inbox', 'Consultations', 'Order History', 'Account Info'].map(tab => {
                   const isLockedForFree = isFreeBasicMember && tab === 'Consultations';
                   return (
                     <button
@@ -18519,6 +18737,7 @@ function App() {
                       <span>
                         {tab === 'Blueprint' && '📝 '}
                         {tab === 'Boutique' && '🛍️ '}
+                        {tab === 'Favorites' && '♥ '}
                         {tab === 'Ask Lily' && '🌸 '}
                         {tab === 'Inbox' && '💌 '}
                         {tab === 'Consultations' && '🎥 '}
@@ -18529,6 +18748,11 @@ function App() {
                       {isLockedForFree && (
                         <span style={{ fontSize: '0.85rem', color: '#B38B8F' }} title="Paid Membership Required">
                           🔒
+                        </span>
+                      )}
+                      {tab === 'Favorites' && userFavorites.length > 0 && (
+                        <span style={{ fontSize: '0.75rem', fontFamily: 'sans-serif', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '12px', padding: '2px 8px', fontWeight: 'bold' }}>
+                          {userFavorites.length}
                         </span>
                       )}
                       {tab === 'Inbox' && inboxItems.length > 0 && (
@@ -19474,7 +19698,72 @@ function App() {
                     onAddToCart={handleAddToCart}
                     onCardClick={setSelectedProduct}
                     onGoToBlueprintTab={() => setActiveMemberTab('Blueprint')}
+                    favoriteProductIds={favoriteProductIdSet}
+                    onToggleFavorite={handleToggleFavorite}
                   />
+                </div>
+              )}
+
+              
+              {/* 3B. FAVORITES TAB */}
+              {activeMemberTab === 'Favorites' && (
+                <div style={{ animation: 'fadeIn 0.5s ease', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  <div style={{ backgroundColor: '#FFFFFF', padding: '24px 28px', borderRadius: '18px', border: '1px solid #E8C5C8', boxShadow: '0 6px 20px rgba(232, 197, 200, 0.14)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div>
+                      <span style={{ display: 'inline-block', backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '3px 12px', fontSize: '0.76rem', fontWeight: 'bold', fontFamily: 'sans-serif', marginBottom: '6px' }}>
+                        ♥ YOUR PERSONAL SANCTUARY WISHLIST
+                      </span>
+                      <h2 style={{ fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', fontSize: '2.1rem', margin: '0 0 4px 0' }}>
+                        Saved Boutique Favorites
+                      </h2>
+                      <p style={{ margin: 0, color: '#736A6A', fontFamily: 'sans-serif', fontSize: '0.92rem' }}>
+                        Your saved skincare &amp; beauty essentials. Click any item to view details or add directly to your Ritual Bag.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                      <span style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '14px', padding: '8px 16px', fontFamily: 'sans-serif', fontSize: '0.88rem', color: '#5C5454', fontWeight: 'bold' }}>
+                        ♥ {userFavorites.length} Saved Item{userFavorites.length === 1 ? '' : 's'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveMemberTab('Boutique')}
+                        style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 20px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        🛍️ Explore More in Boutique →
+                      </button>
+                    </div>
+                  </div>
+
+                  {userFavorites.length > 0 ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: '20px' }}>
+                      {userFavorites.map((product) => (
+                        <ProductCard
+                          key={product._id || product.title}
+                          product={product}
+                          onAddToCart={(item) => {
+                            handleAddToCart(item);
+                            setIsCartOpen(true);
+                          }}
+                          onCardClick={setSelectedProduct}
+                          userBlueprint={quizAnswers}
+                          hasCompletedQuiz={hasCompletedQuiz}
+                          isFavorite={true}
+                          onToggleFavorite={handleToggleFavorite}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '55px 35px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px dashed #E8C5C8', borderRadius: '18px' }}>
+                      <div style={{ fontSize: '2.5rem', color: '#B38B8F', marginBottom: '10px' }}>♡</div>
+                      <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '2rem', color: '#5C5454', margin: '0 0 10px 0' }}>
+                        No Favorites Saved Yet
+                      </h3>
+                      <p style={{ color: '#8A797A', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.25rem', maxWidth: '520px', margin: '0 auto 24px auto' }}>
+                        Tap <strong>♡ Save to Favorites</strong> under any product in the Boutique to keep your go-to skincare &amp; beauty essentials right here.
+                      </p>
+                      <EmpowermentButton text="Browse the Boutique ✧" onClick={() => setActiveMemberTab('Boutique')} />
+                    </div>
+                  )}
                 </div>
               )}
 

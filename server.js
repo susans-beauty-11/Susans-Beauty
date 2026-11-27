@@ -1260,6 +1260,7 @@ const userSchema = new mongoose.Schema({
   redditId: { type: String, default: '', index: true },
   socialProfiles: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   recommendedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  favoriteProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   resetPasswordToken: String,
   resetPasswordExpires: Date,
   createdAt: { type: Date, default: Date.now }
@@ -1888,28 +1889,62 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
   'skincare',
   'skin care',
   'facial serum',
+  'face serum',
+  'ampoule',
+  'facial essence',
   'face cream',
+  'day cream',
+  'night cream',
+  'barrier cream',
+  'neck cream',
   'moisturizer',
   'facial cleanser',
+  'face wash',
+  'cleansing balm',
+  'cleansing oil',
+  'micellar water',
   'face toner',
+  'facial mist',
+  'rosewater',
+  'facial oil',
   'facial mask',
   'sheet mask',
+  'clay mask',
+  'sleeping mask',
+  'hydrogel mask',
+  'peeling gel',
+  'facial scrub',
   'eye cream',
+  'eye serum',
   'eye patch',
   'hyaluronic acid serum',
   'retinol cream',
+  'bakuchiol',
   'vitamin c serum',
   'collagen face cream',
+  'peptide serum',
   'niacinamide serum',
   'ceramide moisturizer',
+  'centella skincare',
+  'snail mucin',
+  'squalane',
+  'salicylic acid',
+  'glycolic acid',
+  'azelaic acid',
   'sunscreen spf',
   'acne patch',
-  'lip gloss',
-  'lipstick',
+  'lip mask',
   'lip balm',
   'lip oil',
+  'lip gloss',
+  'lipstick',
+  'bb cream',
+  'cc cream',
+  'tinted moisturizer',
   'foundation makeup',
   'concealer makeup',
+  'makeup primer',
+  'setting spray',
   'blush makeup',
   'highlighter makeup',
   'eyeshadow palette',
@@ -1920,6 +1955,7 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
   'beauty sponge',
   'gua sha facial',
   'jade roller facial',
+  'facial scrubber',
   'led facial mask'
 ];
 
@@ -4007,7 +4043,7 @@ const syncCJCatalog = async (options = {}) => {
       if (maxProducts > 0 && totalProcessed >= maxProducts) break;
       await crawlPaginatedSource({
         buildUrl: (pageNum) =>
-          `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&productNameEn=${encodeURIComponent(query)}&pageNum=${pageNum}&pageSize=${pageSize}`,
+          `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&pageNum=${pageNum}&pageSize=${pageSize}`,
         fromBeautySource: false,
         sourceLabel: `Skincare & Beauty > ${query}`,
         icon: '🔍'
@@ -16251,6 +16287,93 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
   }
 });
 
+// ---------------- MEMBER FAVORITES ROUTES ---------------- //
+
+app.get('/api/users/me/favorites', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate({
+      path: 'favoriteProducts',
+      select: '-rawCjData -availableLogistics -seoAnswerCapsule -__v'
+    });
+    const list = Array.isArray(user?.favoriteProducts) ? user.favoriteProducts.filter(Boolean) : [];
+    res.status(200).json(list);
+  } catch (error) {
+    console.error('Fetch Favorites Error:', error);
+    res.status(500).json({ error: 'Failed to fetch saved favorites' });
+  }
+});
+
+app.post('/api/users/me/favorites/toggle', authenticateToken, async (req, res) => {
+  try {
+    const productId = String(req.body?.productId || '').trim();
+    if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ error: 'Valid productId is required.' });
+    }
+
+    const user = await User.findById(req.user._id).select('_id favoriteProducts');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const existingIds = (Array.isArray(user.favoriteProducts) ? user.favoriteProducts : []).map(id => String(id));
+    const alreadySaved = existingIds.includes(productId);
+
+    if (alreadySaved) {
+      await User.findByIdAndUpdate(req.user._id, { $pull: { favoriteProducts: productId } });
+    } else {
+      const exists = await Product.exists({ _id: productId });
+      if (!exists) {
+        return res.status(404).json({ error: 'Product not found in boutique inventory.' });
+      }
+      await User.findByIdAndUpdate(req.user._id, { $addToSet: { favoriteProducts: productId } });
+    }
+
+    const updatedUser = await User.findById(req.user._id).populate({
+      path: 'favoriteProducts',
+      select: '-rawCjData -availableLogistics -seoAnswerCapsule -__v'
+    });
+    const favoriteProducts = Array.isArray(updatedUser?.favoriteProducts)
+      ? updatedUser.favoriteProducts.filter(Boolean)
+      : [];
+
+    res.status(200).json({
+      isFavorite: !alreadySaved,
+      favoriteProducts,
+      message: !alreadySaved ? 'Saved to your Favorites ✧' : 'Removed from your Favorites'
+    });
+  } catch (error) {
+    console.error('Toggle Favorite Error:', error);
+    res.status(500).json({ error: 'Failed to update favorites' });
+  }
+});
+
+app.delete('/api/users/me/favorites/:productId', authenticateToken, async (req, res) => {
+  try {
+    const productId = String(req.params.productId || '').trim();
+    if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ error: 'Valid productId is required.' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { $pull: { favoriteProducts: productId } },
+      { new: true }
+    ).populate({
+      path: 'favoriteProducts',
+      select: '-rawCjData -availableLogistics -seoAnswerCapsule -__v'
+    });
+
+    const favoriteProducts = Array.isArray(updatedUser?.favoriteProducts)
+      ? updatedUser.favoriteProducts.filter(Boolean)
+      : [];
+
+    res.status(200).json({ favoriteProducts, message: 'Removed from Favorites' });
+  } catch (error) {
+    console.error('Delete Favorite Error:', error);
+    res.status(500).json({ error: 'Failed to remove favorite' });
+  }
+});
+
 app.get('/api/users/me/recommendations', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).populate('recommendedProducts');
@@ -22522,12 +22645,35 @@ const startDatabaseAndBackgroundServices = async () => {
 
       try {
         const bootSanitize = await sanitizeAndDeduplicateCatalog();
-        if ((bootSanitize.activeCatalogTotal || 0) === 0) {
-          console.log('🌱 Catalog is empty on startup — initiating initial CJ Beauty & Skincare harvest...');
-          await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true });
+        const activeOnBoot = bootSanitize.activeCatalogTotal || 0;
+        const syncOnStartupDisabled = cleanEnv(process.env.CJ_SYNC_ON_STARTUP).toLowerCase() === 'false';
+        const lastSyncTimeMs = cjCatalogSyncTelemetry?.lastSyncAt
+          ? new Date(cjCatalogSyncTelemetry.lastSyncAt).getTime()
+          : 0;
+        const syncedRecentlyWithFullCatalog =
+          cjCatalogSyncTelemetry?.lastSyncStatus === 'COMPLETED' &&
+          activeOnBoot >= 500 &&
+          lastSyncTimeMs > 0 &&
+          (Date.now() - lastSyncTimeMs) < 30 * 60 * 1000;
+
+        if (CJ_MAX_PRODUCTS > 0 || CJ_MAX_PAGES > 0) {
+          console.warn(
+            `⚠️ Render env cap detected: CJ_MAX_PRODUCTS=${CJ_MAX_PRODUCTS}, CJ_MAX_PAGES=${CJ_MAX_PAGES}. Remove these env vars or set them to 0 for an uncapped CJ skincare crawl.`
+          );
+        }
+
+        if (!syncOnStartupDisabled && !syncedRecentlyWithFullCatalog && !isCjSyncRunning) {
+          console.log(
+            `🚀 Server startup (${activeOnBoot} active products): launching uncapped CJ Skincare & Beauty background crawl in 4s...`
+          );
+          setTimeout(() => {
+            syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((syncErr) => {
+              console.error('❌ Startup uncapped CJ crawl error:', syncErr?.response?.data || syncErr.message);
+            });
+          }, 4000);
         } else {
           console.log(
-            `✨ Startup catalog sanitization complete (${bootSanitize.activeCatalogTotal} unique products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next full CJ re-sync scheduled for 3:00 AM CST.`
+            `✨ Startup catalog ready (${activeOnBoot} unique Skincare & Beauty products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next scheduled crawl at 3:00 AM CST.`
           );
         }
       } catch (error) {
