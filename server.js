@@ -1967,7 +1967,7 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
 // ============================================================================
 // CJ DROPSHIPPING SINGLETON TOKEN MANAGER & 1-QPS FIFO QUEUE
 // ============================================================================
-const CJ_RATE_LIMIT_MS = 1100; // 1.1 seconds strictly enforces < 1 QPS
+const CJ_RATE_LIMIT_MS = 1250; // 1.25 seconds strictly enforces < 1 QPS with network jitter buffer
 
 class CjApiClient {
   constructor() {
@@ -2173,6 +2173,20 @@ async function cjRequest(method, endpoint, options = {}) {
 
 // Global Axios request interceptor for CJ_BASE_URL so any legacy axios.get/post to CJ
 // also acquires the singleton token lock and respects the 1.1s FIFO spacing automatically
+// Strict FIFO Promise mutex so concurrent CJ callers (sync + order sweep + checkout) NEVER violate 1 QPS
+let cjGlobalRateMutex = Promise.resolve();
+const acquireCjRateLimitSlot = () => {
+  const slotPromise = cjGlobalRateMutex.then(async () => {
+    const elapsed = Date.now() - cjClient.lastRequestTime;
+    if (elapsed < CJ_RATE_LIMIT_MS) {
+      await new Promise((r) => setTimeout(r, CJ_RATE_LIMIT_MS - elapsed));
+    }
+    cjClient.lastRequestTime = Date.now();
+  });
+  cjGlobalRateMutex = slotPromise.catch(() => {});
+  return slotPromise;
+};
+
 axios.interceptors.request.use(async (config) => {
   const url = String(config?.url || '');
   if (
@@ -2181,11 +2195,7 @@ axios.interceptors.request.use(async (config) => {
     !url.includes('/authentication/getAccessToken') &&
     !url.includes('/authentication/refreshAccessToken')
   ) {
-    const elapsed = Date.now() - cjClient.lastRequestTime;
-    if (elapsed < CJ_RATE_LIMIT_MS) {
-      await new Promise((r) => setTimeout(r, CJ_RATE_LIMIT_MS - elapsed));
-    }
-    cjClient.lastRequestTime = Date.now();
+    await acquireCjRateLimitSlot();
     try {
       const validToken = await cjClient.getValidAccessToken();
       if (validToken) {
@@ -3159,7 +3169,21 @@ const purgeNonBeautyCjProducts = async () => {
 // (Rejecting Fragrance/Perfume, Hair/Wigs, Nail Art, Oral Care, Shaving, and broad uncurated parent categories)
 const fetchCjBeautyCategoryIds = async (headers) => {
   try {
-    const res = await axios.get(`${CJ_BASE_URL}/product/getCategory`, { headers, timeout: 15000 });
+    let res = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        res = await axios.get(`${CJ_BASE_URL}/product/getCategory`, { headers, timeout: 20000 });
+        if (Array.isArray(res?.data?.data) && res.data.data.length > 0) break;
+        if (attempt < 3) await delay(2000 * attempt);
+      } catch (catErr) {
+        if (attempt < 3) {
+          console.warn(`⏳ CJ getCategory retry ${attempt}/3 after: ${catErr?.response?.status || catErr.message}`);
+          await delay(2000 * attempt);
+        } else {
+          throw catErr;
+        }
+      }
+    }
     const firstList = res.data?.data || [];
     if (!Array.isArray(firstList)) return [];
 
@@ -4053,7 +4077,7 @@ const syncCJCatalog = async (options = {}) => {
       if (maxProducts > 0 && totalProcessed >= maxProducts) break;
       await crawlPaginatedSource({
         buildUrl: (pageNum) =>
-          `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&pageNum=${pageNum}&pageSize=${pageSize}`,
+          `${CJ_BASE_URL}/product/list?productNameEn=${encodeURIComponent(query)}&pageNum=${pageNum}&pageSize=${pageSize}`,
         fromBeautySource: false,
         sourceLabel: `Skincare & Beauty > ${query}`,
         icon: '🔍'
