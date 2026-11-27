@@ -34,19 +34,53 @@ const isAllowedCorsOrigin = (origin) => {
 };
 
 // ============================================================================
-// DOMAIN CANONICALIZATION & HTTPS ENFORCEMENT
+// DOMAIN CANONICALIZATION, RENDER NOINDEX, TRAILING-SLASH & LEGACY PRODUCT REDIRECTS
 // ============================================================================
+const SEO_CANONICAL_SUBPATHS = new Set([
+  '/beauty-memberships',
+  '/membership-options',
+  '/personalized-beauty-consulting',
+  '/personalized-skincare-guidance',
+  '/about-susan',
+  '/beauty-resources',
+  '/membership-faq',
+  '/contact'
+]);
+
 app.use((req, res, next) => {
-  const host = req.headers.host || '';
-  
-  // 1. Redirect www to non-www
+  const host = String(req.headers.host || '').toLowerCase();
+
+  // 1. Prevent Google from indexing the *.onrender.com subdomain as a duplicate site
+  if (host.endsWith('.onrender.com')) {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  }
+
+  // 2. Redirect www to canonical non-www domain (301)
   if (host === 'www.susansbeautyconsulting.com') {
     return res.redirect(301, `https://susansbeautyconsulting.com${req.originalUrl}`);
   }
 
-  // 2. Enforce HTTPS (trusting the x-forwarded-proto header from Render/Heroku)
-  if (req.headers['x-forwarded-proto'] === 'http') {
+  // 3. Enforce HTTPS on production hosts
+  if (req.headers['x-forwarded-proto'] === 'http' && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
     return res.redirect(301, `https://${host}${req.originalUrl}`);
+  }
+
+  if (req.method === 'GET') {
+    // 4. 301 redirect legacy query-parameter product URLs (/?tab=Boutique&productId=XYZ) -> /product/XYZ
+    if (req.path === '/' && req.query && req.query.productId) {
+      const rawPid = String(req.query.productId || '').trim();
+      if (/^[0-9a-fA-F]{24}$/.test(rawPid)) {
+        return res.redirect(301, `/product/${rawPid}`);
+      }
+    }
+
+    // 5. 301 redirect non-trailing-slash SEO routes (/about-susan -> /about-susan/) to match sitemap & canonicals
+    const lowerPath = String(req.path || '').toLowerCase();
+    if (SEO_CANONICAL_SUBPATHS.has(lowerPath)) {
+      const qsIndex = req.originalUrl.indexOf('?');
+      const qs = qsIndex !== -1 ? req.originalUrl.slice(qsIndex) : '';
+      return res.redirect(301, `${lowerPath}/${qs}`);
+    }
   }
 
   next();
@@ -6645,20 +6679,32 @@ const buildCrawlableSeoBodyHtml = (pageConfig) => {
 };
 
 // Injects route-specific <title>, <meta>, <link rel="canonical">, Open Graph, JSON-LD, and crawlable #root HTML
+const stripExistingSeoHeadTags = (html = '') =>
+  String(html || '')
+    .replace(/<title>[\s\S]*?<\/title>/gi, '')
+    .replace(/<meta\s+name=["']description["'][^>]*>/gi, '')
+    .replace(/<meta\s+name=["']robots["'][^>]*>/gi, '')
+    .replace(/<meta\s+property=["']og:[^"']+["'][^>]*>/gi, '')
+    .replace(/<meta\s+name=["']twitter:[^"']+["'][^>]*>/gi, '')
+    .replace(/<link\s+rel=["']canonical["'][^>]*>/gi, '');
+
 const renderSeoHydratedIndexHtml = (rawIndexHtml, pageConfig) => {
   const canonicalUrl = `${BASE_SEO_URL}${pageConfig.path}`;
   const schemas = buildComprehensiveSeoSchemas(pageConfig);
   const crawlableBody = buildCrawlableSeoBodyHtml(pageConfig);
 
   const headInjection = `
-    <title>${pageConfig.title}</title>
-    <meta name="description" content="${pageConfig.description}" />
+    <title>${escapeHtml(pageConfig.title)}</title>
+    <meta name="description" content="${escapeHtml(pageConfig.description)}" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="${canonicalUrl}" />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="${pageConfig.title}" />
-    <meta property="og:description" content="${pageConfig.description}" />
+    <meta property="og:site_name" content="Susan's Beauty Consulting" />
+    <meta property="og:title" content="${escapeHtml(pageConfig.title)}" />
+    <meta property="og:description" content="${escapeHtml(pageConfig.description)}" />
     <meta property="og:url" content="${canonicalUrl}" />
     <meta property="og:image" content="${BASE_SEO_URL}/susans-logo.png" />
+    <meta name="twitter:card" content="summary_large_image" />
     <script type="application/ld+json">${JSON.stringify(schemas)}</script>
   `;
 
@@ -6666,25 +6712,127 @@ const renderSeoHydratedIndexHtml = (rawIndexHtml, pageConfig) => {
     return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />${headInjection}</head><body><div id="root">${crawlableBody}</div></body></html>`;
   }
 
-  let html = rawIndexHtml
-    .replace(/<title>[\s\S]*?<\/title>/gi, '')
-    .replace(/<meta\s+name=["']description["'][^>]*>/gi, '')
-    .replace(/<link\s+rel=["']canonical["'][^>]*>/gi, '');
-
+  let html = stripExistingSeoHeadTags(rawIndexHtml);
   if (html.includes('</head>')) {
     html = html.replace('</head>', `${headInjection}\n</head>`);
   }
-
-  // Replace empty <div id="root"></div> with pre-rendered semantic HTML so crawlers never see a blank placeholder
   if (/<div\s+id=["']root["']\s*><\/div>/i.test(html)) {
-    html = html.replace(
-      /<div\s+id=["']root["']\s*><\/div>/i,
-      `<div id="root">${crawlableBody}</div>`
-    );
+    html = html.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${crawlableBody}</div>`);
   }
-
   return html;
 };
+
+// Renders unique, canonical, Product-Schema-enriched SSR HTML for /product/:id
+const renderProductSeoHtml = (rawIndexHtml, product) => {
+  const pid = String(product._id || '').trim();
+  const titleText = String(product.title || 'Skincare Essential').trim();
+  const pageTitle = `${titleText} | Susan's Beauty Consulting`;
+  const priceVal = Number(product.variants?.[0]?.price ?? product.price ?? 0);
+  const rawImg = String(product.imageUrl || product.variants?.[0]?.imageUrl || '').trim();
+  const imageUrl = rawImg ? (rawImg.startsWith('//') ? `https:${rawImg}` : rawImg) : `${BASE_SEO_URL}/susans-logo.png`;
+  const cleanDesc = typeof stripHtmlAndMarkdown === 'function'
+    ? stripHtmlAndMarkdown(product.description || product.seoAnswerCapsule || '')
+    : String(product.description || '').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+  const metaDesc = (cleanDesc || `Shop ${titleText} at Susan's Beauty Consulting — curated skincare and beauty essentials.`).slice(0, 158);
+  const canonicalUrl = `${BASE_SEO_URL}/product/${pid}`;
+  const step = product.ritualStep || 'Skincare Essential';
+  const skinTypes = Array.isArray(product.skinTypes) && product.skinTypes.length > 0 ? product.skinTypes.join(', ') : 'All Skin Types';
+  const concerns = Array.isArray(product.skinConcerns) && product.skinConcerns.length > 0 ? product.skinConcerns.join(', ') : 'Daily Radiance';
+  const actives = Array.isArray(product.keyActives) && product.keyActives.length > 0 ? product.keyActives.join(', ') : 'Botanical Complex';
+
+  const schemas = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      name: titleText,
+      image: [imageUrl],
+      description: metaDesc,
+      sku: String(product.cjSku || product.variants?.[0]?.sku || pid),
+      brand: {
+        '@type': 'Brand',
+        name: "Susan's Beauty Consulting"
+      },
+      offers: {
+        '@type': 'Offer',
+        url: canonicalUrl,
+        priceCurrency: 'USD',
+        price: priceVal.toFixed(2),
+        availability: 'https://schema.org/InStock'
+      }
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: `${BASE_SEO_URL}/` },
+        { '@type': 'ListItem', position: 2, name: titleText, item: canonicalUrl }
+      ]
+    }
+  ];
+
+  const crawlableBody = `
+    <div class="seo-prerendered-shell" style="max-width:860px;margin:0 auto;padding:40px 24px;font-family:'Cormorant Garamond',Georgia,serif;color:#5C5454;line-height:1.7;">
+      <nav aria-label="Breadcrumb" style="margin-bottom:16px;font-size:0.95rem;"><a href="/" style="color:#B38B8F;">Home</a> / <span>${escapeHtml(titleText)}</span></nav>
+      <main>
+        <h1 style="color:#2C1E18;font-size:2.2rem;margin-bottom:10px;">${escapeHtml(titleText)}</h1>
+        <p style="font-size:1.35rem;color:#B38B8F;font-weight:bold;">$${priceVal.toFixed(2)} USD</p>
+        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(titleText)}" style="max-width:360px;width:100%;border-radius:16px;margin:14px 0;" />
+        <p>${escapeHtml(cleanDesc || metaDesc)}</p>
+        <ul>
+          <li><strong>Ritual Step:</strong> ${escapeHtml(step)}</li>
+          <li><strong>Best For Skin Types:</strong> ${escapeHtml(skinTypes)}</li>
+          <li><strong>Target Skin Concerns:</strong> ${escapeHtml(concerns)}</li>
+          <li><strong>Key Actives:</strong> ${escapeHtml(actives)}</li>
+        </ul>
+        <p><a href="/" style="color:#B38B8F;">Explore Susan's Beauty Consulting Sanctuary</a> | <a href="/membership-options/" style="color:#B38B8F;">Compare Membership Tiers</a></p>
+      </main>
+    </div>`;
+
+  const headInjection = `
+    <title>${escapeHtml(pageTitle)}</title>
+    <meta name="description" content="${escapeHtml(metaDesc)}" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <meta property="og:type" content="product" />
+    <meta property="og:site_name" content="Susan's Beauty Consulting" />
+    <meta property="og:title" content="${escapeHtml(pageTitle)}" />
+    <meta property="og:description" content="${escapeHtml(metaDesc)}" />
+    <meta property="og:url" content="${canonicalUrl}" />
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <script type="application/ld+json">${JSON.stringify(schemas)}</script>
+  `;
+
+  if (!rawIndexHtml || typeof rawIndexHtml !== 'string') {
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />${headInjection}</head><body><div id="root">${crawlableBody}</div></body></html>`;
+  }
+
+  let html = stripExistingSeoHeadTags(rawIndexHtml);
+  if (html.includes('</head>')) {
+    html = html.replace('</head>', `${headInjection}\n</head>`);
+  }
+  if (/<div\s+id=["']root["']\s*><\/div>/i.test(html)) {
+    html = html.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${crawlableBody}</div>`);
+  }
+  return html;
+};
+
+// Renders a clean 404 Not Found HTML page (prevents Google Soft-404 & duplicate homepage indexing)
+const renderNotFoundSeoHtml = (requestedPath = '') => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Page Not Found | Susan's Beauty Consulting</title>
+  <meta name="robots" content="noindex, follow" />
+</head>
+<body style="margin:0;padding:48px 20px;background:#FFF9F9;font-family:Georgia,serif;color:#5C5454;text-align:center;">
+  <div style="max-width:540px;margin:0 auto;background:#FFFFFF;border:1.5px solid #E8C5C8;border-radius:22px;padding:36px;">
+    <h1 style="color:#B38B8F;margin-top:0;">Page Not Found (404)</h1>
+    <p style="font-family:sans-serif;font-size:0.95rem;color:#736A6A;">We could not find <code>${escapeHtml(requestedPath)}</code> at Susan's Beauty Consulting.</p>
+    <p style="margin-top:24px;"><a href="/" style="display:inline-block;background:#B38B8F;color:#FFFFFF;text-decoration:none;padding:11px 24px;border-radius:24px;font-family:sans-serif;font-weight:bold;">Return to Susan's Sanctuary →</a></p>
+  </div>
+</body>
+</html>`;
 
 // 1. /llms.txt (v2 Markdown Directory including all 9 Nationwide SEO Pages)
 app.get('/llms.txt', (req, res) => {
@@ -6742,7 +6890,7 @@ app.get('/llms-full.txt', async (req, res) => {
 
         const entry =
           `### ${p.title || 'Boutique Essential'}\n` +
-          `- **URL:** ${BASE_SEO_URL}/?tab=Boutique&productId=${p._id}\n` +
+          `- **URL:** ${BASE_SEO_URL}/product/${p._id}\n` +
           `- **Price:** $${Number(price).toFixed(2)}\n` +
           `- **Ritual Step:** ${step}\n` +
           `- **Best For Skin Types:** ${skinTypes}\n` +
@@ -6845,7 +6993,7 @@ app.get('/sitemap.xml', async (req, res) => {
         const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : todayIso;
         const chunk =
           '  <url>\n' +
-          `    <loc>${BASE_SEO_URL}/?tab=Boutique&amp;productId=${p._id}</loc>\n` +
+          `    <loc>${BASE_SEO_URL}/product/${p._id}</loc>\n` +
           `    <lastmod>${lastMod}</lastmod>\n` +
           '    <changefreq>daily</changefreq>\n' +
           '    <priority>0.6</priority>\n' +
@@ -13796,6 +13944,23 @@ app.get('/api/products', async (req, res) => {
   } catch (error) {
     console.error('Error fetching products:', error);
     return res.status(500).json({ error: 'Failed to fetch products' });
+  }
+});
+
+app.get('/api/products/:id', async (req, res) => {
+  try {
+    const pid = String(req.params.id || '').trim();
+    if (!mongoose.Types.ObjectId.isValid(pid)) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    const prod = await Product.findById(pid).select('-rawCjData -availableLogistics -seoAnswerCapsule -__v').lean();
+    if (!prod) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=600');
+    return res.status(200).json(prod);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to fetch product' });
   }
 });
 
@@ -22194,8 +22359,8 @@ function buildGeoJsonLdSchema(faqs = DEFAULT_GEO_MASTER_ARTICLE.faqs, foundingRe
       '@context': 'https://schema.org',
       '@type': 'BeautySalon',
       name: "Susan's Beauty Consulting",
-      url: 'https://www.susansbeautyconsulting.com',
-      logo: 'https://www.susansbeautyconsulting.com/susans-logo.png',
+      url: 'https://susansbeautyconsulting.com',
+      logo: 'https://susansbeautyconsulting.com/susans-logo.png',
       description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic barrier repair blueprints, and bespoke beauty consulting by Master Esthetician Susan and Lily AI.',
       address: {
         '@type': 'PostalAddress',
@@ -22601,10 +22766,10 @@ for (const pubDir of [path.join(__dirname, 'public'), path.join(__dirname, 'clie
 const { registerOrganicGrowthEngine } = require("./middleware/organicGrowthEngine");
 registerOrganicGrowthEngine(app, Product);
 
-// Express 4 & Express 5 compatible SPA catch-all route for all non-API, non-webhook, non-GEO GET requests
+// Express 4 & Express 5 compatible SPA catch-all route with /product/:id SSR & real 404s (prevents Google Soft-404/Duplicates)
 app.get(
   /^(?!\/api(?:\/|$)|\/webhook(?:\/|$)|\/healthz(?:\/|$)|\/privacy-policy(?:\/|$)|\/terms-of-service(?:\/|$)|\/sitemap\.xml(?:\/|$)|\/robots\.txt(?:\/|$)|\/llms\.txt(?:\/|$)|\/llms-full\.txt(?:\/|$)).*/,
-  (req, res, next) => {
+  async (req, res, next) => {
     if (req.method !== 'GET') return next();
 
     const cleanPath = String(req.path || '').toLowerCase();
@@ -22617,7 +22782,6 @@ app.get(
       return next();
     }
 
-    // Re-check dynamically in case build finished after server boot
     let buildDirToUse = global.__sbcResolvedBuildDir;
     if (!buildDirToUse) {
       for (const candidateDir of candidateFrontendBuildDirs) {
@@ -22631,52 +22795,48 @@ app.get(
       }
     }
 
-  const pageConfig = resolveSeoPageConfig(req.path) || PUBLIC_SEO_PAGES['/'];
-
+    let rawHtml = '';
     if (buildDirToUse) {
-      const indexPath = path.join(buildDirToUse, 'index.html');
       try {
-        const rawHtml = fs.readFileSync(indexPath, 'utf8');
-        const hydratedHtml = renderSeoHydratedIndexHtml(rawHtml, pageConfig);
-        return res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(hydratedHtml);
+        rawHtml = fs.readFileSync(path.join(buildDirToUse, 'index.html'), 'utf8');
       } catch (e) {
-        return res.sendFile(indexPath);
+        rawHtml = '';
       }
     }
 
-    // Even if build/index.html is not present locally, return full pre-rendered SEO HTML for all 9 public routes!
-    return res
-      .status(200)
-      .set('Content-Type', 'text/html; charset=utf-8')
-      .send(renderSeoHydratedIndexHtml('', pageConfig));
+    // 1. Canonical Product Detail Route: /product/:id
+    const productRouteMatch = String(req.path || '').match(/^\/product\/([0-9a-fA-F]{24})\/?$/);
+    if (productRouteMatch) {
+      const targetPid = productRouteMatch[1];
+      try {
+        const prod = mongoose.connection.readyState === 1
+          ? await Product.findById(targetPid).select('_id title price variants imageUrl description seoAnswerCapsule ritualStep skinTypes skinConcerns keyActives cjSku').lean()
+          : null;
+        if (prod) {
+          return res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(renderProductSeoHtml(rawHtml, prod));
+        }
+      } catch (prodErr) {
+        console.warn('⚠️ Product SSR lookup notice:', prodErr.message);
+      }
+      res.setHeader('X-Robots-Tag', 'noindex, follow');
+      return res.status(404).set('Content-Type', 'text/html; charset=utf-8').send(renderNotFoundSeoHtml(req.path));
+    }
 
-    // Friendly fallback if someone opens the raw Render backend URL in a browser when no local React build is present
-    res.status(200).send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Susan's Beauty Consulting — Sanctuary Server Active</title>
-  <style>
-    body { font-family: Georgia, serif; background: #FAF6F3; color: #2C1E18; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
-    .card { max-width: 600px; background: #FFFFFF; border: 1.5px solid #D4AF37; border-radius: 20px; padding: 32px; text-align: center; box-shadow: 0 12px 35px rgba(44,30,24,0.1); }
-    h1 { color: #B38B8F; margin-top: 0; }
-    .badge { display: inline-block; background: #E8F5E9; color: #2E7D32; font-family: sans-serif; font-size: 0.82rem; font-weight: bold; padding: 5px 14px; border-radius: 16px; margin-bottom: 14px; }
-    a.btn { display: inline-block; margin-top: 16px; background: #2C1E18; color: #FFFFFF; text-decoration: none; padding: 12px 24px; border-radius: 24px; font-family: sans-serif; font-size: 0.9rem; font-weight: bold; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">✓ Backend API &amp; Lily/Odie AI Online</div>
-    <h1>Susan's Beauty Consulting ✧</h1>
-    <p>Your Node.js &amp; Express Sanctuary server is live and healthy.</p>
-    <p style="font-family: sans-serif; font-size: 0.88rem; color: #6E5A4F;">
-      To serve the full React frontend directly from this server (without Vercel), run <code>npm run build</code> so <code>build/index.html</code> is present.
-    </p>
-    <a class="btn" href="/api/health">View Live /api/health Status →</a>
-  </div>
-</body>
-</html>`);
+    // 2. Known Public SEO Routes (all 9 nationwide pages)
+    const matchedSeoPage = resolveSeoPageConfig(req.path);
+    if (matchedSeoPage) {
+      return res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(renderSeoHydratedIndexHtml(rawHtml, matchedSeoPage));
+    }
+
+    // 3. Known interactive SPA app routes (/sanctuary, /admin, /privacy, /terms) — serve app with noindex
+    if (/^\/(?:sanctuary|admin|privacy|terms)(?:\/|$)/i.test(cleanPath)) {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+      return res.status(200).set('Content-Type', 'text/html; charset=utf-8').send(renderSeoHydratedIndexHtml(rawHtml, PUBLIC_SEO_PAGES['/']));
+    }
+
+    // 4. All other unknown paths return a real 404 Not Found (eliminates Google Soft-404 & duplicate homepage errors)
+    res.setHeader('X-Robots-Tag', 'noindex, follow');
+    return res.status(404).set('Content-Type', 'text/html; charset=utf-8').send(renderNotFoundSeoHtml(req.path));
   }
 );
 

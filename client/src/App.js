@@ -269,8 +269,14 @@ const DEFAULT_WINTER_GEO_FAQS = [
   }
 ];
 
+// Avoids duplicate FAQPage JSON-LD (server.js already injects route-specific schemas in <head>) and uses canonical non-www domain
 const GEOSchemaAndMetaInjector = () => {
   useEffect(() => {
+    // If server-side SSR already injected valid JSON-LD into <head>, do not inject a duplicate FAQPage schema
+    const existingLd = document.querySelector('script[type="application/ld+json"]');
+    if (existingLd && existingLd.textContent && existingLd.textContent.trim().length > 20) {
+      return;
+    }
     const schemaScriptId = 'sbc-geo-jsonld-schema';
     let scriptEl = document.getElementById(schemaScriptId);
     if (!scriptEl) {
@@ -279,62 +285,13 @@ const GEOSchemaAndMetaInjector = () => {
       scriptEl.type = 'application/ld+json';
       document.head.appendChild(scriptEl);
     }
-
-    const injectSchemas = (faqsToUse, remainingSpots = 49) => {
-      const schemaPayload = [
-        {
-          '@context': 'https://schema.org',
-          '@type': 'FAQPage',
-          mainEntity: (faqsToUse || DEFAULT_WINTER_GEO_FAQS).map((f) => ({
-            '@type': 'Question',
-            name: f.question,
-            acceptedAnswer: {
-              '@type': 'Answer',
-              text: f.answer
-            }
-          }))
-        },
-        {
-          '@context': 'https://schema.org',
-          '@type': 'BeautySalon',
-          name: "Susan's Beauty Consulting",
-          url: 'https://www.susansbeautyconsulting.com',
-          description: 'Clinical-grade personalized skincare diagnostics, non-comedogenic winter barrier repair blueprints, and Founding 50 VIP Sanctuary Memberships.',
-          hasOfferCatalog: {
-            '@type': 'OfferCatalog',
-            name: 'Founding 50 VIP Memberships & Store Credit Vault',
-            itemListElement: [
-              {
-                '@type': 'Offer',
-                name: 'The Luminary Circle — Founding 50 VIP Membership',
-                price: '49.00',
-                priceCurrency: 'USD',
-                description: `First 50 Founding Members only: lock in $49/mo pricing for life, receive a one-time 100% Store Credit Match ($49 added once to your Store Credit Vault, redeemable dollar-for-dollar on orders), 3-piece monthly skincare ritual box, quarterly 1-on-1 consultation, AI Beauty & Ritual Consultation, and 15% Boutique discount (${remainingSpots} of 50 spots remaining).`
-              },
-              {
-                '@type': 'Offer',
-                name: 'The Radiance Elite — Founding 50 VIP Membership',
-                price: '119.00',
-                priceCurrency: 'USD',
-                description: 'First 50 Founding Members only: lock in $119/mo pricing for life, receive a one-time 100% Store Credit Match ($119 added once to your Store Credit Vault, redeemable dollar-for-dollar on orders), FREE 3-Piece VIP Mystery Box on first order, 5-piece monthly skincare ritual box, monthly 1-on-1 consultations, Odie AI Skin Photo Analysis, and 25% Boutique discount.'
-              }
-            ]
-          }
-        }
-      ];
-      scriptEl.textContent = JSON.stringify(schemaPayload);
-    };
-
-    injectSchemas(DEFAULT_WINTER_GEO_FAQS, 49);
-
-    fetch(`${API_BASE_URL}/api/geo/hub`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data && data.faqs) {
-          injectSchemas(data.faqs, data.founding50?.remaining || 49);
-        }
-      })
-      .catch(() => {});
+    scriptEl.textContent = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'Organization',
+      name: "Susan's Beauty Consulting",
+      url: 'https://susansbeautyconsulting.com',
+      logo: 'https://susansbeautyconsulting.com/susans-logo.png'
+    });
   }, []);
 
   return null;
@@ -14795,6 +14752,178 @@ const CLIENT_SEO_ROUTE_META = {
   }
 };
 
+const DEDICATED_SEO_SUBPAGE_CONTENT = {
+  '/beauty-memberships': {
+    badge: 'Personalized Beauty Membership',
+    h1: 'Discover Your Beauty Membership',
+    lead: "Your beauty journey is personal, and your skincare guidance should be too. Unlike generic one-time articles, a Susan's Beauty Consulting membership delivers ongoing, season-by-season support tailored to your skin barrier.",
+    bullets: [
+      'Personalized 10-Step Beauty Blueprint calibrated to your skin type, sensitivity level, and climate.',
+      'Ongoing 1-on-1 video consultations with Susan (quarterly for Luminary, monthly for Radiance).',
+      'Hand-curated monthly skincare ritual boxes matched to your diagnostic profile.',
+      'Automatic 10% to 25% Boutique member savings plus Founding 50 lifetime rate lock.'
+    ],
+    primaryCtaLabel: 'Compare Membership Tiers →',
+    primaryCtaAction: 'pricing'
+  },
+  '/membership-options': {
+    badge: 'Compare Membership Tiers',
+    h1: 'Choose the Membership That Fits Your Beauty Journey',
+    lead: 'Compare Essential Glow ($19/mo), Luminary VIP ($49/mo), and Radiance All-Access ($119/mo) to find the right level of skincare diagnostics, monthly ritual boxes, and 1-on-1 coaching.',
+    bullets: [
+      'Essential Glow ($19/mo): 1 AI skin scan per month, digital skincare guidance, and 10% off the Boutique.',
+      'The Luminary Circle ($49/mo): 3-piece monthly skincare box ($85+ value), quarterly 1-on-1 with Susan, unlimited AI scans, and 15% off.',
+      'The Radiance Elite ($119/mo): 5-piece luxury monthly box ($200+ value), monthly 30-min 1-on-1 with Susan, AI Skin Photo Analysis, and 25% off.',
+      'Pause, switch tiers, or cancel anytime with zero long-term contracts.'
+    ],
+    primaryCtaLabel: 'View Live Pricing & Join →',
+    primaryCtaAction: 'pricing'
+  },
+  '/personalized-beauty-consulting': {
+    badge: '1-on-1 Online Beauty Consulting',
+    h1: 'A More Personalized Approach to Beauty',
+    lead: 'Stop guessing which cleansers, serums, and moisturizers work together. Our online beauty consulting pairs diagnostic precision with warm, human guidance from Susan.',
+    bullets: [
+      'Step 1: Complete your 10-step Beauty Blueprint diagnostic covering skin type, sensitivity, undertone, and climate.',
+      'Step 2: Receive your custom AM & PM ritual steps, hero ingredients to seek, and irritating ingredients to avoid.',
+      'Step 3: Meet 1-on-1 with Susan via private video sanctuary sessions to adjust your routine each season.'
+    ],
+    primaryCtaLabel: 'Start Your Beauty Journey →',
+    primaryCtaAction: 'signup'
+  },
+  '/personalized-skincare-guidance': {
+    badge: 'Barrier-First Skincare Education',
+    h1: 'Discover Skincare Guidance That Fits Your Needs',
+    lead: 'Healthy, glowing skin does not require a harsh 12-step shelf—it requires the right active ingredients in the right order for your unique moisture barrier.',
+    bullets: [
+      'Distinguish dry (oil-depleted) vs. dehydrated (water-depleted) skin across dry, humid, cold, and temperate climates.',
+      'Build a consistent Step 1 Cleanser, Step 2 Toner/Mist, Step 3 Serum, Step 4 Moisturizer, and Step 5 Eye/Lip/SPF routine.',
+      'Prioritize barrier-supporting ceramides, hyaluronic acid, niacinamide, and soothing Centella Asiatica on sensitive skin.'
+    ],
+    primaryCtaLabel: 'Browse Skincare Boutique →',
+    primaryCtaAction: 'boutique'
+  },
+  '/about-susan': {
+    badge: 'Founder & Lead Beauty Consultant',
+    h1: 'Meet Susan',
+    lead: "Susan Coke founded Susan's Beauty Consulting after 5 years of hands-on national beauty retail consulting experience in Kansas, helping hundreds of women navigate overwhelming cosmetic aisles with clarity and confidence.",
+    bullets: [
+      '5x Regional Leading Beauty Consultant dedicated to honest, barrier-respecting skincare advice.',
+      'Created the Sanctuary Membership so women can receive ongoing 1-on-1 guidance instead of one-off sales pitches.',
+      'Every curated product in our Boutique is screened for skin-type fit, sensitivity safety, and ingredient transparency.'
+    ],
+    primaryCtaLabel: 'Explore Memberships With Susan →',
+    primaryCtaAction: 'pricing'
+  },
+  '/beauty-resources': {
+    badge: 'Skincare & Ingredient Library',
+    h1: 'Your Beauty and Skincare Resource Center',
+    lead: 'Practical, easy-to-follow skincare guides and clinical monographs designed to help you make informed decisions for your daily ritual.',
+    bullets: [
+      'Winter Barrier Repair Protocol: Rebuilding depleted lipids with a 3:1:1 ceramide, cholesterol & fatty acid ratio without clogging pores.',
+      'Routine Architecture: Choosing between Minimalist (3-step), Balanced (4-step), and Luxurious (5-step) AM/PM routines.',
+      'Ingredient Literacy: How to layer Hyaluronic Acid, Niacinamide, Vitamin C, Peptides, and Bakuchiol safely.'
+    ],
+    primaryCtaLabel: 'Shop Barrier-Safe Skincare →',
+    primaryCtaAction: 'boutique'
+  },
+  '/membership-faq': {
+    badge: 'Transparent Answers',
+    h1: 'Membership Frequently Asked Questions',
+    lead: "Clear, straightforward answers about Susan's Beauty Consulting memberships, Founding 50 perks, Monthly Mystery Boxes, and flexible billing.",
+    bullets: [
+      'Monthly Mystery Boxes: Luminary ($49/mo) includes 3 curated pieces ($85+ value); Radiance ($119/mo) includes 5 full-size luxury pieces ($200+ value).',
+      'Founding 50 Members: First 50 Luminary/Radiance members lock in their rate for life and receive a one-time 100% Store Credit Match ($49 or $119).',
+      'Zero Contracts: Pause, upgrade, downgrade, or cancel anytime directly from your Account Info tab.'
+    ],
+    primaryCtaLabel: 'Compare Membership Options →',
+    primaryCtaAction: 'pricing'
+  },
+  '/contact': {
+    badge: 'Direct Sanctuary Support',
+    h1: "Contact Susan's Beauty Consulting",
+    lead: 'Have a question about choosing a membership tier, your Beauty Blueprint, or a Boutique order? Reach out to Susan directly.',
+    bullets: [
+      'Direct Email: Susan.Coke@SusansBeautyConsulting.com',
+      'Response Window: Within 1 business day (Monday–Friday, US Central Time).',
+      'Instant Help Desk: Use Lily AI Concierge inside the Sanctuary for live order tracking, routine advice, or direct escalation to Susan.'
+    ],
+    primaryCtaLabel: 'Sign In or Create Account →',
+    primaryCtaAction: 'signup'
+  }
+};
+
+const DedicatedSeoSubpageView = ({ routeKey, onNavigateHome, onOpenBoutique, onOpenPricing, onOpenSignup }) => {
+  const content = DEDICATED_SEO_SUBPAGE_CONTENT[routeKey];
+  if (!content) return null;
+
+  const handlePrimaryCta = () => {
+    if (content.primaryCtaAction === 'boutique') return onOpenBoutique();
+    if (content.primaryCtaAction === 'pricing') return onOpenPricing();
+    return onOpenSignup();
+  };
+
+  return (
+    <div style={{ width: '100%', minHeight: '100vh', backgroundColor: '#FFF9F9', padding: '36px 20px', boxSizing: 'border-box', fontFamily: "'Cormorant Garamond', Georgia, serif", color: '#5C5454' }}>
+      <div style={{ maxWidth: '880px', margin: '0 auto', backgroundColor: '#FFFFFF', border: '1.5px solid #E8C5C8', borderRadius: '26px', padding: '38px 34px', boxShadow: '0 14px 40px rgba(179, 139, 143, 0.16)', textAlign: 'left' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '20px', borderBottom: '1px solid #F2D4D7', paddingBottom: '14px' }}>
+          <button
+            type="button"
+            onClick={onNavigateHome}
+            style={{ background: 'none', border: '1px solid #E8C5C8', borderRadius: '20px', padding: '7px 16px', color: '#8A797A', fontFamily: 'sans-serif', fontSize: '0.84rem', cursor: 'pointer' }}
+          >
+            ← Susan's Beauty Consulting Home
+          </button>
+          <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', border: '1px solid #B38B8F', borderRadius: '18px', padding: '4px 14px', fontFamily: 'sans-serif', fontSize: '0.76rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
+            ✧ {content.badge}
+          </span>
+        </div>
+
+        <h1 style={{ fontSize: '2.75rem', color: '#2C1E18', margin: '0 0 14px 0', lineHeight: '1.15' }}>
+          {content.h1}
+        </h1>
+        <p style={{ fontSize: '1.3rem', color: '#5C5454', lineHeight: '1.65', margin: '0 0 24px 0' }}>
+          {content.lead}
+        </p>
+
+        <div style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '18px', padding: '22px 24px', marginBottom: '28px' }}>
+          <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '1.18rem', lineHeight: '1.85', color: '#5C5454' }}>
+            {content.bullets.map((item, idx) => (
+              <li key={idx} style={{ marginBottom: '6px' }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={handlePrimaryCta}
+            style={{ background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)', color: '#FFFFFF', border: 'none', borderRadius: '26px', padding: '13px 28px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 6px 18px rgba(179, 139, 143, 0.3)' }}
+          >
+            {content.primaryCtaLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenBoutique}
+            style={{ backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '26px', padding: '12px 22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            🛍️ Browse Skincare Boutique
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSignup}
+            style={{ backgroundColor: '#FFFFFF', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '26px', padding: '12px 22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', cursor: 'pointer' }}
+          >
+            ✨ Sign In / Create Account
+          </button>
+        </div>
+
+        <PublicSeoFooterAndRouteSync />
+      </div>
+    </div>
+  );
+};
+
 const PublicSeoFooterAndRouteSync = () => {
   useEffect(() => {
     const cleanPath = String(window.location.pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
@@ -16074,6 +16203,21 @@ function App() {
     localStorage.setItem('authUser', JSON.stringify(safeUser));
   }, [userDetails]);
 
+  // Deep-link canonical /product/:id URLs directly into Boutique + ProductDetailModal
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const m = String(window.location.pathname || '').match(/^\/product\/([0-9a-fA-F]{24})\/?$/);
+    if (!m) return;
+    const targetPid = m[1];
+    setStep(1);
+    fetch(`${API_BASE_URL}/api/products/${targetPid}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(prod => {
+        if (prod && prod._id) setSelectedProduct(prod);
+      })
+      .catch(() => {});
+  }, []);
+
   // General Boot Sequence
   useEffect(() => {
     const fetchBackendData = async () => {
@@ -17105,6 +17249,18 @@ function App() {
   };
 
   const currentPathname = typeof window !== 'undefined' ? String(window.location.pathname || '').toLowerCase() : '';
+  const normalizedSeoSubpath = currentPathname.replace(/\/+$/, '');
+  if (DEDICATED_SEO_SUBPAGE_CONTENT[normalizedSeoSubpath]) {
+    return (
+      <DedicatedSeoSubpageView
+        routeKey={normalizedSeoSubpath}
+        onNavigateHome={() => { window.history.pushState(null, '', '/'); setStep(0); }}
+        onOpenBoutique={() => { window.history.pushState(null, '', '/'); setStep(1); }}
+        onOpenPricing={() => { window.history.pushState(null, '', '/'); setStep(0); setTimeout(() => scrollToSection('membership-tiers'), 150); }}
+        onOpenSignup={() => { window.history.pushState(null, '', '/'); setStep(0); }}
+      />
+    );
+  }
   if (currentPathname === '/privacy' || currentPathname === '/terms') {
     const isPrivacy = currentPathname === '/privacy';
     return (
