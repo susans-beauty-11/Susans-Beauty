@@ -1967,7 +1967,7 @@ const CJ_BEAUTY_SEARCH_QUERIES = [
 // ============================================================================
 // CJ DROPSHIPPING SINGLETON TOKEN MANAGER & 1-QPS FIFO QUEUE
 // ============================================================================
-const CJ_RATE_LIMIT_MS = 1250; // 1.25 seconds strictly enforces < 1 QPS with network jitter buffer
+const CJ_RATE_LIMIT_MS = 1500; // 1.5s spacing keeps CJ comfortably under 1 QPS
 
 class CjApiClient {
   constructor() {
@@ -2175,11 +2175,19 @@ async function cjRequest(method, endpoint, options = {}) {
 // also acquires the singleton token lock and respects the 1.1s FIFO spacing automatically
 // Strict FIFO Promise mutex so concurrent CJ callers (sync + order sweep + checkout) NEVER violate 1 QPS
 let cjGlobalRateMutex = Promise.resolve();
+let cjCooldownUntil = 0;
+const triggerCjRateCooldown = (ms = 3000) => {
+  const target = Date.now() + Math.max(1500, Number(ms) || 3000);
+  if (target > cjCooldownUntil) cjCooldownUntil = target;
+};
 const acquireCjRateLimitSlot = () => {
   const slotPromise = cjGlobalRateMutex.then(async () => {
-    const elapsed = Date.now() - cjClient.lastRequestTime;
-    if (elapsed < CJ_RATE_LIMIT_MS) {
-      await new Promise((r) => setTimeout(r, CJ_RATE_LIMIT_MS - elapsed));
+    const now = Date.now();
+    const cooldownWait = cjCooldownUntil > now ? cjCooldownUntil - now : 0;
+    const spacingWait = Math.max(0, CJ_RATE_LIMIT_MS - (now - cjClient.lastRequestTime));
+    const waitMs = Math.max(cooldownWait, spacingWait);
+    if (waitMs > 0) {
+      await new Promise((r) => setTimeout(r, waitMs));
     }
     cjClient.lastRequestTime = Date.now();
   });
@@ -2240,9 +2248,12 @@ const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|facial|face care|cosm
 
 const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '') => {
   const cleanTitle = String(title || '').trim();
+  // Strip CJ's top-level umbrella parent (e.g. 'Health, Beauty & Hair >') so 'Hair'/'Health' in the root name never blocks Skincare leaf items
   const cleanCategory = String(categoryName || '')
-    .replace(/^Health\s*&\s*Beauty\s*>\s*/i, '')
-    .replace(/^Skincare\s*&\s*Beauty\s*>\s*/i, '')
+    .replace(/^Health\s*,?\s*Beauty\s*&\s*Hair\s*(?:>|\/)\s*/i, '')
+    .replace(/^Beauty\s*&\s*(?:Hair|Personal\s*Care)\s*(?:>|\/)\s*/i, '')
+    .replace(/^Health\s*&\s*Beauty\s*(?:>|\/)\s*/i, '')
+    .replace(/^Skincare\s*&\s*Beauty\s*(?:>|\/)\s*/i, '')
     .trim();
   const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 400);
   if (!cleanTitle) return false;
@@ -3170,44 +3181,56 @@ const purgeNonBeautyCjProducts = async () => {
 const fetchCjBeautyCategoryIds = async (headers) => {
   try {
     let res = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 4; attempt++) {
       try {
         res = await axios.get(`${CJ_BASE_URL}/product/getCategory`, { headers, timeout: 20000 });
+        const cjCode = Number(res?.data?.code || 200);
+        if (cjCode === 1600200 || /too many requests|qps/i.test(String(res?.data?.message || ''))) {
+          triggerCjRateCooldown(3000 * attempt);
+          if (attempt < 4) continue;
+        }
         if (Array.isArray(res?.data?.data) && res.data.data.length > 0) break;
-        if (attempt < 3) await delay(2000 * attempt);
+        if (attempt < 4) await delay(2500 * attempt);
       } catch (catErr) {
-        if (attempt < 3) {
-          console.warn(`⏳ CJ getCategory retry ${attempt}/3 after: ${catErr?.response?.status || catErr.message}`);
-          await delay(2000 * attempt);
+        const st = catErr?.response?.status;
+        if (st === 429) triggerCjRateCooldown(3000 * attempt);
+        if (attempt < 4) {
+          console.warn(`⏳ CJ getCategory retry ${attempt}/4 after: ${st || catErr.message}`);
+          await delay(2500 * attempt);
         } else {
           throw catErr;
         }
       }
     }
-    const firstList = res.data?.data || [];
+
+    const firstList = res?.data?.data || [];
     if (!Array.isArray(firstList)) return [];
 
     const beautyCatIds = [];
     const seenIds = new Set();
+
+    // Only allow top-level beauty/health umbrellas (e.g. "Health, Beauty & Hair"), never skip them for containing "Hair"/"Health"
+    const TOP_LEVEL_BEAUTY_UMBRELLA = /\b(beauty|skincare|skin care|cosmetic|makeup|personal care)\b/i;
 
     const addCatId = (id, fullPathName, leafName) => {
       const cleanId = String(id || '').trim();
       const cleanPath = String(fullPathName || '').trim();
       const cleanLeaf = String(leafName || cleanPath).trim();
       if (!cleanId || seenIds.has(cleanId)) return;
-      if (NON_BEAUTY_EXCLUSION_REGEX.test(cleanPath) || NON_BEAUTY_CATEGORY_REGEX.test(cleanPath)) return;
+      // Check exclusions strictly on the leaf name so parent umbrella "Health, Beauty & Hair" does not block "Skin Care"
+      if (NON_BEAUTY_EXCLUSION_REGEX.test(cleanLeaf) || NON_BEAUTY_CATEGORY_REGEX.test(cleanLeaf)) return;
       if (!HEALTH_BEAUTY_CATEGORY_REGEX.test(cleanLeaf)) return;
       seenIds.add(cleanId);
       beautyCatIds.push({ id: cleanId, name: cleanPath });
     };
 
     for (const first of firstList) {
-      const firstName = String(first.categoryFirstName || first.nameEn || first.name || '');
-      if (NON_BEAUTY_CATEGORY_REGEX.test(firstName)) continue;
+      const firstName = String(first.categoryFirstName || first.nameEn || first.name || '').trim();
+      if (!TOP_LEVEL_BEAUTY_UMBRELLA.test(firstName)) continue;
       const children1 = first.categoryFirstChildList || first.children || [];
 
       for (const second of (Array.isArray(children1) ? children1 : [])) {
-        const secondName = String(second.categorySecondName || second.nameEn || second.name || '');
+        const secondName = String(second.categorySecondName || second.nameEn || second.name || '').trim();
         if (NON_BEAUTY_EXCLUSION_REGEX.test(secondName) || NON_BEAUTY_CATEGORY_REGEX.test(secondName)) continue;
         const children2 = second.categorySecondChildList || second.children || [];
 
@@ -3216,10 +3239,14 @@ const fetchCjBeautyCategoryIds = async (headers) => {
         }
 
         for (const third of (Array.isArray(children2) ? children2 : [])) {
-          const thirdName = String(third.categoryName || third.nameEn || third.name || '');
+          const thirdName = String(third.categoryName || third.nameEn || third.name || '').trim();
           const thirdId = third.categoryId || third.id;
-          if (thirdId && HEALTH_BEAUTY_CATEGORY_REGEX.test(thirdName) && !NON_BEAUTY_EXCLUSION_REGEX.test(thirdName) && !NON_BEAUTY_CATEGORY_REGEX.test(thirdName)) {
-            addCatId(thirdId, `${firstName} > ${secondName} > ${thirdName}`, thirdName);
+          if (!thirdId) continue;
+          if (NON_BEAUTY_EXCLUSION_REGEX.test(thirdName) || NON_BEAUTY_CATEGORY_REGEX.test(thirdName)) continue;
+          // Accept leaf if either the leaf itself OR its verified Skincare/Makeup second-level parent matches
+          if (HEALTH_BEAUTY_CATEGORY_REGEX.test(thirdName) || HEALTH_BEAUTY_CATEGORY_REGEX.test(secondName)) {
+            seenIds.add(String(thirdId).trim());
+            beautyCatIds.push({ id: String(thirdId).trim(), name: `${firstName} > ${secondName} > ${thirdName}` });
           }
         }
       }
@@ -3935,17 +3962,29 @@ const syncCJCatalog = async (options = {}) => {
       return batchSaved;
     };
 
-    // Resilient single-page fetcher with exponential backoff for HTTP 429 and CJ 1600200 QPS limits
-    const fetchCjProductPage = async (url, maxRetries = 3) => {
+    // Resilient single-page fetcher with shared global cooldown backoff for HTTP 429 & CJ 1600200 QPS limits
+    const fetchCjProductPage = async (url, maxRetries = 5) => {
+      const backoffScheduleMs = [3000, 6000, 12000, 20000, 25000];
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (cjSyncCancelRequested) {
+          return { ok: false, list: [], total: 0, error: 'Cancelled' };
+        }
         try {
           const response = await axios.get(url, { headers, timeout: 20000 });
           const cjCode = Number(response.data?.code || 200);
           const cjMsg = String(response.data?.message || '');
-          if ((cjCode === 1600200 || /too many requests|qps/i.test(cjMsg)) && attempt < maxRetries) {
-            console.warn(`⏳ CJ QPS limit hit (attempt ${attempt}/${maxRetries}), backing off...`);
-            await delay(1800 * attempt);
-            continue;
+          if (cjCode === 1600200 || /too many requests|qps/i.test(cjMsg)) {
+            const waitMs = backoffScheduleMs[attempt - 1] || 15000;
+            triggerCjRateCooldown(waitMs);
+            if (attempt < maxRetries) {
+              console.warn(`⏳ CJ QPS limit hit (attempt ${attempt}/${maxRetries}), cooling down ${waitMs / 1000}s...`);
+              await delay(waitMs);
+              continue;
+            }
+            return { ok: false, list: [], total: 0, error: cjMsg || 'CJ QPS limit exceeded' };
+          }
+          if (cjCode !== 200 && response.data?.result === false) {
+            return { ok: false, list: [], total: 0, error: cjMsg || `CJ error code ${cjCode}` };
           }
           const dataBlock = response.data?.data || {};
           const list = Array.isArray(dataBlock.list)
@@ -3957,9 +3996,13 @@ const syncCJCatalog = async (options = {}) => {
           return { ok: true, list, total };
         } catch (err) {
           const status = err?.response?.status;
+          const waitMs = backoffScheduleMs[attempt - 1] || 15000;
+          if (status === 429) {
+            triggerCjRateCooldown(waitMs);
+          }
           if ((status === 429 || status >= 500 || err.code === 'ECONNABORTED') && attempt < maxRetries) {
-            console.warn(`⏳ CJ HTTP ${status || err.code} on attempt ${attempt}/${maxRetries}, backing off...`);
-            await delay(2000 * attempt);
+            console.warn(`⏳ CJ HTTP ${status || err.code} on attempt ${attempt}/${maxRetries}, cooling down ${waitMs / 1000}s...`);
+            await delay(waitMs);
             continue;
           }
           return { ok: false, list: [], total: 0, error: err?.response?.data?.message || err.message };
@@ -22698,13 +22741,13 @@ const startDatabaseAndBackgroundServices = async () => {
 
         if (!syncOnStartupDisabled && !syncedRecentlyWithFullCatalog && !isCjSyncRunning) {
           console.log(
-            `🚀 Server startup (${activeOnBoot} active products): launching uncapped CJ Skincare & Beauty background crawl in 4s...`
+            `🚀 Server startup (${activeOnBoot} active products): launching uncapped CJ Skincare & Beauty background crawl in 20s (after startup sweep & deploy handoff)...`
           );
           setTimeout(() => {
             syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((syncErr) => {
               console.error('❌ Startup uncapped CJ crawl error:', syncErr?.response?.data || syncErr.message);
             });
-          }, 4000);
+          }, 20000);
         } else {
           console.log(
             `✨ Startup catalog ready (${activeOnBoot} unique Skincare & Beauty products active, ${bootSanitize.duplicatesPurged || 0} duplicates removed). Next scheduled crawl at 3:00 AM CST.`
@@ -22740,6 +22783,7 @@ const startDatabaseAndBackgroundServices = async () => {
     }, 8000);
 
     cron.schedule('*/5 * * * *', () => {
+      if (isCjSyncRunning) return; // Never compete with active CJ crawl for 1-QPS quota
       autoSweepAndConfirmPendingCjOrders().catch(() => {});
     });
 
@@ -22782,5 +22826,14 @@ const startDatabaseAndBackgroundServices = async () => {
     setTimeout(startDatabaseAndBackgroundServices, 10000);
   }
 };
+
+// Graceful shutdown on Render deploys: immediately halts any active CJ crawl so the old container never competes for 1-QPS quota
+const handleGracefulShutdown = (signal) => {
+  console.log(`🛑 Received ${signal} — stopping any active CJ crawl cleanly before shutdown...`);
+  cjSyncCancelRequested = true;
+  setTimeout(() => process.exit(0), 250);
+};
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
 startDatabaseAndBackgroundServices();
