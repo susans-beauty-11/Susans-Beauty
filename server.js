@@ -3196,6 +3196,82 @@ let cjCatalogSyncTelemetry = {
   timezone: 'America/Chicago'
 };
 
+// Persists & hydrates CJ Catalog Sync telemetry in MongoDB (CatalogSyncState)
+const persistCatalogSyncTelemetry = async (updates = {}) => {
+  cjCatalogSyncTelemetry = {
+    ...cjCatalogSyncTelemetry,
+    ...updates
+  };
+  try {
+    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
+    await CatalogSyncState.findOneAndUpdate(
+      { key: 'primary' },
+      {
+        $set: {
+          lastSyncAt: cjCatalogSyncTelemetry.lastSyncAt ? new Date(cjCatalogSyncTelemetry.lastSyncAt) : null,
+          lastSyncStatus: String(cjCatalogSyncTelemetry.lastSyncStatus || 'IDLE'),
+          lastSyncedCount: Number(cjCatalogSyncTelemetry.lastSyncedCount || 0),
+          lastNewAddedCount: Number(cjCatalogSyncTelemetry.lastNewAddedCount || 0),
+          lastUpdatedCount: Number(cjCatalogSyncTelemetry.lastUpdatedCount || 0),
+          lastSanitizedAt: cjCatalogSyncTelemetry.lastSanitizedAt ? new Date(cjCatalogSyncTelemetry.lastSanitizedAt) : null,
+          lastDuplicatesPurgedCount: Number(cjCatalogSyncTelemetry.lastDuplicatesPurgedCount || 0),
+          lastNonBeautyPurgedCount: Number(cjCatalogSyncTelemetry.lastNonBeautyPurgedCount || 0),
+          lastExcessCapPrunedCount: Number(cjCatalogSyncTelemetry.lastExcessCapPrunedCount || 0),
+          lastStalePrunedCount: Number(cjCatalogSyncTelemetry.lastStalePrunedCount || 0),
+          maxCatalogCap: Number(cjCatalogSyncTelemetry.maxCatalogCap || 0),
+          activeCatalogTotal: Number(cjCatalogSyncTelemetry.activeCatalogTotal || 0),
+          lastError: String(cjCatalogSyncTelemetry.lastError || ''),
+          syncPhase: String(cjCatalogSyncTelemetry.syncPhase || 'IDLE'),
+          currentSourceLabel: String(cjCatalogSyncTelemetry.currentSourceLabel || ''),
+          pagesFetched: Number(cjCatalogSyncTelemetry.pagesFetched || 0),
+          itemsProcessed: Number(cjCatalogSyncTelemetry.itemsProcessed || 0),
+          startedAt: cjCatalogSyncTelemetry.startedAt ? new Date(cjCatalogSyncTelemetry.startedAt) : null,
+          cancelRequested: Boolean(cjCatalogSyncTelemetry.cancelRequested),
+          updatedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.warn('⚠️ Failed to persist CatalogSyncState:', err.message);
+  }
+  return cjCatalogSyncTelemetry;
+};
+
+const loadCatalogSyncTelemetry = async () => {
+  try {
+    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
+    const saved = await CatalogSyncState.findOne({ key: 'primary' }).lean();
+    if (saved) {
+      cjCatalogSyncTelemetry = {
+        ...cjCatalogSyncTelemetry,
+        lastSyncAt: saved.lastSyncAt ? new Date(saved.lastSyncAt).toISOString() : null,
+        lastSyncStatus: saved.lastSyncStatus || 'IDLE',
+        lastSyncedCount: Number(saved.lastSyncedCount || 0),
+        lastNewAddedCount: Number(saved.lastNewAddedCount || 0),
+        lastUpdatedCount: Number(saved.lastUpdatedCount || 0),
+        lastSanitizedAt: saved.lastSanitizedAt ? new Date(saved.lastSanitizedAt).toISOString() : null,
+        lastDuplicatesPurgedCount: Number(saved.lastDuplicatesPurgedCount || 0),
+        lastNonBeautyPurgedCount: Number(saved.lastNonBeautyPurgedCount || 0),
+        lastExcessCapPrunedCount: Number(saved.lastExcessCapPrunedCount || 0),
+        lastStalePrunedCount: Number(saved.lastStalePrunedCount || 0),
+        maxCatalogCap: Number(saved.maxCatalogCap || 0),
+        activeCatalogTotal: Number(saved.activeCatalogTotal || 0),
+        lastError: saved.lastError || '',
+        syncPhase: isCjSyncRunning ? (saved.syncPhase || 'RUNNING') : (['RUNNING', 'PRE_SANITIZING', 'CATEGORIES', 'KEYWORDS'].includes(saved.syncPhase) ? 'IDLE' : (saved.syncPhase || 'IDLE')),
+        currentSourceLabel: isCjSyncRunning ? (saved.currentSourceLabel || '') : '',
+        pagesFetched: Number(saved.pagesFetched || 0),
+        itemsProcessed: Number(saved.itemsProcessed || 0),
+        startedAt: saved.startedAt ? new Date(saved.startedAt).toISOString() : null,
+        cancelRequested: false
+      };
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to load CatalogSyncState:', err.message);
+  }
+  return cjCatalogSyncTelemetry;
+};
+
 // Removes foreign-key references across InboxItem, User.recommendedProducts, and MemberMonthlyBox for pruned products
 const cleanupPrunedProductReferences = async (prunedIds = []) => {
   if (!Array.isArray(prunedIds) || prunedIds.length === 0) return;
