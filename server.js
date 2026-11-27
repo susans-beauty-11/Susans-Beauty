@@ -1418,12 +1418,21 @@ const productSchema = new mongoose.Schema({
       addedWeightGrams: 63
     })
   },
+  sizeSummary: { type: String, default: '' },
+  packQuantitySummary: { type: String, default: '' },
+  variantsHydratedAt: { type: Date, default: null },
   variants: [{
+    vid: { type: String, default: '' },
     sku: { type: String, required: true },
-    variantName: String, 
+    variantName: String,
+    variantKey: { type: String, default: '' },
+    sizeLabel: { type: String, default: '' },
+    packQuantity: { type: String, default: '' },
+    weightGrams: { type: Number, default: 0 },
+    dimensions: { type: String, default: '' },
     price: Number,
     wholesalePriceUsd: Number,
-    imageUrl: String 
+    imageUrl: String
   }],
   rawCjData: { type: mongoose.Schema.Types.Mixed }
 });
@@ -3757,7 +3766,7 @@ const syncCJCatalog = async (options = {}) => {
     // Pre-load existing products into memory Maps once for O(1) lookups during bulkWrite batching
     const existingCatalog = await Product.find({})
       .select(
-        '_id title cjPid cjSku normalizedTitleKey customTitleLocked description seoAnswerCapsule markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics variants.sku rawCjData.pid'
+        '_id title cjPid cjSku normalizedTitleKey customTitleLocked description seoAnswerCapsule markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics variants variantsHydratedAt sizeSummary packQuantitySummary rawCjData.pid'
       )
       .lean();
 
@@ -3881,6 +3890,12 @@ const syncCJCatalog = async (options = {}) => {
         const labelAddonUsd = activeCustomLabel?.enabled ? Number(activeCustomLabel.packagingCostUsd || 0) : 0;
         const shippingAddonUsd = activeShippingIncluded ? activeShippingCost : 0;
 
+        const parsedSyncSizeQty = extractSizeAndQuantityFromText(`${effectiveTitle} ${rawDesc}`);
+        const hasExistingHydratedVariants =
+          Boolean(existingProd?.variantsHydratedAt) &&
+          Array.isArray(existingProd?.variants) &&
+          existingProd.variants.length > 0;
+
         const mappedVariants =
           Array.isArray(item.variants) && item.variants.length > 0
             ? item.variants.map((v) => {
@@ -3888,18 +3903,31 @@ const syncCJCatalog = async (options = {}) => {
                 const computedVariantRetail = Number(
                   ((variantRawPrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
                 );
+                const vLabel = v.variantKey || v.variantEn || v.variantName || 'Standard Option';
+                const vSizeQty = extractSizeAndQuantityFromText(`${vLabel} ${effectiveTitle}`);
                 return {
-                  sku: v.vid || v.variantSku || baseSku,
-                  variantName: v.variantEn || v.variantName || v.variantKey || 'Standard Option',
+                  vid: String(v.vid || '').trim(),
+                  sku: v.variantSku || v.vid || baseSku,
+                  variantName: vLabel,
+                  variantKey: String(v.variantKey || '').trim(),
+                  sizeLabel: vSizeQty.sizeLabel || parsedSyncSizeQty.sizeLabel,
+                  packQuantity: vSizeQty.packQuantity || parsedSyncSizeQty.packQuantity,
+                  weightGrams,
                   wholesalePriceUsd: Number(variantRawPrice.toFixed(2)),
                   price: computedVariantRetail,
                   imageUrl: v.variantImage || img
                 };
               })
+            : hasExistingHydratedVariants
+            ? existingProd.variants
             : [
                 {
+                  vid: String(item.vid || '').trim(),
                   sku: item.vid || baseSku,
-                  variantName: 'Standard',
+                  variantName: parsedSyncSizeQty.sizeLabel || parsedSyncSizeQty.packQuantity || 'Standard',
+                  sizeLabel: parsedSyncSizeQty.sizeLabel,
+                  packQuantity: parsedSyncSizeQty.packQuantity,
+                  weightGrams,
                   wholesalePriceUsd: Number(rawBasePrice.toFixed(2)),
                   price: Number(((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)),
                   imageUrl: img
@@ -3957,6 +3985,8 @@ const syncCJCatalog = async (options = {}) => {
           sensitivityLabel: blueprintLabels.sensitivityLabel,
           ritualStep: blueprintLabels.ritualStep,
           keyActives: blueprintLabels.keyActives,
+          sizeSummary: existingProd?.sizeSummary || parsedSyncSizeQty.sizeLabel,
+          packQuantitySummary: existingProd?.packQuantitySummary || parsedSyncSizeQty.packQuantity,
           variants: mappedVariants,
           rawCjData: { ...item, categoryName: category || item.categoryName }
         };
@@ -4686,6 +4716,173 @@ const buildDeterministicCjBeautyCarriers = ({
       ...(isWinner ? { optimalReason: optimal.optimalReason } : {})
     };
   });
+};
+
+// ---------------- PRODUCT SIZE, PACK QUANTITY & ALL-VARIANTS HYDRATION ENGINE ---------------- //
+const extractSizeAndQuantityFromText = (rawText = '') => {
+  const textStr = String(rawText || '').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+  if (!textStr) return { sizeLabel: '', packQuantity: '' };
+
+  // Match net volume / weight sizes (e.g. 30ml, 50 ml, 1.7 fl oz, 100g, 3.4oz)
+  const sizeMatch = textStr.match(/\b(\d+(?:\.\d+)?\s*(?:fl\.?\s*oz|ml|mL|g|gr|grams|mg|oz|kg|L))\b/i);
+  const sizeLabel = sizeMatch
+    ? sizeMatch[1].replace(/\s+/g, ' ').replace(/\bml\b/i, 'ml').replace(/\bgrams\b/i, 'g').trim()
+    : '';
+
+  // Match pack quantities (e.g. 60pcs, 3 pcs, 2 Pack, 5 Sheets, 30 Pairs, Set of 4, 5-Piece)
+  const qtyMatch =
+    textStr.match(/\b(\d+\s*(?:pcs?|pieces?|packs?|count|ct|sheets?|patches?|pairs?|bottles?|jars?|tubes?|sticks?|capsules?|pads?|masks?|sets?))\b/i) ||
+    textStr.match(/\b(set\s+of\s+\d+|\d+[-\s]piece(?:\s+set)?)\b/i);
+  const packQuantity = qtyMatch
+    ? qtyMatch[1].replace(/\s+/g, ' ').replace(/\bpcs?\b/i, 'pcs').trim()
+    : '';
+
+  return { sizeLabel, packQuantity };
+};
+
+// Computes profit-protected retail price for an individual CJ variant using the parent product pricing rules
+const computeVariantRetailPrice = (variantWholesaleUsd, productDoc = {}) => {
+  const w = Number(Math.max(0.25, Number(variantWholesaleUsd) || Number(productDoc.wholesalePriceUsd) || 2.0).toFixed(2));
+  const markup = Number(productDoc.markupMultiplier || 6.5) || 6.5;
+  const shipCost = Math.max(5.25, Number(productDoc.shippingCostUsd || 7.84));
+  const shipAddon = productDoc.shippingIncludedInPrice !== false ? shipCost : 0;
+  const labelCost = productDoc.customLabelConfig?.enabled !== false
+    ? Number(productDoc.customLabelConfig?.packagingCostUsd || 1.95)
+    : 0;
+  const formulaPrice = Number(((w * markup) + shipAddon + labelCost).toFixed(2));
+  const allInUnitCost = Number((w + shipCost + labelCost).toFixed(2));
+  const minProfitFloor = Number(
+    Math.max(allInUnitCost + 8.00, ((w + labelCost + 6.00) / 0.75) + shipCost).toFixed(2)
+  );
+  return Number(Math.max(formulaPrice, minProfitFloor).toFixed(2));
+};
+
+// Fetches ALL variants (sizes, shades, pack counts, weights & images) from CJ GET /product/query and caches in MongoDB
+const hydrateProductVariantsFromCj = async (productDoc, { force = false, timeoutMs = 6500 } = {}) => {
+  if (!productDoc || !productDoc._id) return productDoc;
+
+  const existingVariants = Array.isArray(productDoc.variants) ? productDoc.variants : [];
+  const isSinglePlaceholder =
+    existingVariants.length <= 1 &&
+    (!existingVariants[0]?.variantName || existingVariants[0].variantName === 'Standard');
+  const hydratedMs = productDoc.variantsHydratedAt ? new Date(productDoc.variantsHydratedAt).getTime() : 0;
+  const isFreshlyHydrated = hydratedMs > 0 && (Date.now() - hydratedMs) < 7 * 24 * 60 * 60 * 1000;
+
+  // Return immediately if already hydrated within 7 days and not forced
+  if (!force && isFreshlyHydrated && !isSinglePlaceholder) {
+    return productDoc;
+  }
+
+  const fallbackParsed = extractSizeAndQuantityFromText(`${productDoc.title || ''} ${productDoc.description || ''}`);
+  const headers = getCjHeaders();
+  const pid = String(productDoc.cjPid || productDoc.rawCjData?.pid || '').trim();
+  const productSku = String(productDoc.cjSku || productDoc.rawCjData?.productSku || '').trim();
+
+  // Custom non-CJ products: just ensure sizeSummary & packQuantitySummary are populated
+  if (!headers || (!pid && !productSku) || /^(CUSTOM-|SBC-)/i.test(pid || productSku)) {
+    const patched = {
+      ...productDoc,
+      sizeSummary: productDoc.sizeSummary || fallbackParsed.sizeLabel,
+      packQuantitySummary: productDoc.packQuantitySummary || fallbackParsed.packQuantity
+    };
+    return patched;
+  }
+
+  try {
+    const queryUrl = pid
+      ? `${CJ_BASE_URL}/product/query?pid=${encodeURIComponent(pid)}`
+      : `${CJ_BASE_URL}/product/query?productSku=${encodeURIComponent(productSku)}`;
+
+    const cjRes = await Promise.race([
+      axios.get(queryUrl, { headers, timeout: timeoutMs }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('CJ variant hydration timeout')), timeoutMs))
+    ]);
+
+    const detail = cjRes?.data?.data;
+    const rawCjVariants = Array.isArray(detail?.variants) ? detail.variants : [];
+
+    if (rawCjVariants.length === 0) {
+      // Mark hydrated so we do not hammer CJ on every modal open for single-SKU items
+      await Product.findByIdAndUpdate(productDoc._id, {
+        $set: {
+          sizeSummary: productDoc.sizeSummary || fallbackParsed.sizeLabel,
+          packQuantitySummary: productDoc.packQuantitySummary || fallbackParsed.packQuantity,
+          variantsHydratedAt: new Date()
+        }
+      }).catch(() => {});
+      return {
+        ...productDoc,
+        sizeSummary: productDoc.sizeSummary || fallbackParsed.sizeLabel,
+        packQuantitySummary: productDoc.packQuantitySummary || fallbackParsed.packQuantity,
+        variantsHydratedAt: new Date()
+      };
+    }
+
+    const mappedVariants = rawCjVariants.map((v, idx) => {
+      const vKey = String(v.variantKey || '').trim();
+      const vNameEn = String(v.variantNameEn || v.variantEn || '').trim();
+      const vStandard = String(v.variantStandard || '').trim();
+      const displayOptionName = vKey || vNameEn || vStandard || `Option ${idx + 1}`;
+      const parsedVariant = extractSizeAndQuantityFromText(
+        `${displayOptionName} ${vStandard} ${productDoc.title || ''}`
+      );
+      const rawWholesale = parseFloat(
+        String(v.variantSellPrice || v.sellPrice || detail.sellPrice || productDoc.wholesalePriceUsd || 2.0).split('-')[0].trim()
+      );
+      const vWholesale = Number.isFinite(rawWholesale) && rawWholesale > 0
+        ? Number(rawWholesale.toFixed(2))
+        : Number(productDoc.wholesalePriceUsd || 2.0);
+      const vRetail = computeVariantRetailPrice(vWholesale, productDoc);
+      const rawWeight = parseFloat(String(v.variantWeight || detail.productWeight || productDoc.estimatedWeightGrams || 0));
+      const weightGrams = Number.isFinite(rawWeight) && rawWeight > 0 ? Math.round(rawWeight) : Number(productDoc.estimatedWeightGrams || 120);
+      const dims = (v.variantLength && v.variantWidth && v.variantHeight)
+        ? `${v.variantLength}×${v.variantWidth}×${v.variantHeight} mm`
+        : '';
+
+      return {
+        vid: String(v.vid || '').trim(),
+        sku: String(v.variantSku || v.vid || productSku || `${productDoc._id}-${idx + 1}`).trim(),
+        variantName: displayOptionName,
+        variantKey: vKey,
+        sizeLabel: parsedVariant.sizeLabel || fallbackParsed.sizeLabel,
+        packQuantity: parsedVariant.packQuantity || fallbackParsed.packQuantity,
+        weightGrams,
+        dimensions: dims,
+        wholesalePriceUsd: vWholesale,
+        price: vRetail,
+        imageUrl: v.variantImage || productDoc.imageUrl || ''
+      };
+    });
+
+    const uniqueSizes = [...new Set(mappedVariants.map(v => v.sizeLabel).filter(Boolean))];
+    const uniqueQtys = [...new Set(mappedVariants.map(v => v.packQuantity).filter(Boolean))];
+    const sizeSummary = uniqueSizes.length > 0 ? uniqueSizes.slice(0, 4).join(' / ') : fallbackParsed.sizeLabel;
+    const packQuantitySummary = uniqueQtys.length > 0 ? uniqueQtys.slice(0, 3).join(' / ') : fallbackParsed.packQuantity;
+    const hydratedAt = new Date();
+
+    const updateFields = {
+      variants: mappedVariants,
+      sizeSummary,
+      packQuantitySummary,
+      variantsHydratedAt: hydratedAt,
+      ...(detail.pid ? { cjPid: String(detail.pid).trim() } : {}),
+      ...(detail.productSku ? { cjSku: String(detail.productSku).trim() } : {})
+    };
+
+    await Product.findByIdAndUpdate(productDoc._id, { $set: updateFields }).catch(() => {});
+
+    return {
+      ...productDoc,
+      ...updateFields
+    };
+  } catch (err) {
+    console.warn(`⚠️ Variant hydration fallback for ${productDoc.title || productDoc._id}:`, err.message);
+    return {
+      ...productDoc,
+      sizeSummary: productDoc.sizeSummary || fallbackParsed.sizeLabel,
+      packQuantitySummary: productDoc.packQuantitySummary || fallbackParsed.packQuantity
+    };
+  }
 };
 
 // Resolves and caches a product's true CJ Variant ID (vid), Variant SKU (variantSku), weight (grams),
@@ -13953,13 +14150,20 @@ app.get('/api/products/:id', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(pid)) {
       return res.status(404).json({ error: 'Product not found' });
     }
-    const prod = await Product.findById(pid).select('-rawCjData -availableLogistics -seoAnswerCapsule -__v').lean();
+    let prod = await Product.findById(pid).select('-availableLogistics -seoAnswerCapsule -__v').lean();
     if (!prod) {
       return res.status(404).json({ error: 'Product not found' });
     }
+    const shouldHydrate = req.query.hydrateVariants !== 'false';
+    const forceHydrate = req.query.force === 'true';
+    if (shouldHydrate) {
+      prod = await hydrateProductVariantsFromCj(prod, { force: forceHydrate });
+    }
+    const { rawCjData: _omitRaw, ...publicProd } = prod;
     res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=600');
-    return res.status(200).json(prod);
+    return res.status(200).json(publicProd);
   } catch (error) {
+    console.error('Error fetching product by ID:', error.message);
     return res.status(500).json({ error: 'Failed to fetch product' });
   }
 });

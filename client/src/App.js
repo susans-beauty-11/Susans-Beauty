@@ -2270,26 +2270,91 @@ const formatCustomerProductDescription = (product = {}) => {
   return '';
 };
 
+// Extracts customer-friendly Size (e.g. 50ml, 1.7 fl oz) and Pack Quantity (e.g. 60 pcs, 3-Piece Set)
+const extractDisplaySizeAndQty = (product = {}, activeVariant = null) => {
+  const directSize = String(activeVariant?.sizeLabel || product?.sizeSummary || '').trim();
+  const directQty = String(activeVariant?.packQuantity || product?.packQuantitySummary || '').trim();
+  if (directSize && directQty) {
+    return {
+      sizeLabel: directSize,
+      packQuantity: directQty,
+      weightGrams: Number(activeVariant?.weightGrams || product?.estimatedWeightGrams || 0)
+    };
+  }
+  const corpus = [
+    activeVariant?.variantName || '',
+    activeVariant?.variantKey || '',
+    product?.title || '',
+    typeof product?.description === 'string' ? product.description.slice(0, 260) : ''
+  ].join(' ');
+  const sizeMatch = corpus.match(/\b(\d+(?:\.\d+)?\s*(?:fl\.?\s*oz|ml|mL|g|gr|grams|mg|oz|kg|L))\b/i);
+  const qtyMatch =
+    corpus.match(/\b(\d+\s*(?:pcs?|pieces?|packs?|count|ct|sheets?|patches?|pairs?|bottles?|jars?|tubes?|sticks?|capsules?|pads?|masks?|sets?))\b/i) ||
+    corpus.match(/\b(set\s+of\s+\d+|\d+[-\s]piece(?:\s+set)?)\b/i);
+  return {
+    sizeLabel: directSize || (sizeMatch ? sizeMatch[1].replace(/\s+/g, ' ').trim() : ''),
+    packQuantity: directQty || (qtyMatch ? qtyMatch[1].replace(/\s+/g, ' ').trim() : ''),
+    weightGrams: Number(activeVariant?.weightGrams || product?.estimatedWeightGrams || 0)
+  };
+};
+
 const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasCompletedQuiz, isFavorite = false, onToggleFavorite = null }) => {
+  const [liveProduct, setLiveProduct] = useState(product);
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
+  const [quantityToAdd, setQuantityToAdd] = useState(1);
+  const [isLoadingVariants, setIsLoadingVariants] = useState(false);
 
-  if (!product) return null;
+  // Hydrate ALL CJ variants (sizes, shades, pack counts & prices) whenever a product modal opens
+  useEffect(() => {
+    if (!product) {
+      setLiveProduct(null);
+      return;
+    }
+    setLiveProduct(product);
+    setSelectedVariantIdx(0);
+    setQuantityToAdd(1);
 
-  const title = product.title || 'Untitled Product';
-  const hasVariants = product.variants && product.variants.length > 0;
-  const activeVariant = hasVariants ? product.variants[selectedVariantIdx] : product;
+    const pid = String(product._id || '').trim();
+    if (!pid || !/^[0-9a-fA-F]{24}$/.test(pid)) return;
 
-  const displayImage = activeVariant?.imageUrl || product.imageUrl;
+    let cancelled = false;
+    setIsLoadingVariants(true);
+    fetch(`${API_BASE_URL}/api/products/${pid}?hydrateVariants=true`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((hydrated) => {
+        if (!cancelled && hydrated && hydrated._id) {
+          setLiveProduct((prev) => ({ ...(prev || {}), ...hydrated }));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setIsLoadingVariants(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product]);
+
+  if (!product || !liveProduct) return null;
+
+  const title = liveProduct.title || 'Untitled Product';
+  const variantsList = Array.isArray(liveProduct.variants) && liveProduct.variants.length > 0 ? liveProduct.variants : [];
+  const hasVariants = variantsList.length > 0;
+  const safeIdx = selectedVariantIdx < variantsList.length ? selectedVariantIdx : 0;
+  const activeVariant = hasVariants ? variantsList[safeIdx] : liveProduct;
+
+  const displayImage = activeVariant?.imageUrl || liveProduct.imageUrl;
   const formattedImageUrl = displayImage && displayImage.startsWith('//')
     ? `https:${displayImage}`
     : displayImage;
 
-  const itemPrice = activeVariant?.price || product.price || 0;
-
-  const unformattedInfo = formatCustomerProductDescription(product);
-  const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
-
-  const bpMatch = evaluateBlueprintMatch(product, userBlueprint, hasCompletedQuiz);
+  const itemPrice = Number(activeVariant?.price || liveProduct.price || 0);
+  const unformattedInfo = typeof formatCustomerProductDescription === 'function'
+    ? formatCustomerProductDescription(liveProduct)
+    : String(liveProduct.description || '').replace(/<[^>]*>?/gm, '');
+  const shippingTime = liveProduct.rawCjData?.deliveryTime ? `${liveProduct.rawCjData.deliveryTime} hours` : '7-12 Days';
+  const sizeQty = extractDisplaySizeAndQty(liveProduct, activeVariant);
+  const bpMatch = evaluateBlueprintMatch(liveProduct, userBlueprint, hasCompletedQuiz);
 
   return (
     <div style={{
@@ -2300,11 +2365,11 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
     }} onClick={onClose}>
       <div style={{
         backgroundColor: '#FFF9F9', border: bpMatch.isMatch ? '2px solid #B38B8F' : '1px solid #E8C5C8',
-        borderRadius: '22px', padding: '28px', maxWidth: '560px', width: '100%',
+        borderRadius: '22px', padding: '28px', maxWidth: '580px', width: '100%',
         boxShadow: '0 12px 36px rgba(92, 84, 84, 0.32)', position: 'relative',
         maxHeight: '92vh', overflowY: 'auto', textAlign: 'left', boxSizing: 'border-box'
       }} onClick={(e) => e.stopPropagation()}>
-        
+
         <button onClick={onClose} style={{ position: 'absolute', top: '15px', right: '20px', background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#8A797A', zIndex: 5 }}>✕</button>
 
         <div style={{ width: '100%', height: '240px', backgroundColor: '#FFF0F2', borderRadius: '14px', overflow: 'hidden', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', border: '1px solid #E8C5C8' }}>
@@ -2315,7 +2380,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
             padding: '5px 12px', borderRadius: '14px', fontSize: '0.78rem',
             fontFamily: "'Cormorant Garamond', serif", fontWeight: 'bold', letterSpacing: '0.5px', zIndex: 3
           }}>
-            {product.essentialSlotLabel || bpMatch.ritualStep}
+            {liveProduct.essentialSlotLabel || bpMatch.ritualStep}
           </span>
           {bpMatch.isMatch && (
             <span style={{
@@ -2336,15 +2401,105 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
         </div>
 
         <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.85rem', color: '#5C5454', margin: '0 0 6px 0', lineHeight: '1.25' }}>{title}</h2>
-        
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
           <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', color: '#B38B8F', fontWeight: 'bold', margin: 0 }}>
-            ${parseFloat(itemPrice).toFixed(2)}
+            ${itemPrice.toFixed(2)}
           </p>
           <p style={{ fontFamily: 'sans-serif', fontSize: '0.85rem', color: '#A89999', margin: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
             ✈️ Ships globally ({shippingTime})
           </p>
         </div>
+
+        {/* Size, Pack Quantity & Variant Specs Strip */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginBottom: '14px', padding: '10px 13px', backgroundColor: '#FFFFFF', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454' }}>
+          {sizeQty.sizeLabel && (
+            <span style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '10px', padding: '3px 10px', fontWeight: 'bold' }}>
+              📏 Size: {sizeQty.sizeLabel}
+            </span>
+          )}
+          {sizeQty.packQuantity && (
+            <span style={{ backgroundColor: '#F6FBF7', border: '1px solid #A5D6A7', color: '#2E7D32', borderRadius: '10px', padding: '3px 10px', fontWeight: 'bold' }}>
+              📦 Pack Qty: {sizeQty.packQuantity}
+            </span>
+          )}
+          {sizeQty.weightGrams > 0 && (
+            <span style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#736A6A', borderRadius: '10px', padding: '3px 9px' }}>
+              ⚖️ Net/Ship Weight: {sizeQty.weightGrams}g
+            </span>
+          )}
+          {activeVariant?.dimensions && (
+            <span style={{ backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', color: '#736A6A', borderRadius: '10px', padding: '3px 9px' }}>
+              📐 {activeVariant.dimensions}
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', color: '#8A797A', fontSize: '0.76rem', fontWeight: 'bold' }}>
+            {isLoadingVariants ? '⏳ Loading all options...' : `🎨 ${Math.max(1, variantsList.length)} Option${variantsList.length === 1 ? '' : 's'} Available`}
+          </span>
+        </div>
+
+        {/* All Variants / Sizes / Shades Visual Selector */}
+        {hasVariants && variantsList.length > 1 && (
+          <div style={{ marginBottom: '16px', padding: '12px 14px', backgroundColor: '#FFFFFF', borderRadius: '14px', border: '1.5px solid #B38B8F' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <label style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', color: '#5C5454' }}>
+                Select Size / Variant ({variantsList.length} Options):
+              </label>
+              <span style={{ fontFamily: 'sans-serif', fontSize: '0.76rem', color: '#B38B8F', fontWeight: 'bold' }}>
+                Selected: {activeVariant?.variantName || `Option ${safeIdx + 1}`}
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(145px, 1fr))', gap: '8px', maxHeight: '210px', overflowY: 'auto', paddingRight: '2px' }}>
+              {variantsList.map((v, idx) => {
+                const isSel = idx === safeIdx;
+                const vImg = v.imageUrl && v.imageUrl.startsWith('//') ? `https:${v.imageUrl}` : v.imageUrl;
+                const vLabel = v.variantName && v.variantName !== v.sku ? v.variantName : `Option ${idx + 1}`;
+                return (
+                  <button
+                    key={v.vid || v.sku || idx}
+                    type="button"
+                    onClick={() => setSelectedVariantIdx(idx)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 9px',
+                      borderRadius: '10px',
+                      border: isSel ? '2px solid #B38B8F' : '1px solid #E8C5C8',
+                      backgroundColor: isSel ? '#FFF0F2' : '#FFFDFD',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'all 0.18s ease'
+                    }}
+                  >
+                    {vImg && (
+                      <img
+                        src={vImg}
+                        alt={vLabel}
+                        style={{ width: '34px', height: '34px', borderRadius: '6px', objectFit: 'cover', flexShrink: 0, border: '1px solid #E8C5C8' }}
+                        onError={(e) => { e.target.style.display = 'none'; }}
+                      />
+                    )}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontFamily: 'sans-serif', fontSize: '0.75rem', fontWeight: isSel ? 'bold' : '600', color: '#5C5454', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {vLabel}
+                      </div>
+                      {(v.sizeLabel || v.packQuantity) && (
+                        <div style={{ fontFamily: 'sans-serif', fontSize: '0.67rem', color: '#8A797A' }}>
+                          {[v.sizeLabel, v.packQuantity].filter(Boolean).join(' • ')}
+                        </div>
+                      )}
+                      <div style={{ fontFamily: 'sans-serif', fontSize: '0.74rem', fontWeight: 'bold', color: '#B38B8F' }}>
+                        ${Number(v.price || itemPrice).toFixed(2)}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Skin Type & Skin Condition Pill Rows */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px', padding: '12px 14px', backgroundColor: '#FFFFFF', borderRadius: '12px', border: '1px solid #E8C5C8' }}>
@@ -2455,7 +2610,6 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
                   General boutique essential — formulated primarily for {bpMatch.skinTypes.join(', ')} skin and {bpMatch.skinConcerns.join(', ')}.
                 </p>
               )}
-
               {bpMatch.cautionNote && (
                 <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: '#FFF8E7', border: '1px solid #FFE082', color: '#B26A00', fontSize: '0.8rem', fontFamily: 'sans-serif', marginBottom: '8px' }}>
                   ⚠️ <strong>Sensitivity Note:</strong> {bpMatch.cautionNote}
@@ -2471,7 +2625,7 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
           {bpMatch.keyActives && bpMatch.keyActives.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', borderTop: '1px dashed #E8C5C8', paddingTop: '8px', marginTop: '4px' }}>
               <span style={{ fontSize: '0.76rem', color: '#8A797A', fontFamily: 'sans-serif', fontWeight: 'bold' }}>
-                Key Actives & Highlights:
+                Key Actives &amp; Highlights:
               </span>
               {bpMatch.keyActives.map((act, idx) => (
                 <span key={idx} style={{ fontSize: '0.74rem', fontFamily: 'sans-serif', backgroundColor: '#FFF9F9', color: '#B38B8F', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '2px 8px', fontWeight: 'bold' }}>
@@ -2488,44 +2642,55 @@ const ProductDetailModal = ({ product, onClose, onAddToCart, userBlueprint, hasC
           </p>
         )}
 
-        {hasVariants && product.variants.length > 1 && (
-          <div style={{ marginBottom: '18px' }} onClick={(e) => e.stopPropagation()}>
-            <label style={{ display: 'block', fontFamily: "'Cormorant Garamond', serif", color: '#8A797A', marginBottom: '5px' }}>Select Option:</label>
-            <select 
-              value={selectedVariantIdx} 
-              onChange={(e) => setSelectedVariantIdx(Number(e.target.value))}
-              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #E8C5C8', fontFamily: "'Cormorant Garamond', serif", color: '#5C5454', backgroundColor: '#FFF9F9', outline: 'none' }}
+        {/* Order Quantity Picker + Add to Ritual Button */}
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#FFFFFF', border: '1px solid #B38B8F', borderRadius: '25px', padding: '6px 12px' }}>
+            <span style={{ fontFamily: 'sans-serif', fontSize: '0.78rem', color: '#8A797A', fontWeight: 'bold' }}>Qty:</span>
+            <button
+              type="button"
+              onClick={() => setQuantityToAdd((q) => Math.max(1, q - 1))}
+              style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '50%', width: '26px', height: '26px', cursor: 'pointer', fontWeight: 'bold', color: '#5C5454' }}
             >
-              {product.variants.map((v, idx) => (
-                <option key={v.sku || idx} value={idx}>
-                  {v.variantName && v.variantName !== v.sku ? v.variantName : `Option ${idx + 1}`} - ${parseFloat(v.price).toFixed(2)}
-                </option>
-              ))}
-            </select>
+              -
+            </button>
+            <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', color: '#5C5454', minWidth: '18px', textAlign: 'center' }}>
+              {quantityToAdd}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQuantityToAdd((q) => Math.min(20, q + 1))}
+              style={{ background: '#F2D4D7', border: '1px solid #E8C5C8', borderRadius: '50%', width: '26px', height: '26px', cursor: 'pointer', fontWeight: 'bold', color: '#5C5454' }}
+            >
+              +
+            </button>
           </div>
-        )}
 
-        <button 
-          onClick={() => {
-            onAddToCart({
-              ...product,
-              sku: activeVariant?.sku || product.sku || product._id,
-              price: itemPrice,
-              selectedVariantName: activeVariant?.variantName,
-              imageUrl: activeVariant?.imageUrl || product.imageUrl,
-              title: title
-            });
-            onClose();
-          }}
-          style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer', width: '100%', transition: 'all 0.3s ease' }}
-        >
-          Add to Ritual ✧
-        </button>
+          <button
+            onClick={() => {
+              onAddToCart({
+                ...liveProduct,
+                vid: activeVariant?.vid || liveProduct.vid || '',
+                sku: activeVariant?.sku || liveProduct.sku || liveProduct._id,
+                price: itemPrice,
+                quantity: quantityToAdd,
+                selectedVariantName: activeVariant?.variantName,
+                sizeLabel: sizeQty.sizeLabel,
+                packQuantity: sizeQty.packQuantity,
+                imageUrl: activeVariant?.imageUrl || liveProduct.imageUrl,
+                title: title
+              });
+              onClose();
+            }}
+            style={{ flex: 1, backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '12px 20px', borderRadius: '25px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.3s ease' }}
+          >
+            Add {quantityToAdd > 1 ? `${quantityToAdd} ` : ''}to Ritual ✧ (${(itemPrice * quantityToAdd).toFixed(2)})
+          </button>
+        </div>
 
         {onToggleFavorite && (
           <button
             type="button"
-            onClick={() => onToggleFavorite(product)}
+            onClick={() => onToggleFavorite(liveProduct)}
             style={{
               backgroundColor: isFavorite ? '#FFF0F2' : '#FFFFFF',
               border: isFavorite ? '1.5px solid #B38B8F' : '1px solid #E8C5C8',
@@ -2560,6 +2725,7 @@ const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasComp
   const title = product.title || 'Untitled Product';
   
   const itemPrice = activeVariant?.price || product.price || 0;
+  const cardSizeQty = extractDisplaySizeAndQty(product, activeVariant);
 
   const unformattedInfo = formatCustomerProductDescription(product);
   const shippingTime = product.rawCjData?.deliveryTime ? `${product.rawCjData.deliveryTime} hours` : '7-12 Days';
@@ -2645,6 +2811,27 @@ const ProductCard = ({ product, onAddToCart, onCardClick, userBlueprint, hasComp
         <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.38rem', color: '#B38B8F', fontWeight: 'bold', margin: '0 0 4px 0' }}>
           ${parseFloat(itemPrice).toFixed(2)}
         </p>
+
+        {/* Size, Pack Quantity & Variant Count Pills */}
+        {(cardSizeQty.sizeLabel || cardSizeQty.packQuantity || (hasVariants && product.variants.length > 1)) && (
+          <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+            {cardSizeQty.sizeLabel && (
+              <span style={{ fontSize: '0.68rem', fontFamily: 'sans-serif', backgroundColor: '#FFF0F2', color: '#5C5454', border: '1px solid #E8C5C8', borderRadius: '8px', padding: '2px 7px', fontWeight: 'bold' }}>
+                📏 {cardSizeQty.sizeLabel}
+              </span>
+            )}
+            {cardSizeQty.packQuantity && (
+              <span style={{ fontSize: '0.68rem', fontFamily: 'sans-serif', backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', borderRadius: '8px', padding: '2px 7px', fontWeight: 'bold' }}>
+                📦 {cardSizeQty.packQuantity}
+              </span>
+            )}
+            {hasVariants && product.variants.length > 1 && (
+              <span style={{ fontSize: '0.68rem', fontFamily: 'sans-serif', backgroundColor: '#F4F0FF', color: '#5E35B1', border: '1px solid #D1C4E9', borderRadius: '8px', padding: '2px 7px', fontWeight: 'bold' }}>
+                🎨 {product.variants.length} Options
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Skin Type & Skin Condition Pill Badges */}
         <div style={{ textAlign: 'left', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '8px 9px', marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
@@ -16670,12 +16857,13 @@ function App() {
         cartValueUsd: itemPrice
       });
     }
+    const addQty = Math.max(1, Number(product?.quantity) || 1);
     setCart(prevCart => {
       const existingItem = prevCart.find(item => item.sku === product.sku);
       if (existingItem) {
-        return prevCart.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + 1 } : item);
+        return prevCart.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + addQty } : item);
       }
-      return [...prevCart, { ...product, quantity: 1 }];
+      return [...prevCart, { ...product, quantity: addQty }];
     });
   };
 
