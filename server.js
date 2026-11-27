@@ -20298,6 +20298,7 @@ app.post('/api/cart-checkout', async (req, res) => {
     let verifiedTier = String(membershipTier || '').toLowerCase().trim();
     let verifiedEmail = normalizeEmail(customerEmail);
     let verifiedUserId = null;
+    let verifiedDbUser = null;
     let fallbackUserShipping = null;
 
     const authHeader = req.headers['authorization'];
@@ -20308,6 +20309,7 @@ app.post('/api/cart-checkout', async (req, res) => {
         const dbUser = await User.findById(decoded._id).select('_id name email membershipTier shippingAddress isFoundingMember storeCreditBalance pendingVipMysteryBox').lean();
         if (dbUser) {
           verifiedUserId = dbUser._id;
+          verifiedDbUser = dbUser;
           verifiedTier = String(dbUser.membershipTier || verifiedTier).toLowerCase().trim();
           if (!verifiedEmail && dbUser.email) {
             verifiedEmail = normalizeEmail(dbUser.email);
@@ -20321,7 +20323,18 @@ app.post('/api/cart-checkout', async (req, res) => {
       }
     }
 
-    const discountInfo = getMemberDiscountInfo(verifiedTier);
+    // Enforce no-stacking rule: membership discount is disabled on any order applying Store Credit
+    const applyStoreCreditFlag = req.body?.applyStoreCredit !== false;
+    const hasUsableStoreCredit = Boolean(
+      applyStoreCreditFlag &&
+      verifiedDbUser &&
+      Number(verifiedDbUser.storeCreditBalance || 0) > 0
+    );
+    const rawDiscountInfo = getMemberDiscountInfo(verifiedTier);
+    const discountInfo = hasUsableStoreCredit
+      ? { rate: 0, label: '' }
+      : rawDiscountInfo;
+    const memberDiscountWaivedForCredit = Boolean(hasUsableStoreCredit && rawDiscountInfo.rate > 0);
     const multiplier = 1 - discountInfo.rate;
 
     // Resolve each item's real CJ Variant VID, wholesale cost, 3-layer custom branding config, and packaged weight
@@ -20395,8 +20408,7 @@ app.post('/api/cart-checkout', async (req, res) => {
     const chosenShippingCostUsd = Number(optimalCarrier?.shippingCostUsd || 7.84);
     const discountedItems = hydratedCartItems;
 
-    const applyStoreCreditFlag = req.body?.applyStoreCredit !== false;
-    let foundingUserDoc = verifiedUserId ? await User.findById(verifiedUserId).lean().catch(() => null) : null;
+    const foundingUserDoc = verifiedDbUser || (verifiedUserId ? await User.findById(verifiedUserId).lean().catch(() => null) : null);
     const foundingBreakdown = calculateCartWithFoundingPerks(discountedItems, foundingUserDoc, applyStoreCreditFlag);
     const finalOrderItems = foundingBreakdown.items;
     const subtotalAmount = foundingBreakdown.merchandiseSubtotal;
@@ -20491,6 +20503,7 @@ app.post('/api/cart-checkout', async (req, res) => {
       orderId: newOrder._id,
       discountApplied: discountInfo.rate > 0,
       discountLabel: discountInfo.label,
+      memberDiscountWaivedForCredit,
       storeCreditApplied,
       includesVipMysteryBox,
       subtotalAmount: Number(subtotalAmount.toFixed(2)),

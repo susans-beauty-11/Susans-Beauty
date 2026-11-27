@@ -16527,9 +16527,11 @@ function App() {
   const calculateCartSubtotal = () =>
     cart.reduce((total, item) => total + ((Number(item.price) || 0) * (Number(item.quantity) || 1)), 0);
 
-  // Member discounts (10%/25%) apply ONLY to the product portion — never discounting the CJ shipping cost!
+  // Member discounts (10%/15%/25%) apply ONLY to the product portion — and NEVER stack on orders using Store Credit
   const calculateCartTotal = () => {
-    const { rate } = getActiveMemberDiscount();
+    const isUsingStoreCredit = Boolean(applyStoreCreditInBag && Number(userDetails?.storeCreditBalance || 0) > 0 && cart.length > 0);
+    const { rate: rawRate } = getActiveMemberDiscount();
+    const rate = isUsingStoreCredit ? 0 : rawRate;
     const total = cart.reduce((sum, item) => {
       const qty = Math.max(1, Number(item.quantity) || 1);
       const unitPrice = Math.max(0, Number(item.price) || 0);
@@ -17101,7 +17103,12 @@ function App() {
           <div style={{ borderBottom: '1px solid #E8C5C8', paddingBottom: '14px', marginBottom: '14px' }}>
             {(() => {
               const subtotal = calculateCartSubtotal();
-              const { rate, label } = getActiveMemberDiscount();
+              const availableVaultCredit = Number(userDetails?.storeCreditBalance || 0);
+              const isUsingStoreCredit = Boolean(applyStoreCreditInBag && availableVaultCredit > 0 && cart.length > 0);
+              const rawMemberDiscount = getActiveMemberDiscount();
+              const rate = isUsingStoreCredit ? 0 : rawMemberDiscount.rate;
+              const label = isUsingStoreCredit ? '' : rawMemberDiscount.label;
+              const memberDiscountWaivedForCredit = Boolean(isUsingStoreCredit && rawMemberDiscount.rate > 0);
               const discountAmount = subtotal * rate;
               const postDiscountTotal = Number(calculateCartTotal()) || 0;
               const foundingPreview = computeClientSideFoundingBreakdown(
@@ -17109,7 +17116,6 @@ function App() {
                 userDetails,
                 applyStoreCreditInBag
               );
-              const availableVaultCredit = Number(userDetails?.storeCreditBalance || 0);
               const maxDollarForDollarCredit = Number((postDiscountTotal * 0.5).toFixed(2));
               const appliedCreditUsd = applyStoreCreditInBag
                 ? Number(Math.min(availableVaultCredit, maxDollarForDollarCredit).toFixed(2))
@@ -17177,6 +17183,11 @@ function App() {
                       <div style={{ fontSize: '0.7rem', color: '#4A6B4D', lineHeight: '1.35' }}>
                         Up to 50% of cart matched with Store Credit. Remaining Vault: <strong>${remainingVaultUsd.toFixed(2)}</strong>
                       </div>
+                      {memberDiscountWaivedForCredit && (
+                        <div style={{ fontSize: '0.68rem', color: '#8A5A00', marginTop: '4px', lineHeight: '1.35' }}>
+                          ℹ️ Membership discount ({Math.round(rawMemberDiscount.rate * 100)}%) is not combined on orders using Store Credit. Uncheck above to use your membership discount instead.
+                        </div>
+                      )}
                     </div>
                   )}
 
