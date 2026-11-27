@@ -1414,6 +1414,7 @@ const generateClientBlueprintDossier = (bp = {}, serverAnalysis = null) => {
 };
 
 // Reusable Boutique Smart Filter Bar & Filtered Grid (shared by Member Boutique Tab & Public Boutique)
+// Phase 4 + Search Fix: Full-Catalog Server-Paginated Search with Blueprint Match Markers (never hides non-blueprint products during search)
 const BoutiqueSmartFilterSection = ({
   products = [],
   isLoadingProducts = false,
@@ -1435,20 +1436,103 @@ const BoutiqueSmartFilterSection = ({
     searchQuery = ''
   } = boutiqueFilters || {};
 
+  const BOUTIQUE_PAGE_SIZE = 24;
+  const [serverProducts, setServerProducts] = useState([]);
+  const [serverPage, setServerPage] = useState(1);
+  const [serverTotal, setServerTotal] = useState(0);
+  const [serverCatalogTotal, setServerCatalogTotal] = useState(0);
+  const [serverHasMore, setServerHasMore] = useState(false);
+  const [isFetchingPage, setIsFetchingPage] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [debouncedSearch, setDebouncedSearch] = useState(String(searchQuery || '').trim());
+  const activeRequestIdRef = React.useRef(0);
+
   const boutiquePageContext = onGoToBlueprintTab ? 'Member Sanctuary: Boutique' : 'Public Boutique';
 
-  // Debounced SEARCH_QUERY telemetry (600ms after user stops typing 2+ characters)
+  // Debounce search input (300ms for server query + 600ms analytics tracking)
   useEffect(() => {
     const trimmed = String(searchQuery || '').trim();
-    if (trimmed.length < 2) return;
-    const timer = setTimeout(() => {
-      trackSiteEvent('SEARCH_QUERY', {
-        page: boutiquePageContext,
-        searchQuery: trimmed
-      });
-    }, 600);
-    return () => clearTimeout(timer);
+    const queryTimer = setTimeout(() => {
+      setDebouncedSearch(trimmed);
+    }, 300);
+    let analyticsTimer = null;
+    if (trimmed.length >= 2) {
+      analyticsTimer = setTimeout(() => {
+        trackSiteEvent('SEARCH_QUERY', {
+          page: boutiquePageContext,
+          searchQuery: trimmed
+        });
+      }, 600);
+    }
+    return () => {
+      clearTimeout(queryTimer);
+      if (analyticsTimer) clearTimeout(analyticsTimer);
+    };
   }, [searchQuery, boutiquePageContext]);
+
+  const fetchBoutiquePage = async (targetPage = 1, append = false, signal = null) => {
+    const reqId = ++activeRequestIdRef.current;
+    if (append) setIsLoadingMore(true);
+    else setIsFetchingPage(true);
+    try {
+      const params = new URLSearchParams({
+        paginated: 'true',
+        page: String(targetPage),
+        limit: String(BOUTIQUE_PAGE_SIZE)
+      });
+
+      const isSearching = Boolean(debouncedSearch);
+      if (isSearching) params.set('search', debouncedSearch);
+
+      // Manual pill filters still apply when chosen, but typing in the search bar NEVER restricts to Blueprint-only
+      if (skinType && skinType !== 'All') params.set('skinType', skinType);
+      if (skinConcern && skinConcern !== 'All') params.set('skinConcern', skinConcern);
+      if (ritualStep && ritualStep !== 'All') params.set('ritualStep', ritualStep);
+      if (onlySensitiveSafe) params.set('onlySensitiveSafe', 'true');
+
+      if (onlyBlueprintMatch && hasCompletedQuiz && !isSearching) {
+        params.set('blueprintOnly', 'true');
+        if (quizAnswers?.skinType) params.set('blueprintSkinType', quizAnswers.skinType);
+        if (quizAnswers?.primaryGoal) params.set('blueprintGoal', quizAnswers.primaryGoal);
+        if (quizAnswers?.skinSensitivity) params.set('blueprintSensitivity', quizAnswers.skinSensitivity);
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/products?${params.toString()}`, signal ? { signal } : undefined);
+      if (signal?.aborted || reqId !== activeRequestIdRef.current) return;
+
+      if (res.ok) {
+        const data = await res.json();
+        if (signal?.aborted || reqId !== activeRequestIdRef.current) return;
+        const incoming = Array.isArray(data) ? data : (Array.isArray(data.products) ? data.products : []);
+        const pag = data?.pagination || {};
+        setServerProducts(prev => (append ? [...prev, ...incoming] : incoming));
+        setServerPage(Number(pag.page || targetPage));
+        setServerTotal(Number(pag.total ?? incoming.length));
+        setServerCatalogTotal(Number(pag.catalogTotal ?? pag.total ?? incoming.length));
+        setServerHasMore(Boolean(pag.hasMore));
+      }
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        console.error('Server-paginated Boutique fetch error:', err);
+      }
+    } finally {
+      // Guard against aborted/superseded requests clearing the loading state prematurely (prevents 0 of 0 flash)
+      if (!signal?.aborted && reqId === activeRequestIdRef.current) {
+        if (append) setIsLoadingMore(false);
+        else setIsFetchingPage(false);
+      }
+    }
+  };
+
+  // Automatically fetch page 1 from MongoDB whenever any filter or debounced search changes
+  useEffect(() => {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    fetchBoutiquePage(1, false, controller ? controller.signal : null);
+    return () => {
+      if (controller) controller.abort();
+    };
+    // eslint-disable-next-line
+  }, [skinType, skinConcern, ritualStep, onlySensitiveSafe, onlyBlueprintMatch, debouncedSearch, hasCompletedQuiz, quizAnswers?.skinType, quizAnswers?.primaryGoal, quizAnswers?.skinSensitivity]);
 
   const applyAndTrackFilter = (updaterFn, filterType, filterValue) => {
     setBoutiqueFilters(updaterFn);
@@ -1461,67 +1545,19 @@ const BoutiqueSmartFilterSection = ({
     }
   };
 
-  const BOUTIQUE_PAGE_SIZE = 24;
-  const [visibleCount, setVisibleCount] = useState(BOUTIQUE_PAGE_SIZE);
-
-  useEffect(() => {
-    setVisibleCount(BOUTIQUE_PAGE_SIZE);
-  }, [boutiqueFilters]);
+  const activeListSource = serverProducts.length > 0 || !isFetchingPage ? serverProducts : products;
 
   const decoratedProducts = useMemo(
-    () => products.map(prod => ({ product: prod, match: evaluateBlueprintMatch(prod, quizAnswers, hasCompletedQuiz) })),
-    [products, quizAnswers, hasCompletedQuiz]
+    () => activeListSource.map(prod => ({ product: prod, match: evaluateBlueprintMatch(prod, quizAnswers, hasCompletedQuiz) })),
+    [activeListSource, quizAnswers, hasCompletedQuiz]
   );
 
-  const blueprintMatchCount = decoratedProducts.filter(item => item.match.isMatch).length;
-
-  const cleanSearch = String(searchQuery || '').trim().toLowerCase();
-
-  const filteredList = decoratedProducts
-    .filter(({ product, match }) => {
-      if (onlyBlueprintMatch && hasCompletedQuiz && !match.isMatch) {
-        return false;
-      }
-      if (skinType && skinType !== 'All') {
-        const hasSt = match.skinTypes.some(
-          st => st.toLowerCase() === skinType.toLowerCase() || st.toLowerCase() === 'all skin types'
-        );
-        if (!hasSt) return false;
-      }
-      if (skinConcern && skinConcern !== 'All') {
-        const hasSc = match.skinConcerns.some(sc => sc.toLowerCase() === skinConcern.toLowerCase());
-        if (!hasSc) return false;
-      }
-      if (ritualStep && ritualStep !== 'All') {
-        if (String(match.ritualStep || '').toLowerCase() !== ritualStep.toLowerCase()) {
-          return false;
-        }
-      }
-      if (onlySensitiveSafe && !match.sensitivitySafe) {
-        return false;
-      }
-      if (cleanSearch) {
-        const haystack = [
-          product.title || '',
-          product.description || '',
-          match.ritualStep || '',
-          ...(match.skinTypes || []),
-          ...(match.skinConcerns || []),
-          ...(match.keyActives || []),
-          ...(Array.isArray(product.tags) ? product.tags : [])
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(cleanSearch)) return false;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      if (hasCompletedQuiz) {
-        return (Number(b.match.isMatch) - Number(a.match.isMatch)) || (b.match.matchScore - a.match.matchScore);
-      }
-      return 0;
-    });
+  const sortedLoadedProducts = useMemo(() => {
+    if (!hasCompletedQuiz) return decoratedProducts;
+    return [...decoratedProducts].sort(
+      (a, b) => (Number(b.match.isMatch) - Number(a.match.isMatch)) || (b.match.matchScore - a.match.matchScore)
+    );
+  }, [decoratedProducts, hasCompletedQuiz]);
 
   const hasActiveFilter =
     onlyBlueprintMatch ||
@@ -1529,7 +1565,10 @@ const BoutiqueSmartFilterSection = ({
     skinConcern !== 'All' ||
     ritualStep !== 'All' ||
     onlySensitiveSafe ||
-    Boolean(cleanSearch);
+    Boolean(debouncedSearch);
+
+  const effectiveLoading = isFetchingPage && serverProducts.length === 0 && isLoadingProducts;
+  const remainingCount = Math.max(0, serverTotal - sortedLoadedProducts.length);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
@@ -1549,8 +1588,8 @@ const BoutiqueSmartFilterSection = ({
             </h3>
             <p style={{ margin: '3px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif' }}>
               {hasCompletedQuiz
-                ? 'Every product below is cross-referenced against your locked Beauty Blueprint. Click any pill to filter by Skin Type, Condition, or Ritual Step.'
-                : 'Filter our curated boutique by Skin Type, Target Skin Condition, Sensitivity Safety, or Ritual Step.'}
+                ? 'Search every skincare & beauty product in the boutique — items that match your Beauty Blueprint are automatically highlighted with ✨ Blueprint Match markers.'
+                : 'Filter our curated skincare & beauty boutique by Skin Type, Target Skin Condition, Sensitivity Safety, or Ritual Step.'}
             </p>
           </div>
 
@@ -1585,8 +1624,8 @@ const BoutiqueSmartFilterSection = ({
                 }}
               >
                 {onlyBlueprintMatch
-                  ? `✓ Showing Best Match for My Blueprint (${blueprintMatchCount})`
-                  : `✨ Best Match for My Blueprint (${blueprintMatchCount})`}
+                  ? '✓ Showing Best Match for My Blueprint'
+                  : '✨ Best Match for My Blueprint'}
               </button>
             )}
 
@@ -1741,9 +1780,17 @@ const BoutiqueSmartFilterSection = ({
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <input
             type="text"
-            placeholder="🔍 Search by product name, active ingredient (e.g. Hyaluronic, Vitamin C), or concern..."
+            placeholder="🔍 Search all products by name, ingredient (e.g. Hyaluronic, Vitamin C), or concern..."
             value={searchQuery}
-            onChange={(e) => setBoutiqueFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              // Typing in the search bar searches the FULL catalog (clears Blueprint-only restriction) while keeping ✨ Blueprint markers
+              setBoutiqueFilters(prev => ({
+                ...prev,
+                searchQuery: nextVal,
+                ...(nextVal.trim() ? { onlyBlueprintMatch: false } : {})
+              }));
+            }}
             style={{
               flex: '1 1 280px',
               padding: '10px 15px',
@@ -1878,8 +1925,9 @@ const BoutiqueSmartFilterSection = ({
       {/* Results Count Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', padding: '0 4px' }}>
         <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.2rem', color: '#5C5454', fontWeight: 'bold' }}>
-          Showing {filteredList.length} of {products.length} Curated Boutique Essentials
-          {onlyBlueprintMatch ? ' (Filtered to Your Blueprint Matches ✧)' : ''}
+          {isFetchingPage
+            ? (debouncedSearch ? `Searching boutique for "${debouncedSearch}"...` : "Loading Susan's curated skincare boutique...")
+            : `Showing ${sortedLoadedProducts.length} of ${serverTotal || sortedLoadedProducts.length} Matching Skincare & Beauty Essentials${serverCatalogTotal > serverTotal ? ` (${serverCatalogTotal.toLocaleString()} total in boutique)` : ''}${onlyBlueprintMatch && !debouncedSearch ? ' (Filtered to Your Blueprint Matches ✧)' : ''}`}
         </span>
         {hasActiveFilter && (
           <button
@@ -1887,35 +1935,37 @@ const BoutiqueSmartFilterSection = ({
             onClick={onResetFilters}
             style={{ background: 'none', border: 'none', color: '#B38B8F', fontFamily: 'sans-serif', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
           >
-            Show All {products.length} Products
+            Show All {(serverCatalogTotal || serverTotal || products.length).toLocaleString()} Products
           </button>
         )}
       </div>
 
       {/* Product Grid */}
-      {products.length === 0 ? (
+      {effectiveLoading || isFetchingPage ? (
         <p style={{ fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', fontSize: '1.2rem', fontStyle: 'italic' }}>
-          {isLoadingProducts
-            ? "Loading Susan's curated boutique..."
-            : "Our curated skincare boutique is being refreshed. Please check back in a moment."}
+          {debouncedSearch ? `Searching Susan's boutique for "${debouncedSearch}"...` : "Loading Susan's curated skincare boutique..."}
         </p>
-      ) : filteredList.length === 0 ? (
+      ) : sortedLoadedProducts.length === 0 ? (
         <div style={{ padding: '40px 25px', textAlign: 'center', backgroundColor: '#FFFFFF', borderRadius: '16px', border: '1px dashed #E8C5C8' }}>
           <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.4rem', color: '#5C5454', margin: '0 0 12px 0' }}>
-            No boutique products matched that exact filter combination.
+            {hasActiveFilter
+              ? 'No boutique products matched that exact filter combination.'
+              : 'Our curated skincare boutique is being refreshed. Please check back in a moment.'}
           </p>
-          <button
-            type="button"
-            onClick={onResetFilters}
-            style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 22px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', fontWeight: 'bold', cursor: 'pointer' }}
-          >
-            Reset Boutique Filters ✧
-          </button>
+          {hasActiveFilter && (
+            <button
+              type="button"
+              onClick={onResetFilters}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 22px', borderRadius: '20px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.1rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              Reset Boutique Filters ✧
+            </button>
+          )}
         </div>
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
-            {filteredList.slice(0, visibleCount).map(({ product, match }) => (
+            {sortedLoadedProducts.map(({ product, match }) => (
               <ProductCard
                 key={product._id || product.title}
                 product={product}
@@ -1928,14 +1978,15 @@ const BoutiqueSmartFilterSection = ({
             ))}
           </div>
 
-          {filteredList.length > visibleCount && (
+          {serverHasMore && (
             <div style={{ textAlign: 'center', marginTop: '32px' }}>
               <p style={{ fontSize: '0.88rem', color: '#7A6365', marginBottom: '12px' }}>
-                Showing {Math.min(visibleCount, filteredList.length)} of {filteredList.length} curated products
+                Showing {sortedLoadedProducts.length} of {serverTotal.toLocaleString()} skincare & beauty products
               </p>
               <button
                 type="button"
-                onClick={() => setVisibleCount(prev => prev + BOUTIQUE_PAGE_SIZE)}
+                disabled={isLoadingMore}
+                onClick={() => fetchBoutiquePage(serverPage + 1, true)}
                 style={{
                   backgroundColor: '#FFF9F9',
                   color: '#8E6268',
@@ -1946,10 +1997,10 @@ const BoutiqueSmartFilterSection = ({
                   fontSize: '1.05rem',
                   fontWeight: 600,
                   letterSpacing: '0.04em',
-                  cursor: 'pointer'
+                  cursor: isLoadingMore ? 'wait' : 'pointer'
                 }}
               >
-                Load More Products ({filteredList.length - visibleCount} remaining)
+                {isLoadingMore ? 'Loading Next 24 Products...' : `Load More Products (${remainingCount.toLocaleString()} remaining)`}
               </button>
             </div>
           )}
@@ -4523,7 +4574,13 @@ const computeClientProductPriceBreakdown = (prod = {}) => {
 };
 
 const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) => {
+  const ADMIN_PAGE_SIZE = 25;
   const [inventory, setInventory] = useState([]);
+  const [adminPage, setAdminPage] = useState(1);
+  const [adminTotalPages, setAdminTotalPages] = useState(1);
+  const [adminTotalCount, setAdminTotalCount] = useState(0);
+  const [adminCatalogTotal, setAdminCatalogTotal] = useState(0);
+  const [isLoadingInventoryPage, setIsLoadingInventoryPage] = useState(false);
   const [createForm, setCreateForm] = useState({
     title: '',
     price: '',
@@ -4559,15 +4616,24 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
   const [inlineDraftMap, setInlineDraftMap] = useState({});
   const [savingInlineProductId, setSavingInlineProductId] = useState(null);
   const [selectedMaxCatalogCap, setSelectedMaxCatalogCap] = useState(300);
+  const [isStoppingSync, setIsStoppingSync] = useState(false);
   const [syncStatusTelemetry, setSyncStatusTelemetry] = useState({
     lastSyncAt: null,
     lastSyncStatus: 'IDLE',
+    syncPhase: 'IDLE',
+    currentSourceLabel: '',
+    pagesFetched: 0,
+    itemsProcessed: 0,
+    startedAt: null,
+    cancelRequested: false,
+    isSyncRunning: false,
+    isSanitizeRunning: false,
     lastSanitizedAt: null,
     lastDuplicatesPurgedCount: 0,
     lastNonBeautyPurgedCount: 0,
     lastExcessCapPrunedCount: 0,
     lastStalePrunedCount: 0,
-    maxCatalogCap: 300,
+    maxCatalogCap: 0,
     activeCatalogTotal: 0,
     nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
   });
@@ -4584,18 +4650,54 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
   const [opsBanner, setOpsBanner] = useState({ type: '', text: '' });
 
-  const fetchInventory = async () => {
+  const fetchInventory = async (targetPage = adminPage, overrides = {}) => {
+    setIsLoadingInventoryPage(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/products?includeAdminFields=true`);
+      const pageToLoad = Math.max(1, Number(targetPage) || 1);
+      const qSearch = overrides.search !== undefined ? overrides.search : inventorySearchQuery;
+      const qStep = overrides.ritualStep !== undefined ? overrides.ritualStep : inventoryStepFilter;
+      const qSort = overrides.sortBy !== undefined ? overrides.sortBy : inventorySortBy;
+
+      const params = new URLSearchParams({
+        includeAdminFields: 'true',
+        excludeRawCj: 'true',
+        paginated: 'true',
+        page: String(pageToLoad),
+        limit: String(ADMIN_PAGE_SIZE)
+      });
+      if (qSearch && String(qSearch).trim()) params.set('search', String(qSearch).trim());
+      if (qStep && qStep !== 'ALL') params.set('ritualStep', qStep);
+      if (qSort === 'SHIPPING_DESC') params.set('sort', 'shipping_desc');
+      else if (qSort === 'PRICE_ASC') params.set('sort', 'price_asc');
+      else if (qSort === 'PRICE_DESC') params.set('sort', 'price_desc');
+      else if (qSort === 'TITLE_ASC') params.set('sort', 'title_asc');
+
+      const res = await fetch(`${API_BASE_URL}/api/products?${params.toString()}`);
       if (res.ok) {
-        const list = await res.json();
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (Array.isArray(data.products) ? data.products : []);
+        const pag = data?.pagination || {};
         setInventory(list);
-        if (onCatalogUpdated) onCatalogUpdated(list);
+        setAdminPage(Number(pag.page || pageToLoad));
+        setAdminTotalPages(Math.max(1, Number(pag.totalPages || 1)));
+        setAdminTotalCount(Number(pag.total ?? list.length));
+        setAdminCatalogTotal(Number(pag.catalogTotal ?? pag.total ?? list.length));
       }
     } catch (err) {
-      console.error('Failed to fetch inventory:', err);
+      console.error('Failed to fetch paginated admin inventory:', err);
+    } finally {
+      setIsLoadingInventoryPage(false);
     }
   };
+
+  // Re-fetch page 1 from MongoDB whenever AdminInventory search, ritual step, or sort changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchInventory(1);
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line
+  }, [inventorySearchQuery, inventoryStepFilter, inventorySortBy]);
 
   const fetchCatalogSyncStatus = async () => {
     try {
@@ -4606,13 +4708,40 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
       if (res.ok) {
         const data = await res.json();
         setSyncStatusTelemetry(prev => ({ ...prev, ...data }));
-        if (data.maxCatalogCap) {
-          setSelectedMaxCatalogCap(Number(data.maxCatalogCap) || 300);
+        if (data.isSyncRunning) {
+          setIsSyncingAndSanitizing(true);
         }
+        return data;
       }
     } catch (err) {
       console.error('Failed to fetch catalog sync status:', err);
     }
+    return null;
+  };
+
+  const handleStopCjSync = async () => {
+    const token = localStorage.getItem('token');
+    setIsStoppingSync(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/products/sync-stop`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.syncTelemetry) {
+        setSyncStatusTelemetry(prev => ({ ...prev, ...data.syncTelemetry, cancelRequested: true }));
+      }
+      setOpsBanner({
+        type: res.ok ? 'success' : 'error',
+        text: data.message || data.error || 'Stop requested for active CJ sync.'
+      });
+    } catch (err) {
+      setOpsBanner({ type: 'error', text: 'Network error while requesting CJ sync stop.' });
+    }
+    setIsStoppingSync(false);
   };
 
   const handleFullSyncAndSanitize = async (sanitizeOnly = false) => {
@@ -4629,11 +4758,23 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          sanitizeOnly: Boolean(sanitizeOnly),
-          maxCatalogCap: Number(selectedMaxCatalogCap) || 300
+          sanitizeOnly: Boolean(sanitizeOnly)
         })
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 202 || data.status === 'started' || data.status === 'already_running') {
+        setSyncStatusTelemetry(prev => ({
+          ...prev,
+          ...(data.syncTelemetry || {}),
+          isSyncRunning: true,
+          lastSyncStatus: 'RUNNING'
+        }));
+        setOpsBanner({
+          type: 'success',
+          text: data.message || '🚀 Uncapped CJ Skincare & Beauty crawl started in the background! Watching live progress...'
+        });
+        return;
+      }
       if (res.ok) {
         if (Array.isArray(data.products)) {
           setInventory(data.products);
@@ -4651,24 +4792,25 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
           text:
             data.message ||
             (sanitizeOnly
-              ? '🧹 MongoDB catalog sanitized and deduplicated! ✧'
-              : '✨ Full Beauty & Skincare sync + MongoDB sanitization complete! ✧')
+              ? '🧹 MongoDB catalog sanitized and deduplicated (uncapped)! ✧'
+              : '✨ Uncapped CJ Skincare & Beauty sync complete! ✧')
         });
       } else {
         setOpsBanner({
           type: 'error',
           text: data.error || 'Failed to sync and sanitize beauty catalog.'
         });
+        setIsSyncingAndSanitizing(false);
       }
     } catch (err) {
       console.error('Full sync & sanitize error:', err);
       setOpsBanner({
         type: 'error',
-        text: 'Network error while running Full Beauty Sync & Sanitization.'
+        text: 'Network error while running Uncapped Skincare Sync & Sanitization.'
       });
+      setIsSyncingAndSanitizing(false);
     }
-    setIsSyncingAndSanitizing(false);
-    setIsSanitizingOnly(false);
+    if (sanitizeOnly) setIsSanitizingOnly(false);
   };
 
   useEffect(() => {
@@ -4676,6 +4818,31 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
     fetchCatalogSyncStatus();
     // eslint-disable-next-line
   }, []);
+
+  // Poll /api/admin/products/sync-status every 5s while an uncapped background CJ crawl is running
+  useEffect(() => {
+    if (!isSyncingAndSanitizing && !syncStatusTelemetry.isSyncRunning) return undefined;
+    const pollTimer = setInterval(async () => {
+      const live = await fetchCatalogSyncStatus();
+      if (live && !live.isSyncRunning) {
+        setIsSyncingAndSanitizing(false);
+        setIsStoppingSync(false);
+        await fetchInventory();
+        const finalState = String(live.lastSyncStatus || 'COMPLETED');
+        setOpsBanner({
+          type: finalState === 'ERROR' ? 'error' : 'success',
+          text:
+            finalState === 'ERROR'
+              ? `⚠️ CJ sync ended with error: ${live.lastError || 'Check Render logs.'}`
+              : finalState === 'STOPPED'
+              ? `⏹️ CJ sync stopped cleanly after ${live.pagesFetched || 0} page(s). ${live.activeCatalogTotal || 0} Skincare & Beauty products active.`
+              : `✨ Uncapped CJ Skincare & Beauty crawl complete! ${live.pagesFetched || 0} page(s) crawled, ${live.activeCatalogTotal || 0} unique Skincare & Beauty products active ✧`
+        });
+      }
+    }, 5000);
+    return () => clearInterval(pollTimer);
+    // eslint-disable-next-line
+  }, [isSyncingAndSanitizing, syncStatusTelemetry.isSyncRunning]);
 
   const toggleSelectionInArray = (arr = [], item) => {
     const list = Array.isArray(arr) ? arr : parseBlueprintList(arr);
@@ -5213,60 +5380,73 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '25px', animation: 'fadeIn 0.5s ease' }}>
-      {/* Curated Skincare & Beauty Catalog Sync, Cap & Telemetry Command Bar */}
+      {/* Uncapped CJ Skincare & Beauty Background Crawler & Live Progress Command Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '22px 26px', borderRadius: '20px', border: '2px solid #B38B8F', boxShadow: '0 8px 25px rgba(179, 139, 143, 0.18)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '14px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.95rem', color: '#5C5454', margin: 0 }}>
-                ✨ Curated Skincare & Beauty Catalog Sync & Sanitization
+                ✨ Uncapped CJ Skincare & Beauty Catalog Crawler
               </h2>
               <span style={{ backgroundColor: '#F6FBF7', color: '#2E7D32', border: '1px solid #A5D6A7', padding: '4px 12px', borderRadius: '14px', fontSize: '0.78rem', fontWeight: 'bold', fontFamily: 'sans-serif' }}>
-                🚫 Perfume, Hair, Nail & Oral Blocked • ⏰ 3:00 AM CST Sync
+                ∞ Uncapped — All CJ Skincare & Beauty • 🚫 Non-Beauty Blocked
               </span>
             </div>
             <p style={{ margin: '5px 0 0 0', fontSize: '0.88rem', color: '#8A797A', fontFamily: 'sans-serif', lineHeight: '1.45' }}>
-              Maintains a fast, curated <strong>Skincare & Facial/Cosmetic Beauty</strong> catalog capped at <strong>{selectedMaxCatalogCap}</strong> products (plus locked custom items), automatically prunes stale discontinued CJ listings, and merges multi-size seller clones.
+              Crawls <strong>every page</strong> of every CJ <strong>Skincare & Facial/Cosmetic Beauty</strong> category and keyword in the background (no 300/500 cap, zero HTTP timeouts), blocks perfume, hair, nail, and oral care, and auto-syncs daily at 3:00 AM CST.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontFamily: 'sans-serif', color: '#5C5454', backgroundColor: '#FFF9F9', border: '1px solid #E8C5C8', padding: '6px 10px', borderRadius: '16px' }}>
-              <span>Cap:</span>
-              <select
-                value={selectedMaxCatalogCap}
-                onChange={(e) => setSelectedMaxCatalogCap(Number(e.target.value) || 300)}
-                style={{ border: 'none', background: 'transparent', color: '#5C5454', fontWeight: 'bold', fontSize: '0.82rem', outline: 'none', cursor: 'pointer' }}
-              >
-                <option value={150}>150</option>
-                <option value={200}>200</option>
-                <option value={300}>300</option>
-                <option value={500}>500</option>
-              </select>
-            </label>
             <button
               type="button"
-              disabled={isSyncingAndSanitizing || isSanitizingOnly}
+              disabled={isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning || isSanitizingOnly}
               onClick={() => handleFullSyncAndSanitize(false)}
-              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer', boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)' }}
+              style={{ backgroundColor: '#F2D4D7', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 18px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.08rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning || isSanitizingOnly) ? 'not-allowed' : 'pointer', boxShadow: '0 4px 12px rgba(179, 139, 143, 0.25)' }}
             >
-              {isSyncingAndSanitizing ? '⏳ Syncing Curated Catalog...' : '✨ Sync Skincare & Beauty'}
+              {(isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning) ? '⏳ Crawling All CJ Skincare...' : '✨ Sync All CJ Skincare & Beauty'}
             </button>
+            {(isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning) && (
+              <button
+                type="button"
+                disabled={isStoppingSync || syncStatusTelemetry.cancelRequested}
+                onClick={handleStopCjSync}
+                style={{ backgroundColor: '#FFF5F5', border: '1px solid #C62828', color: '#C62828', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isStoppingSync || syncStatusTelemetry.cancelRequested) ? 'not-allowed' : 'pointer' }}
+              >
+                {syncStatusTelemetry.cancelRequested ? '⏳ Stopping After Current Page...' : '⏹️ Stop Sync'}
+              </button>
+            )}
             <button
               type="button"
-              disabled={isSyncingAndSanitizing || isSanitizingOnly}
+              disabled={isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning || isSanitizingOnly}
               onClick={() => handleFullSyncAndSanitize(true)}
-              style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || isSanitizingOnly) ? 'not-allowed' : 'pointer' }}
+              style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', color: '#5C5454', padding: '10px 16px', borderRadius: '22px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.02rem', fontWeight: 'bold', cursor: (isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning || isSanitizingOnly) ? 'not-allowed' : 'pointer' }}
             >
-              {isSanitizingOnly ? '⏳ Sanitizing & Capping...' : '🧹 Purge & Enforce Cap Now'}
+              {isSanitizingOnly ? '⏳ Purging Non-Skincare & Duplicates...' : '🧹 Purge Non-Skincare & Deduplicate'}
             </button>
           </div>
         </div>
 
+        {/* Live Background Crawl Progress Banner */}
+        {(isSyncingAndSanitizing || syncStatusTelemetry.isSyncRunning) && (
+          <div style={{ backgroundColor: '#FFF0F2', border: '1px solid #B38B8F', borderRadius: '12px', padding: '12px 16px', fontFamily: 'sans-serif', fontSize: '0.84rem', color: '#5C5454', display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <strong style={{ color: '#8E6268' }}>🔄 Live Background Crawl ({syncStatusTelemetry.syncPhase || 'RUNNING'})</strong>
+              {syncStatusTelemetry.currentSourceLabel ? ` — ${syncStatusTelemetry.currentSourceLabel}` : ' — Connecting to CJ Dropshipping...'}
+            </div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontWeight: 'bold' }}>
+              <span>📄 Pages: {syncStatusTelemetry.pagesFetched || 0}</span>
+              <span>✅ Processed: {syncStatusTelemetry.itemsProcessed || 0}</span>
+              <span>🆕 New: {syncStatusTelemetry.lastNewAddedCount || 0}</span>
+              <span>📦 DB Active: {syncStatusTelemetry.activeCatalogTotal || inventory.length}</span>
+            </div>
+          </div>
+        )}
+
         {/* Live Persisted Telemetry Status Bar */}
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', backgroundColor: '#FFF9F9', padding: '10px 14px', borderRadius: '12px', border: '1px solid #E8C5C8', fontFamily: 'sans-serif', fontSize: '0.8rem', color: '#5C5454' }}>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px', fontWeight: 'bold' }}>
-            📦 Active Catalog: <strong style={{ color: '#B38B8F' }}>{inventory.length} / {syncStatusTelemetry.maxCatalogCap || selectedMaxCatalogCap}</strong>
+            📦 Active Skincare & Beauty: <strong style={{ color: '#B38B8F' }}>{syncStatusTelemetry.activeCatalogTotal || inventory.length} (Uncapped)</strong>
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
             🕒 Last CJ Sync:{' '}
@@ -5278,7 +5458,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
             {syncStatusTelemetry.lastSyncStatus && syncStatusTelemetry.lastSyncStatus !== 'IDLE' ? ` (${syncStatusTelemetry.lastSyncStatus})` : ''}
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
-            ✂️ Over-Cap Pruned: <strong style={{ color: '#B26A00' }}>{syncStatusTelemetry.lastExcessCapPrunedCount || 0}</strong>
+            📄 Last Pages Crawled: <strong style={{ color: '#5C5454' }}>{syncStatusTelemetry.pagesFetched || 0}</strong>
           </span>
           <span style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '10px', padding: '4px 10px' }}>
             🗑️ Stale Pruned: <strong style={{ color: '#736A6A' }}>{syncStatusTelemetry.lastStalePrunedCount || 0}</strong>
@@ -6016,7 +6196,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                 </button>
               )}
               <span style={{ backgroundColor: '#FFF0F2', color: '#B38B8F', padding: '5px 12px', borderRadius: '20px', fontSize: '0.9rem', fontWeight: 'bold', border: '1px solid #E8C5C8' }}>
-                {inventory.length} Items Active
+                {(adminCatalogTotal || syncStatusTelemetry.activeCatalogTotal || inventory.length).toLocaleString()} Items Active
               </span>
             </div>
           </div>
@@ -6148,7 +6328,7 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.78rem', fontFamily: 'sans-serif', color: '#736A6A' }}>
                     <span>
-                      Showing <strong>{sortedList.length}</strong> of <strong>{inventory.length}</strong> products • Edit <strong>Retail Price ($)</strong> or <strong>CJ Ship ($)</strong> directly on any card and click <strong>💾 Save Price</strong>
+                      Page <strong>{adminPage}</strong> of <strong>{adminTotalPages}</strong> • Showing <strong>{sortedList.length}</strong> of <strong>{(adminTotalCount || inventory.length).toLocaleString()}</strong> matching products • Edit <strong>Retail Price ($)</strong> or <strong>CJ Ship ($)</strong> directly on any card and click <strong>💾 Save Price</strong>
                     </span>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                       {lossOrLowMarginCount > 0 && (
@@ -6459,6 +6639,30 @@ const AdminInventory = ({ onCatalogUpdated, onOpenTestsTab, onOpenBoxesTab }) =>
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {adminTotalPages > 1 && (
+                  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '14px', flexWrap: 'wrap', marginTop: '24px', padding: '14px 18px', backgroundColor: '#FFFFFF', border: '1px solid #E8C5C8', borderRadius: '16px' }}>
+                    <button
+                      type="button"
+                      disabled={adminPage <= 1 || isLoadingInventoryPage}
+                      onClick={() => fetchInventory(adminPage - 1)}
+                      style={{ backgroundColor: '#FFF9F9', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: (adminPage <= 1 || isLoadingInventoryPage) ? 'not-allowed' : 'pointer', opacity: adminPage <= 1 ? 0.5 : 1 }}
+                    >
+                      ← Previous Page
+                    </button>
+                    <span style={{ fontFamily: 'sans-serif', fontSize: '0.86rem', color: '#5C5454', fontWeight: 'bold' }}>
+                      {isLoadingInventoryPage ? 'Loading page...' : `Page ${adminPage} of ${adminTotalPages} (${adminTotalCount.toLocaleString()} matching SKUs)`}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={adminPage >= adminTotalPages || isLoadingInventoryPage}
+                      onClick={() => fetchInventory(adminPage + 1)}
+                      style={{ backgroundColor: '#F2D4D7', color: '#5C5454', border: '1px solid #B38B8F', borderRadius: '20px', padding: '8px 18px', fontFamily: "'Cormorant Garamond', serif", fontSize: '1rem', fontWeight: 'bold', cursor: (adminPage >= adminTotalPages || isLoadingInventoryPage) ? 'not-allowed' : 'pointer', opacity: adminPage >= adminTotalPages ? 0.5 : 1 }}
+                    >
+                      Next Page →
+                    </button>
                   </div>
                 )}
               </>
@@ -14602,6 +14806,261 @@ const PublicSeoFooterAndRouteSync = () => {
   );
 };
 
+// Deals & Events Mailing List Pop-Up Modal (appears on Boutique entry or after signup)
+const NewsletterDealsModal = ({ isOpen, onClose, initialEmail = '', initialName = '', source = 'boutique_popup' }) => {
+  const [email, setEmail] = useState(initialEmail || '');
+  const [name, setName] = useState(initialName || '');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState({ type: '', text: '' });
+
+  useEffect(() => {
+    if (initialEmail && !email) setEmail(initialEmail);
+    if (initialName && !name) setName(initialName);
+    // eslint-disable-next-line
+  }, [initialEmail, initialName, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleDismiss = () => {
+    try {
+      sessionStorage.setItem('sbc_newsletter_dismissed', 'true');
+    } catch (e) {}
+    if (onClose) onClose();
+  };
+
+  const handleSubscribe = async (e) => {
+    e.preventDefault();
+    const trimmedEmail = String(email || '').trim();
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setFeedback({ type: 'error', text: 'Please enter a valid email address.' });
+      return;
+    }
+    setIsSubmitting(true);
+    setFeedback({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/newsletter/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail, name: String(name || '').trim(), source })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        try {
+          localStorage.setItem('sbc_newsletter_subscribed', 'true');
+        } catch (err) {}
+        setFeedback({ type: 'success', text: data.message || "Welcome! You're on our VIP Deals & Events list. ✧" });
+        setTimeout(() => {
+          if (onClose) onClose();
+        }, 1600);
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Could not subscribe right now. Please try again.' });
+      }
+    } catch (err) {
+      setFeedback({ type: 'error', text: 'Network error. Please try again in a moment.' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={handleDismiss}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        backgroundColor: 'rgba(92, 84, 84, 0.58)',
+        backdropFilter: 'blur(5px)',
+        zIndex: 2600,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        boxSizing: 'border-box',
+        animation: 'fadeIn 0.3s ease'
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: '#FFF9F9',
+          border: '2px solid #B38B8F',
+          borderRadius: '26px',
+          padding: '34px 30px',
+          maxWidth: '460px',
+          width: '100%',
+          boxShadow: '0 22px 55px rgba(92, 84, 84, 0.35)',
+          position: 'relative',
+          textAlign: 'center',
+          boxSizing: 'border-box'
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleDismiss}
+          aria-label="Close mailing list popup"
+          style={{
+            position: 'absolute',
+            top: '14px',
+            right: '16px',
+            background: '#FFFFFF',
+            border: '1px solid #E8C5C8',
+            width: '34px',
+            height: '34px',
+            borderRadius: '50%',
+            fontSize: '1rem',
+            cursor: 'pointer',
+            color: '#8A797A'
+          }}
+        >
+          ✕
+        </button>
+
+        <span
+          style={{
+            display: 'inline-block',
+            backgroundColor: '#FFF0F2',
+            color: '#B38B8F',
+            border: '1px solid #B38B8F',
+            borderRadius: '20px',
+            padding: '5px 14px',
+            fontSize: '0.74rem',
+            fontWeight: 'bold',
+            fontFamily: 'sans-serif',
+            letterSpacing: '0.7px',
+            textTransform: 'uppercase',
+            marginBottom: '10px'
+          }}
+        >
+          ✧ Susan's VIP Mailing List
+        </span>
+
+        <h2
+          style={{
+            fontFamily: "'Alex Brush', cursive",
+            fontSize: '3.1rem',
+            color: '#B38B8F',
+            fontWeight: '400',
+            margin: '0 0 8px 0',
+            lineHeight: '1.1'
+          }}
+        >
+          Deals, Events &amp; Glow Notes
+        </h2>
+
+        <p
+          style={{
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: '1.22rem',
+            color: '#5C5454',
+            margin: '0 0 20px 0',
+            lineHeight: '1.55'
+          }}
+        >
+          Give us your email and we'll send you exclusive boutique deals, seasonal skincare promos, new arrivals, and private Sanctuary events!
+        </p>
+
+        <form onSubmit={handleSubscribe} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <input
+            type="text"
+            placeholder="First Name (optional)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              borderRadius: '22px',
+              border: '1px solid #E8C5C8',
+              backgroundColor: '#FFFFFF',
+              fontFamily: 'sans-serif',
+              fontSize: '0.94rem',
+              color: '#5C5454',
+              outline: 'none',
+              boxSizing: 'border-box'
+            }}
+          />
+          <input
+            type="email"
+            required
+            placeholder="Enter your email address..."
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              borderRadius: '22px',
+              border: '1.5px solid #B38B8F',
+              backgroundColor: '#FFFFFF',
+              fontFamily: 'sans-serif',
+              fontSize: '0.95rem',
+              color: '#5C5454',
+              outline: 'none',
+              boxSizing: 'border-box'
+            }}
+          />
+
+          {feedback.text && (
+            <div
+              style={{
+                padding: '9px 12px',
+                borderRadius: '12px',
+                fontSize: '0.84rem',
+                fontFamily: 'sans-serif',
+                fontWeight: '600',
+                backgroundColor: feedback.type === 'success' ? '#F6FBF7' : '#FFF5F5',
+                color: feedback.type === 'success' ? '#2E7D32' : '#C62828',
+                border: `1px solid ${feedback.type === 'success' ? '#A5D6A7' : '#FFCDD2'}`
+              }}
+            >
+              {feedback.text}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            style={{
+              marginTop: '6px',
+              width: '100%',
+              background: 'linear-gradient(135deg, #B38B8F 0%, #D4A5A9 100%)',
+              color: '#FFFFFF',
+              border: 'none',
+              padding: '13px 20px',
+              borderRadius: '26px',
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: '1.22rem',
+              fontWeight: 'bold',
+              cursor: isSubmitting ? 'wait' : 'pointer',
+              boxShadow: '0 6px 18px rgba(179, 139, 143, 0.35)'
+            }}
+          >
+            {isSubmitting ? 'Adding you to the list...' : 'Join for Deals & Events ✧'}
+          </button>
+        </form>
+
+        <button
+          type="button"
+          onClick={handleDismiss}
+          style={{
+            marginTop: '14px',
+            background: 'none',
+            border: 'none',
+            color: '#8A797A',
+            fontFamily: 'sans-serif',
+            fontSize: '0.82rem',
+            textDecoration: 'underline',
+            cursor: 'pointer'
+          }}
+        >
+          No thanks, maybe later
+        </button>
+      </div>
+    </div>
+  );
+};
+
 function App() {
   const [spotsRemaining, setSpotsRemaining] = useState(14);
   const [recentActivity, setRecentActivity] = useState(
@@ -15336,6 +15795,101 @@ function App() {
   const [resetPassword, setResetPassword] = useState('');
   const [resetToken, setResetToken] = useState(null);
   const [loginCredentials, setLoginCredentials] = useState({ email: '', password: '' });
+  const [authCardMode, setAuthCardMode] = useState('login'); // 'login' | 'signup'
+  const [landingSignupForm, setLandingSignupForm] = useState({ name: '', email: '', phone: '', password: '', marketingOptIn: true });
+  const [authInlineError, setAuthInlineError] = useState('');
+  const [isNewsletterModalOpen, setIsNewsletterModalOpen] = useState(false);
+  const [newsletterModalSource, setNewsletterModalSource] = useState('boutique_popup');
+
+  // Automatically open the Deals & Events mailing-list pop-up when entering the Boutique
+  useEffect(() => {
+    const inBoutique = step === 1 || (step === 5 && activeMemberTab === 'Boutique');
+    if (!inBoutique || step === 6) return;
+    try {
+      if (localStorage.getItem('sbc_newsletter_subscribed') === 'true') return;
+      if (sessionStorage.getItem('sbc_newsletter_dismissed') === 'true') return;
+    } catch (e) {}
+    const timer = setTimeout(() => {
+      setNewsletterModalSource('boutique_popup');
+      setIsNewsletterModalOpen(true);
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [step, activeMemberTab]);
+
+  const handleLandingEmailSignup = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    setAuthInlineError('');
+    const cleanName = String(landingSignupForm.name || '').trim();
+    const cleanEmail = String(landingSignupForm.email || '').trim();
+    const cleanPhone = String(landingSignupForm.phone || '').trim();
+    const cleanPassword = String(landingSignupForm.password || '');
+
+    if (!cleanName || !cleanEmail || !cleanPassword) {
+      setAuthInlineError('Please enter your full name, email address, and password.');
+      return;
+    }
+    if (cleanPassword.length < 6) {
+      setAuthInlineError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const regRes = await fetch(`${API_BASE_URL}/api/users/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanName,
+          email: cleanEmail,
+          phone: cleanPhone,
+          password: cleanPassword,
+          membershipTier: 'basic',
+          marketingOptIn: Boolean(landingSignupForm.marketingOptIn)
+        })
+      });
+      const regData = await regRes.json().catch(() => ({}));
+      if (!regRes.ok) {
+        setAuthInlineError(regData.error || 'Could not create account. Please try again.');
+        setIsLoading(false);
+        return;
+      }
+
+      localStorage.setItem('token', regData.token);
+      if (landingSignupForm.marketingOptIn) {
+        try {
+          localStorage.setItem('sbc_newsletter_subscribed', 'true');
+        } catch (err) {}
+      }
+      setHasCompletedQuiz(false);
+      setSelectedTier(regData.user?.membershipTier || 'basic');
+      setIsSubscribing(false);
+      setUserDetails(prev => ({
+        ...prev,
+        ...(regData.user || {}),
+        name: regData.user?.name || cleanName,
+        email: regData.user?.email || cleanEmail,
+        phone: regData.user?.phone || cleanPhone,
+        membershipTier: regData.user?.membershipTier || 'basic',
+        role: regData.user?.role || 'client',
+        password: ''
+      }));
+      setLandingSignupForm({ name: '', email: '', phone: '', password: '', marketingOptIn: true });
+      setIsLoading(false);
+      setActiveMemberTab('Boutique');
+      setStep(5);
+      // If they did not check the opt-in box during signup, invite them via the Deals & Events pop-up
+      if (!landingSignupForm.marketingOptIn) {
+        setTimeout(() => {
+          setNewsletterModalSource('post_signup_popup');
+          setIsNewsletterModalOpen(true);
+        }, 700);
+      }
+    } catch (err) {
+      console.error('Landing email signup error:', err);
+      setAuthInlineError('Network error while creating your account. Please try again.');
+      setIsLoading(false);
+    }
+  };
   const [oauthSandboxProvider, setOauthSandboxProvider] = useState('');
 
   // Sync state to Local Storage
@@ -15436,7 +15990,7 @@ function App() {
     const fetchBackendData = async () => {
       setIsLoadingProducts(true);
       try {
-        const response = await fetch(`${API_BASE_URL}/api/products`);
+        const response = await fetch(`${API_BASE_URL}/api/products?limit=200`);
         if (response.ok) {
           const data = await response.json();
           setBackendProducts(data);
@@ -16494,6 +17048,14 @@ function App() {
         authToken={localStorage.getItem('token')}
       />
 
+      <NewsletterDealsModal
+        isOpen={isNewsletterModalOpen}
+        onClose={() => setIsNewsletterModalOpen(false)}
+        initialEmail={userDetails?.email || ''}
+        initialName={userDetails?.name || ''}
+        source={newsletterModalSource}
+      />
+
       {(step === 0 || step === 4) && !isCartOpen && (
         <LilyCustomerConcierge
           embedded={false}
@@ -16877,7 +17439,7 @@ function App() {
               </div>
             )}
 
-            {/* 1. TOP FOCAL POINT: 'WELCOME BACK' SIGN-IN CARD (PICTURE 2) */}
+            {/* 1. TOP FOCAL POINT: SIGN IN OR CREATE ACCOUNT WITH EMAIL */}
             <section
               id="sanctuary-signin-top"
               style={{
@@ -16889,11 +17451,53 @@ function App() {
                 <img src={logo} alt="Susan's Beauty Consulting Logo" style={{ width: '300px', height: '300px', maxWidth: '82vw', maxHeight: '300px', objectFit: 'contain', display: 'block', margin: '0 auto' }} />
               </div>
               <h1 style={{ fontSize: '4.2rem', margin: '0 0 10px 0', color: '#B38B8F', fontFamily: "'Alex Brush', cursive", fontWeight: '400', lineHeight: '1.1' }}>
-                Welcome Back
+                {authCardMode === 'signup' ? 'Create Your Account' : 'Welcome Back'}
               </h1>
-              <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '15px auto 25px', maxWidth: '600px' }}>
-                Sign in to access your dashboard and personalized blueprint.
+              <p style={{ fontSize: '1.4rem', lineHeight: '1.8', fontFamily: "'Cormorant Garamond', serif", color: '#736A6A', margin: '12px auto 22px', maxWidth: '620px' }}>
+                {authCardMode === 'signup'
+                  ? 'Sign up directly with your email address — no Google or social account required.'
+                  : 'Sign in to access your dashboard and personalized blueprint.'}
               </p>
+
+              {/* Sign In / Create Account with Email Mode Switcher */}
+              <div style={{ display: 'inline-flex', backgroundColor: '#FFF0F2', border: '1.5px solid #E8C5C8', borderRadius: '30px', padding: '5px', marginBottom: '24px', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => { setAuthCardMode('login'); setAuthInlineError(''); }}
+                  style={{
+                    padding: '9px 22px',
+                    borderRadius: '24px',
+                    border: 'none',
+                    backgroundColor: authCardMode === 'login' ? '#B38B8F' : 'transparent',
+                    color: authCardMode === 'login' ? '#FFFFFF' : '#5C5454',
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.15rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthCardMode('signup'); setAuthInlineError(''); }}
+                  style={{
+                    padding: '9px 22px',
+                    borderRadius: '24px',
+                    border: 'none',
+                    backgroundColor: authCardMode === 'signup' ? '#B38B8F' : 'transparent',
+                    color: authCardMode === 'signup' ? '#FFFFFF' : '#5C5454',
+                    fontFamily: "'Cormorant Garamond', serif",
+                    fontSize: '1.15rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  ✨ Create Account with Email
+                </button>
+              </div>
 
               {localStorage.getItem('token') && (
                 <div style={{ marginBottom: '22px' }}>
@@ -16919,7 +17523,98 @@ function App() {
               )}
 
               {isLoading ? (
-                <EmpowermentLoader text="Verifying credentials securely..." />
+                <EmpowermentLoader text={authCardMode === 'signup' ? 'Creating your Sanctuary account...' : 'Verifying credentials securely...'} />
+              ) : authCardMode === 'signup' ? (
+                <form onSubmit={handleLandingEmailSignup} style={{ maxWidth: '460px', margin: '0 auto' }}>
+                  <ElegantInput
+                    name="signupName"
+                    type="text"
+                    placeholder="Full Name (e.g. Sarah Jenkins)"
+                    value={landingSignupForm.name}
+                    onChange={(e) => setLandingSignupForm(prev => ({ ...prev, name: e.target.value }))}
+                  />
+                  <ElegantInput
+                    name="signupEmail"
+                    type="email"
+                    placeholder="Email Address"
+                    value={landingSignupForm.email}
+                    onChange={(e) => setLandingSignupForm(prev => ({ ...prev, email: e.target.value }))}
+                  />
+                  <ElegantInput
+                    name="signupPhone"
+                    type="tel"
+                    placeholder="Phone Number (for order & VIP event alerts)"
+                    value={landingSignupForm.phone}
+                    onChange={(e) => setLandingSignupForm(prev => ({ ...prev, phone: e.target.value }))}
+                  />
+                  <ElegantInput
+                    name="signupPassword"
+                    type="password"
+                    placeholder="Create a Password (min 6 characters)"
+                    value={landingSignupForm.password}
+                    onChange={(e) => setLandingSignupForm(prev => ({ ...prev, password: e.target.value }))}
+                  />
+
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '10px',
+                      maxWidth: '380px',
+                      margin: '14px auto 6px auto',
+                      textAlign: 'left',
+                      fontFamily: 'sans-serif',
+                      fontSize: '0.84rem',
+                      color: '#5C5454',
+                      backgroundColor: '#FFF9F9',
+                      border: '1px solid #E8C5C8',
+                      borderRadius: '14px',
+                      padding: '10px 14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(landingSignupForm.marketingOptIn)}
+                      onChange={(e) => setLandingSignupForm(prev => ({ ...prev, marketingOptIn: e.target.checked }))}
+                      style={{ marginTop: '3px', accentColor: '#B38B8F' }}
+                    />
+                    <span>
+                      <strong>Yes!</strong> Send me exclusive boutique deals, seasonal offers, and VIP Sanctuary events.
+                    </span>
+                  </label>
+
+                  {authInlineError && (
+                    <div style={{ maxWidth: '380px', margin: '12px auto 0 auto', padding: '10px 14px', borderRadius: '12px', backgroundColor: '#FFF5F5', border: '1px solid #FFCDD2', color: '#C62828', fontFamily: 'sans-serif', fontSize: '0.86rem' }}>
+                      {authInlineError}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: '24px' }}>
+                    <EmpowermentButton text="Create Account ✧" onClick={handleLandingEmailSignup} />
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', maxWidth: '380px', margin: '22px auto 12px auto' }}>
+                    <div style={{ flex: 1, height: '1px', backgroundColor: '#E6E8EC' }} />
+                    <span style={{ fontFamily: 'sans-serif', fontSize: '0.82rem', color: '#8A797A' }}>or continue with social</span>
+                    <div style={{ flex: 1, height: '1px', backgroundColor: '#E6E8EC' }} />
+                  </div>
+
+                  <SocialAuthButtonGrid
+                    mode="signup"
+                    showBottomDivider={false}
+                    initialSandboxProvider={oauthSandboxProvider}
+                    selectedTier="basic"
+                    isSubscribing={false}
+                    onSwitchAuthMode={(nextMode) => { setAuthCardMode(nextMode); setAuthInlineError(''); }}
+                    onSocialAuthSuccess={(data) =>
+                      handleSocialAuthSuccess(data, {
+                        tierOverride: 'basic',
+                        subscribingOverride: false
+                      })
+                    }
+                  />
+                </form>
               ) : (
                 <div style={{ maxWidth: '460px', margin: '0 auto' }}>
                   <SocialAuthButtonGrid
@@ -16928,6 +17623,7 @@ function App() {
                     initialSandboxProvider={oauthSandboxProvider}
                     selectedTier={selectedTier}
                     isSubscribing={false}
+                    onSwitchAuthMode={(nextMode) => { setAuthCardMode(nextMode); setAuthInlineError(''); }}
                     onSocialAuthSuccess={(data) =>
                       handleSocialAuthSuccess(data, {
                         subscribingOverride: false
@@ -16942,14 +17638,23 @@ function App() {
                     <EmpowermentButton text="Sign In" onClick={handleLoginSubmit} />
                   </div>
 
-                  <p
-                    style={{ cursor: 'pointer', color: '#A89999', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', marginTop: '20px', transition: 'color 0.3s ease' }}
-                    onClick={() => setStep(8)}
-                    onMouseOver={(e) => { e.target.style.color = '#736A6A'; }}
-                    onMouseOut={(e) => { e.target.style.color = '#A89999'; }}
-                  >
-                    Forgot your password?
-                  </p>
+                  <div style={{ marginTop: '18px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => { setAuthCardMode('signup'); setAuthInlineError(''); }}
+                      style={{ background: 'none', border: 'none', color: '#B38B8F', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.15rem', fontWeight: 'bold', textDecoration: 'underline', cursor: 'pointer' }}
+                    >
+                      New here? Create an account with your email address →
+                    </button>
+                    <p
+                      style={{ cursor: 'pointer', color: '#A89999', fontFamily: "'Cormorant Garamond', serif", fontSize: '1.05rem', margin: 0, transition: 'color 0.3s ease' }}
+                      onClick={() => setStep(8)}
+                      onMouseOver={(e) => { e.target.style.color = '#736A6A'; }}
+                      onMouseOut={(e) => { e.target.style.color = '#A89999'; }}
+                    >
+                      Forgot your password?
+                    </p>
+                  </div>
                 </div>
               )}
             </section>
@@ -17664,8 +18369,9 @@ function App() {
                   }
                 />
 
-                <ElegantInput name="name" onChange={handleInputChange} placeholder="Your First Name" type="text" value={userDetails.name}/>
+                <ElegantInput name="name" onChange={handleInputChange} placeholder="Your Full Name" type="text" value={userDetails.name}/>
                 <ElegantInput name="email" onChange={handleInputChange} placeholder="Email Address" type="email" value={userDetails.email}/>
+                <ElegantInput name="phone" onChange={handleInputChange} placeholder="Phone Number (for order & VIP event alerts)" type="tel" value={userDetails.phone || ''}/>
                 <ElegantInput name="password" onChange={handleInputChange} placeholder="Create a Password" type="password" value={userDetails.password}/>
                 
                 <div style={{ marginTop: '30px' }}>
@@ -17705,8 +18411,9 @@ function App() {
                   }
                 />
 
-                <ElegantInput name="name" onChange={handleInputChange} placeholder="Your First Name" type="text" value={userDetails.name}/>
+                <ElegantInput name="name" onChange={handleInputChange} placeholder="Your Full Name" type="text" value={userDetails.name}/>
                 <ElegantInput name="email" onChange={handleInputChange} placeholder="Email Address" type="email" value={userDetails.email}/>
+                <ElegantInput name="phone" onChange={handleInputChange} placeholder="Phone Number (for order & VIP event alerts)" type="tel" value={userDetails.phone || ''}/>
                 <ElegantInput name="password" onChange={handleInputChange} placeholder="Create a Password" type="password" value={userDetails.password}/>
                 
                 <div style={{ marginTop: '30px' }}>

@@ -1414,6 +1414,12 @@ const catalogSyncStateSchema = new mongoose.Schema({
   maxCatalogCap: { type: Number, default: 300 },
   activeCatalogTotal: { type: Number, default: 0 },
   lastError: { type: String, default: '' },
+  syncPhase: { type: String, default: 'IDLE' },
+  currentSourceLabel: { type: String, default: '' },
+  pagesFetched: { type: Number, default: 0 },
+  itemsProcessed: { type: Number, default: 0 },
+  startedAt: { type: Date, default: null },
+  cancelRequested: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now }
 });
 const CatalogSyncState = mongoose.models.CatalogSyncState || mongoose.model('CatalogSyncState', catalogSyncStateSchema);
@@ -1464,6 +1470,16 @@ const emailLogSchema = new mongoose.Schema({
   sentAt: { type: Date, default: Date.now }
 });
 const EmailLog = mongoose.model('EmailLog', emailLogSchema);
+
+// Mailing List / Deals & Events Subscribers Schema
+const newsletterSubscriberSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true, index: true },
+  name: { type: String, default: '' },
+  source: { type: String, default: 'boutique_popup' },
+  subscribed: { type: Boolean, default: true, index: true },
+  subscribedAt: { type: Date, default: Date.now }
+});
+const NewsletterSubscriber = mongoose.models.NewsletterSubscriber || mongoose.model('NewsletterSubscriber', newsletterSubscriberSchema);
 
 // Incoming Emails synced from IONOS IMAP (imap.ionos.com:993) for Susan.Coke@SusansBeautyConsulting.com
 const inboundEmailSchema = new mongoose.Schema({
@@ -1844,12 +1860,15 @@ const requireStaffOrAdmin = requireRole(['admin', 'staff']);
 const requireClient = requireRole(['client', 'admin']); 
 
 
-// ---------------- CJ DROPSHIPPING API INTEGRATION (CURATED STRICT SKINCARE & BEAUTY SYNC) ---------------- //
+// ---------------- CJ DROPSHIPPING API INTEGRATION (UNCAPPED MULTI-PAGE SKINCARE & BEAUTY CRAWLER) ---------------- //
 const CJ_BASE_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-const CJ_MAX_PAGES = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 80);
-const CJ_MAX_PRODUCTS = Math.max(1, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 500);
 const CJ_PAGE_SIZE = Math.min(100, Math.max(20, Number(cleanEnv(process.env.CJ_PAGE_SIZE)) || 100));
-const CJ_DEFAULT_CATALOG_CAP = Math.max(25, Number(cleanEnv(process.env.CJ_MAX_CATALOG_CAP)) || 300);
+// 0 = Uncapped (crawl every matching CJ Skincare & Beauty page and keep every valid product)
+const CJ_MAX_PAGES = Math.max(0, Number(cleanEnv(process.env.CJ_MAX_PAGES)) || 0);
+const CJ_MAX_PRODUCTS = Math.max(0, Number(cleanEnv(process.env.CJ_MAX_PRODUCTS)) || 0);
+const CJ_DEFAULT_CATALOG_CAP = 0;
+// Safety ceiling per individual category/keyword to prevent infinite loops on malformed CJ pagination
+const CJ_MAX_PAGES_PER_SOURCE = Math.max(5, Number(cleanEnv(process.env.CJ_MAX_PAGES_PER_SOURCE)) || 200);
 const CJ_STALE_PRUNE_DAYS = Math.max(1, Number(cleanEnv(process.env.CJ_STALE_PRUNE_DAYS)) || 7);
 
 // Normalizes a product title into a canonical alphanumeric key so near-identical CJ seller clones collapse into one item
@@ -2154,10 +2173,13 @@ const getCjHeaders = () => {
 // Strict word-boundary exclusion list: blocks non-beauty merchandise AND explicitly blocks
 // perfumes, fragrances, colognes, deodorants, hair care/wigs/dryers, nail salon drills/gels/acrylics,
 // oral/dental care, shaving/beard/epilators, tattoos, and orthopedic/posture devices.
-const NON_BEAUTY_EXCLUSION_REGEX = /\b(perfume|perfumes|fragrance|fragrances|parfum|cologne|eau de parfum|eau de toilette|body mist|deodorant|antiperspirant|pheromone|atomizer|shampoo|conditioner|hair oil|hair mask|hair serum|hair spray|hair mist|hair wax|hair dye|hair color|hair growth|hair loss|wig|wigs|toupee|hairpiece|hair extension|lace front|braiding hair|flat iron|curling iron|hair straightener|hair dryer|blow dryer|hot comb|hairbrush|comb|detangler|edge control|beard|mustache|shaver|razor|epilator|trimmer|clipper|waxing|wax beans|depilatory|nail polish|gel nail|nail gel|nail art|nail file|nail drill|nail lamp|uv lamp|cuticle|manicure|pedicure|press on nails|false nails|fake nails|poly gel|acrylic nail|acrylic powder|nail tip|nail sticker|nail glitter|rhinestone|toothbrush|toothpaste|teeth whitening|whitening strips|water flosser|oral irrigator|dental|denture|mouthwash|tongue scraper|breath spray|posture corrector|back brace|knee brace|ankle brace|neck brace|waist trainer|shapewear|corset|cupping|heating pad|hot water bottle|massage gun|foot massager|neck massager|tattoo|microblading|piercing|ear piercing|inhaler|hearing aid|oximeter|thermometer|blood pressure|pill box|first aid|bandage|insoles|shoe pad|foot file|callus|bunion|toe separator|snoring|nose clip|sleep mask|blindfold|earplug|essential oil diffuser|humidifier|incense|candle|ashtray|lighter|vape|hookah|chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton|tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
+// Phase 3 Audited Purity Gate: strictly allows Skincare & Facial/Cosmetic Beauty.
+// Hard-blocks perfumes, fragrances, hair/wigs, nail art/drills, oral care, shavers,
+// tattoos, ingestible supplements/pills/teas, medical/pain/foot patches, and non-beauty items.
+const NON_BEAUTY_EXCLUSION_REGEX = /\b(perfume|perfumes|fragrance|fragrances|parfum|cologne|eau de parfum|eau de toilette|body mist|deodorant|antiperspirant|pheromone|atomizer|shampoo|conditioner|hair oil|hair mask|hair serum|hair spray|hair mist|hair wax|hair dye|hair color|hair growth|hair loss|wig|wigs|toupee|hairpiece|hair extension|lace front|braiding hair|flat iron|curling iron|hair straightener|hair dryer|blow dryer|hot comb|hairbrush|comb|detangler|edge control|beard|mustache|shaver|razor|epilator|trimmer|clipper|waxing|wax beans|depilatory|nail polish|gel nail|nail gel|nail art|nail file|nail drill|nail lamp|uv lamp|cuticle|manicure|pedicure|press on nails|false nails|fake nails|poly gel|acrylic nail|acrylic powder|nail tip|nail sticker|nail glitter|rhinestone|toothbrush|toothpaste|teeth whitening|whitening strips|water flosser|oral irrigator|dental|denture|mouthwash|tongue scraper|breath spray|supplement|supplements|capsule|capsules|tablet|tablets|gummy|gummies|softgel|weight loss|slimming tea|detox tea|fat burner|appetite suppressant|detox foot patch|foot patch|foot soak|varicose|hemorrhoid|wart remover|skin tag|fungus|antifungal|earwax|ear cleaner|pain relief patch|joint cream|muscle rub|prostate|breast enlargement|butt enhancement|intimacy|lubricant|vibrator|sex toy|posture corrector|back brace|knee brace|ankle brace|neck brace|waist trainer|shapewear|corset|cupping|heating pad|hot water bottle|massage gun|foot massager|neck massager|tattoo|microblading|piercing|ear piercing|inhaler|hearing aid|oximeter|thermometer|blood pressure|pill box|first aid|bandage|insoles|shoe pad|foot file|callus|bunion|toe separator|snoring|nose clip|sleep mask|blindfold|earplug|essential oil diffuser|humidifier|incense|candle|ashtray|lighter|vape|hookah|chair|armchair|wheelchair|stool|sofa|couch|table|desk|bed|mattress|pillowcase|curtain|rug|carpet|lamp|lighting|chandelier|kitchen|cookware|frying|baking|pan|pot|knife|cutlery|utensil|mug|tumbler|thermos|water bottle|ice cream|coffee|tea|toaster|blender|microwave|vacuum|broom|mop|detergent|laundry|toilet|plunger|hardware|tool|drill|wrench|screwdriver|hammer|saw|welding|plumbing|solder|phone|iphone|samsung|xiaomi|huawei|ipad|tablet|laptop|computer|pc|keyboard|mouse|monitor|tv|television|camera|tripod|earphone|headphone|earbud|speaker|microphone|charger|cable|adapter|power bank|phone case|screen protector|controller|playstation|xbox|nintendo|gaming|console|drone|smartwatch|watch|clock|shirt|t-shirt|blouse|hoodie|sweater|cardigan|jacket|coat|parka|vest|dress|skirt|pants|jeans|trousers|shorts|leggings|tracksuit|suit|blazer|underwear|bra|panties|lingerie|briefs|boxer|socks|stockings|swimwear|bikini|swimsuit|pajama|nightgown|shoe|shoes|boot|boots|sneaker|sandal|slipper|heels|loafer|hat|beanie|baseball cap|scarf|gloves|mitten|belt|handbag|crossbody|shoulder bag|tote|backpack|wallet|luggage|suitcase|necklace|earring|bracelet|ring|anklet|pendant|brooch|jewelry|jewellery|sunglasses|eyeglasses|spectacles|car|auto|automotive|vehicle|truck|suv|sedan|motorcycle|motorbike|bicycle|bike|scooter|tire|wheel|helmet|windshield|wiper|bumper|fender|pet|dog|cat|puppy|kitten|aquarium|fish tank|bird|hamster|collar|leash|harness|litter|kennel|toy|doll|plush|stuffed|puzzle|lego|board game|action figure|fidget|rc|fishing|camping|tent|sleeping bag|golf|football|basketball|soccer|baseball|tennis|badminton|tactical|hunting|archery|stationery|notebook|binder|stapler|printer|ink cartridge|garden|lawn|mower|hose|plant pot|seed|fertilizer)\b/i;
 
 // Non-Skincare/Non-Beauty CJ category names to reject immediately if present
-const NON_BEAUTY_CATEGORY_REGEX = /\b(perfume|fragrance|deodorant|hair|wig|extensions|nail|manicure|pedicure|oral|dental|shaving|epilator|beard|tattoo|body art|massage & relaxation|health care|medical|braces|supports|mobility|computer|office|electronics|phone|automotive|automobile|motorcycle|home improvement|lighting|furniture|kitchen|dining|pet|toy|hobbies|sports|outdoors|apparel|clothing|shoes|bags|luggage|jewelry|watches|security|industrial|mother & kids|kids|baby)\b/i;
+const NON_BEAUTY_CATEGORY_REGEX = /\b(perfume|fragrance|deodorant|hair|wig|extensions|nail|manicure|pedicure|oral|dental|shaving|epilator|beard|tattoo|body art|massage & relaxation|health care|medical|supplement|nutrition|vitamins|weight loss|adult|intimate|braces|supports|mobility|computer|office|electronics|phone|automotive|automobile|motorcycle|home improvement|lighting|furniture|kitchen|dining|pet|toy|hobbies|sports|outdoors|apparel|clothing|shoes|bags|luggage|jewelry|watches|security|industrial|mother & kids|kids|baby)\b/i;
 
 // Strictly allowed Skincare & Facial/Cosmetic Beauty category indicators in CJ's category tree
 const HEALTH_BEAUTY_CATEGORY_REGEX = /\b(skincare|skin care|facial|face care|makeup|make-up|make up|cosmetic|cosmetics|beauty tools|eyelash|brow|lip care|lip makeup|eye care|eye makeup|sun care|sunscreen|body lotion|body butter|body scrub)\b/i;
@@ -2167,34 +2189,30 @@ const HEALTH_BEAUTY_PRODUCT_REGEX = /\b(skincare|skin care|facial|face care|cosm
 
 const isStrictHealthAndBeautyProduct = (title = '', categoryName = '', description = '') => {
   const cleanTitle = String(title || '').trim();
-  // Strip any legacy synthetic "Health & Beauty > ..." prefix so only CJ's real category is evaluated
   const cleanCategory = String(categoryName || '')
     .replace(/^Health\s*&\s*Beauty\s*>\s*/i, '')
+    .replace(/^Skincare\s*&\s*Beauty\s*>\s*/i, '')
     .trim();
-  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 300);
+  const cleanDesc = String(description || '').replace(/<[^>]*>?/gm, ' ').slice(0, 400);
   if (!cleanTitle) return false;
 
   const combinedTitleAndCat = `${cleanTitle} ${cleanCategory}`;
 
-  // 1. Hard exclusion gate: immediately reject if title, category, or lead description hits any excluded term (including perfume, hair, nail, oral, etc.)
+  // 1. Hard exclusion gate: reject perfume, hair, nail, oral, supplements, medical, and non-beauty items
   if (NON_BEAUTY_EXCLUSION_REGEX.test(combinedTitleAndCat)) {
     return false;
   }
-  if (/\b(perfume|fragrance|parfum|cologne|deodorant|shampoo|conditioner|wig|nail polish|nail gel|nail drill|toothbrush|teeth whitening|shaver|razor|posture corrector|tattoo)\b/i.test(cleanDesc)) {
+  if (/\b(perfume|fragrance|parfum|cologne|deodorant|shampoo|conditioner|wig|nail polish|nail gel|nail drill|toothbrush|teeth whitening|shaver|razor|posture corrector|tattoo|capsule|tablets|gummies|slimming tea|detox tea|wart remover|fungus|hemorrhoid|foot patch|sex toy|vibrator)\b/i.test(cleanDesc)) {
     return false;
   }
 
-  // 2. Reject if CJ placed the item in an excluded category (e.g., Fragrance, Hair, Nail, Oral Care, Electronics, Apparel)
+  // 2. Reject if CJ placed the item in an excluded category
   if (cleanCategory && NON_BEAUTY_CATEGORY_REGEX.test(cleanCategory)) {
     return false;
   }
 
   // 3. Require the product's actual TITLE to contain a verified Skincare or Facial/Cosmetic Beauty keyword
-  if (HEALTH_BEAUTY_PRODUCT_REGEX.test(cleanTitle)) {
-    return true;
-  }
-
-  return false;
+  return HEALTH_BEAUTY_PRODUCT_REGEX.test(cleanTitle);
 };
 
 const extractCleanTags = (categoryName = '', title = '') => {
@@ -2515,7 +2533,7 @@ const extractAndCleanProductDescription = (prod = {}) => {
   };
 };
 
-// One-time & on-demand safe migration: isolates Semantic AI Answer Capsules into seoAnswerCapsule
+// One-time & on-demand safe migration (Phase 3 cursor-streamed): isolates Semantic AI Answer Capsules into seoAnswerCapsule
 const migrateSemanticAnswerCapsules = async (forceAll = false) => {
   try {
     const query = forceAll
@@ -2528,16 +2546,16 @@ const migrateSemanticAnswerCapsules = async (forceAll = false) => {
           ]
         };
 
-    const productsToClean = await Product.find(query)
+    const CHUNK_SIZE = 200;
+    let bulkOps = [];
+    let migratedCount = 0;
+
+    const cursor = Product.find(query)
       .select('_id title description seoAnswerCapsule rawCjData.description rawCjData.productDescription ritualStep skinTypes skinConcerns keyActives')
-      .lean();
+      .lean()
+      .cursor({ batchSize: CHUNK_SIZE });
 
-    if (!productsToClean.length) {
-      return { migratedCount: 0, totalCount: await Product.countDocuments() };
-    }
-
-    const bulkOps = [];
-    for (const prod of productsToClean) {
+    for await (const prod of cursor) {
       const cleaned = extractAndCleanProductDescription(prod);
       if (cleaned.description !== prod.description || cleaned.seoAnswerCapsule !== (prod.seoAnswerCapsule || '')) {
         bulkOps.push({
@@ -2551,16 +2569,25 @@ const migrateSemanticAnswerCapsules = async (forceAll = false) => {
             }
           }
         });
+        migratedCount++;
+      }
+
+      if (bulkOps.length >= CHUNK_SIZE) {
+        await Product.bulkWrite(bulkOps, { ordered: false });
+        bulkOps = [];
       }
     }
 
     if (bulkOps.length > 0) {
-      await Product.bulkWrite(bulkOps);
-      console.log(`✨ Isolated GEO capsules and cleaned customer descriptions on ${bulkOps.length} product(s).`);
+      await Product.bulkWrite(bulkOps, { ordered: false });
+    }
+
+    if (migratedCount > 0) {
+      console.log(`✨ Isolated GEO capsules and cleaned customer descriptions on ${migratedCount} product(s) via cursor stream.`);
     }
 
     return {
-      migratedCount: bulkOps.length,
+      migratedCount,
       totalCount: await Product.countDocuments()
     };
   } catch (err) {
@@ -2569,7 +2596,7 @@ const migrateSemanticAnswerCapsules = async (forceAll = false) => {
   }
 };
 
-// Backfills structured Blueprint labels onto all existing products in MongoDB
+// Backfills structured Blueprint labels onto all existing products in MongoDB (Phase 3 cursor-streamed)
 const backfillProductBlueprintLabels = async (forceAll = false) => {
   try {
     const query = forceAll
@@ -2585,15 +2612,16 @@ const backfillProductBlueprintLabels = async (forceAll = false) => {
           ]
         };
 
-    const productsToUpdate = await Product.find(query).lean();
-    if (!productsToUpdate.length) {
-      return { updatedCount: 0, totalCount: await Product.countDocuments() };
-    }
-
+    const CHUNK_SIZE = 200;
     let updatedCount = 0;
-    const bulkOps = [];
+    let bulkOps = [];
 
-    for (const prod of productsToUpdate) {
+    const cursor = Product.find(query)
+      .select('_id title description tags skinTypes skinConcerns sensitivitySafe sensitivityLabel ritualStep keyActives rawCjData.categoryName')
+      .lean()
+      .cursor({ batchSize: CHUNK_SIZE });
+
+    for await (const prod of cursor) {
       const catName = prod.rawCjData?.categoryName || (Array.isArray(prod.tags) ? prod.tags.join(' ') : '');
       const classified = classifyProductForBlueprint(
         prod.title,
@@ -2627,11 +2655,19 @@ const backfillProductBlueprintLabels = async (forceAll = false) => {
         }
       });
       updatedCount++;
+
+      if (bulkOps.length >= CHUNK_SIZE) {
+        await Product.bulkWrite(bulkOps, { ordered: false });
+        bulkOps = [];
+      }
     }
 
     if (bulkOps.length > 0) {
-      await Product.bulkWrite(bulkOps);
-      console.log(`🏷️ Labeled ${updatedCount} boutique product(s) with Skin Types, Skin Conditions & Ritual Steps.`);
+      await Product.bulkWrite(bulkOps, { ordered: false });
+    }
+
+    if (updatedCount > 0) {
+      console.log(`🏷️ Labeled ${updatedCount} boutique product(s) with Skin Types, Skin Conditions & Ritual Steps via cursor stream.`);
     }
 
     const totalCount = await Product.countDocuments();
@@ -3011,22 +3047,43 @@ const backfillConsultationAnalyses = async () => {
 };
 
 // Purges any previously synced CJ products in MongoDB that fail the strict Skincare & Facial/Cosmetic Beauty filter
-// (including perfumes, fragrances, hair/wig items, nail drills/gels, oral care, and non-beauty merchandise),
-// while preserving Susan's manually locked custom boutique products.
+// (Phase 3 cursor-streamed in 200-doc batches to keep RAM low on 5,000+ SKU catalogs).
 const purgeNonBeautyCjProducts = async () => {
   try {
-    const candidateProducts = await Product.find({
-      customTitleLocked: { $ne: true }
-    }).lean();
-    const idsToDelete = [];
+    const CHUNK_SIZE = 200;
+    let pendingDeleteIds = [];
+    let totalPurged = 0;
 
-    for (const prod of candidateProducts) {
+    const flushPurgeBatch = async (ids) => {
+      if (!ids.length) return;
+      await Promise.all([
+        Product.deleteMany({ _id: { $in: ids } }).catch(() => {}),
+        User.updateMany(
+          { recommendedProducts: { $in: ids } },
+          { $pull: { recommendedProducts: { $in: ids } } }
+        ).catch(() => {}),
+        InboxItem.deleteMany({ productId: { $in: ids } }).catch(() => {}),
+        MemberMonthlyBox.updateMany(
+          { 'items.productId': { $in: ids } },
+          { $pull: { items: { productId: { $in: ids } } } }
+        ).catch(() => {})
+      ]);
+      totalPurged += ids.length;
+    };
+
+    const cursor = Product.find({ customTitleLocked: { $ne: true } })
+      .select('_id title description price variants.price rawCjData.nameEn rawCjData.productNameEn rawCjData.categoryName')
+      .lean()
+      .cursor({ batchSize: CHUNK_SIZE });
+
+    for await (const prod of cursor) {
       const rawTitle = String(
         prod.rawCjData?.nameEn || prod.rawCjData?.productNameEn || prod.title || ''
       ).trim();
       const displayTitle = String(prod.title || rawTitle).trim();
       const realCatName = String(prod.rawCjData?.categoryName || '')
         .replace(/^Health\s*&\s*Beauty\s*>\s*/i, '')
+        .replace(/^Skincare\s*&\s*Beauty\s*>\s*/i, '')
         .trim();
       const price = Number(prod.variants?.[0]?.price ?? prod.price ?? 0);
 
@@ -3034,21 +3091,23 @@ const purgeNonBeautyCjProducts = async () => {
       const isValidRaw = rawTitle ? isStrictHealthAndBeautyProduct(rawTitle, realCatName, prod.description) : true;
 
       if (!isValidDisplay || !isValidRaw || !(price > 0)) {
-        idsToDelete.push(prod._id);
+        pendingDeleteIds.push(prod._id);
+        if (pendingDeleteIds.length >= CHUNK_SIZE) {
+          await flushPurgeBatch(pendingDeleteIds);
+          pendingDeleteIds = [];
+        }
       }
     }
 
-    if (idsToDelete.length > 0) {
-      await Product.deleteMany({ _id: { $in: idsToDelete } });
-      await User.updateMany(
-        { recommendedProducts: { $in: idsToDelete } },
-        { $pull: { recommendedProducts: { $in: idsToDelete } } }
-      );
-      await InboxItem.deleteMany({ productId: { $in: idsToDelete } });
-      console.log(`🧹 Purged ${idsToDelete.length} perfume, hair/nail/oral, or non-Skincare/Beauty CJ products from MongoDB.`);
+    if (pendingDeleteIds.length > 0) {
+      await flushPurgeBatch(pendingDeleteIds);
     }
 
-    return idsToDelete.length;
+    if (totalPurged > 0) {
+      console.log(`🧹 Purged ${totalPurged} perfume, supplement, hair/nail/oral, or non-Skincare/Beauty CJ product(s) from MongoDB.`);
+    }
+
+    return totalPurged;
   } catch (err) {
     console.error("⚠️ Error purging non-beauty CJ products:", err.message);
     return 0;
@@ -3101,7 +3160,8 @@ const fetchCjBeautyCategoryIds = async (headers) => {
       }
     }
 
-    return beautyCatIds.slice(0, 18);
+    console.log(`📂 Discovered ${beautyCatIds.length} verified CJ Skincare & Beauty leaf categories (uncapped).`);
+    return beautyCatIds;
   } catch (err) {
     console.warn("⚠️ Could not fetch CJ category list (falling back to keyword search):", err.message);
     return [];
@@ -3110,6 +3170,7 @@ const fetchCjBeautyCategoryIds = async (headers) => {
 
 let isCjSyncRunning = false;
 let isCatalogSanitizeRunning = false;
+let cjSyncCancelRequested = false;
 
 let cjCatalogSyncTelemetry = {
   lastSyncAt: null,
@@ -3124,74 +3185,18 @@ let cjCatalogSyncTelemetry = {
   lastStalePrunedCount: 0,
   maxCatalogCap: CJ_DEFAULT_CATALOG_CAP,
   activeCatalogTotal: 0,
+  syncPhase: 'IDLE',
+  currentSourceLabel: '',
+  pagesFetched: 0,
+  itemsProcessed: 0,
+  startedAt: null,
+  cancelRequested: false,
+  lastError: '',
   nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)',
   timezone: 'America/Chicago'
 };
 
 // Removes foreign-key references across InboxItem, User.recommendedProducts, and MemberMonthlyBox for pruned products
-const persistCatalogSyncTelemetry = async (updates = {}) => {
-  cjCatalogSyncTelemetry = {
-    ...cjCatalogSyncTelemetry,
-    ...updates
-  };
-  try {
-    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
-    await CatalogSyncState.findOneAndUpdate(
-      { key: 'primary' },
-      {
-        $set: {
-          lastSyncAt: cjCatalogSyncTelemetry.lastSyncAt ? new Date(cjCatalogSyncTelemetry.lastSyncAt) : null,
-          lastSyncStatus: String(cjCatalogSyncTelemetry.lastSyncStatus || 'IDLE'),
-          lastSyncedCount: Number(cjCatalogSyncTelemetry.lastSyncedCount || 0),
-          lastNewAddedCount: Number(cjCatalogSyncTelemetry.lastNewAddedCount || 0),
-          lastUpdatedCount: Number(cjCatalogSyncTelemetry.lastUpdatedCount || 0),
-          lastSanitizedAt: cjCatalogSyncTelemetry.lastSanitizedAt ? new Date(cjCatalogSyncTelemetry.lastSanitizedAt) : null,
-          lastDuplicatesPurgedCount: Number(cjCatalogSyncTelemetry.lastDuplicatesPurgedCount || 0),
-          lastNonBeautyPurgedCount: Number(cjCatalogSyncTelemetry.lastNonBeautyPurgedCount || 0),
-          lastExcessCapPrunedCount: Number(cjCatalogSyncTelemetry.lastExcessCapPrunedCount || 0),
-          lastStalePrunedCount: Number(cjCatalogSyncTelemetry.lastStalePrunedCount || 0),
-          maxCatalogCap: Number(cjCatalogSyncTelemetry.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP),
-          activeCatalogTotal: Number(cjCatalogSyncTelemetry.activeCatalogTotal || 0),
-          lastError: String(cjCatalogSyncTelemetry.lastError || ''),
-          updatedAt: new Date()
-        }
-      },
-      { upsert: true }
-    );
-  } catch (err) {
-    console.warn('⚠️ Failed to persist CatalogSyncState:', err.message);
-  }
-  return cjCatalogSyncTelemetry;
-};
-
-const loadCatalogSyncTelemetry = async () => {
-  try {
-    if (mongoose.connection.readyState !== 1) return cjCatalogSyncTelemetry;
-    const saved = await CatalogSyncState.findOne({ key: 'primary' }).lean();
-    if (saved) {
-      cjCatalogSyncTelemetry = {
-        ...cjCatalogSyncTelemetry,
-        lastSyncAt: saved.lastSyncAt ? new Date(saved.lastSyncAt).toISOString() : null,
-        lastSyncStatus: saved.lastSyncStatus || 'IDLE',
-        lastSyncedCount: Number(saved.lastSyncedCount || 0),
-        lastNewAddedCount: Number(saved.lastNewAddedCount || 0),
-        lastUpdatedCount: Number(saved.lastUpdatedCount || 0),
-        lastSanitizedAt: saved.lastSanitizedAt ? new Date(saved.lastSanitizedAt).toISOString() : null,
-        lastDuplicatesPurgedCount: Number(saved.lastDuplicatesPurgedCount || 0),
-        lastNonBeautyPurgedCount: Number(saved.lastNonBeautyPurgedCount || 0),
-        lastExcessCapPrunedCount: Number(saved.lastExcessCapPrunedCount || 0),
-        lastStalePrunedCount: Number(saved.lastStalePrunedCount || 0),
-        maxCatalogCap: Number(saved.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP),
-        activeCatalogTotal: Number(saved.activeCatalogTotal || 0),
-        lastError: saved.lastError || ''
-      };
-    }
-  } catch (err) {
-    console.warn('⚠️ Failed to load CatalogSyncState:', err.message);
-  }
-  return cjCatalogSyncTelemetry;
-};
-
 const cleanupPrunedProductReferences = async (prunedIds = []) => {
   if (!Array.isArray(prunedIds) || prunedIds.length === 0) return;
   await Promise.all([
@@ -3207,9 +3212,21 @@ const cleanupPrunedProductReferences = async (prunedIds = []) => {
   ]);
 };
 
-// Scans MongoDB Product collection, purges non-beauty items, deduplicates & merges analytics counters,
-// and enforces maxCatalogCap (default 300) while always preserving customTitleLocked & custom non-CJ items.
-const sanitizeAndDeduplicateCatalog = async (options = {}) => {
+// Safely persists catalog telemetry to MongoDB (if Step 5 CatalogSyncState is present) or updates in-memory state
+const saveCatalogTelemetrySafe = async (updates = {}) => {
+  if (typeof persistCatalogSyncTelemetry === 'function') {
+    return persistCatalogSyncTelemetry(updates);
+  }
+  cjCatalogSyncTelemetry = {
+    ...cjCatalogSyncTelemetry,
+    ...updates
+  };
+  return cjCatalogSyncTelemetry;
+};
+
+// Scans MongoDB Product collection, purges non-skincare/perfume items, deduplicates & merges analytics counters.
+// UNCAPPED: Never deletes valid Skincare & Beauty products for an artificial catalog cap.
+const sanitizeAndDeduplicateCatalog = async (_options = {}) => {
   if (isCatalogSanitizeRunning) {
     return {
       status: 'already_running',
@@ -3217,26 +3234,25 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       duplicatesPurged: 0,
       excessPrunedCount: 0,
       groupsMerged: 0,
-      maxCatalogCap: cjCatalogSyncTelemetry.maxCatalogCap || CJ_DEFAULT_CATALOG_CAP,
+      maxCatalogCap: 0,
       activeCatalogTotal: await Product.countDocuments()
     };
   }
 
-  const parsedCap = Number(options?.maxCatalogCap);
-  const effectiveCap = Number.isFinite(parsedCap) && parsedCap >= 25
-    ? Math.floor(parsedCap)
-    : CJ_DEFAULT_CATALOG_CAP;
-
   isCatalogSanitizeRunning = true;
   try {
-    // 1. Purge any non-Skincare/Beauty or $0 CJ items first
+    // 1. Purge any non-Skincare/Beauty, perfume/hair/nail/oral, or $0 CJ items first
     const nonBeautyPurgedCount = await purgeNonBeautyCjProducts();
 
-    // 2. Load all products and sort by retention priority:
-    //    (a) customTitleLocked or non-CJ custom items first
-    //    (b) highest engagement score (purchases, curations, cart adds, views)
-    //    (c) most recently synced (lastSyncedAt), then oldest _id
-    const allProducts = await Product.find({}).lean();
+    // 2. Stream lightweight fields via cursor (skipping heavy rawCjData blobs to keep RAM flat)
+    const allProducts = [];
+    const scanCursor = Product.find({})
+      .select('_id title cjPid cjSku normalizedTitleKey customTitleLocked imageUrl ritualStep viewCount cartAddCount purchaseCount curatedCount lastSyncedAt variants.sku rawCjData.pid rawCjData.productSku rawCjData.sku rawCjData.nameEn rawCjData.productNameEn')
+      .lean()
+      .cursor({ batchSize: 200 });
+    for await (const doc of scanCursor) {
+      allProducts.push(doc);
+    }
     const totalScanned = allProducts.length;
 
     const getRetentionScore = (p) =>
@@ -3265,7 +3281,6 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
     const canonicalByImage = new Map();
     const duplicateGroups = new Map();
     const metadataUpdates = [];
-    const survivors = [];
 
     for (const prod of sortedProducts) {
       const rawPid = String(prod.cjPid || prod.rawCjData?.pid || '').trim();
@@ -3284,17 +3299,31 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       const pidKey = rawPid ? rawPid.toLowerCase() : '';
       const skuKey = rawSku ? rawSku.toLowerCase() : '';
 
+      // Phase 3 cjPid/cjSku-first deduplication: prevents false merges of distinct skincare SKUs with short generic titles
+      const isSpecificNormTitle = (t) => Boolean(t && t.length >= 14 && t.split(' ').length >= 2);
       let matchedCanonical = null;
       if (pidKey && canonicalByPid.has(pidKey)) {
         matchedCanonical = canonicalByPid.get(pidKey);
       } else if (skuKey && canonicalBySku.has(skuKey)) {
         matchedCanonical = canonicalBySku.get(skuKey);
-      } else if (normTitle && canonicalByNormTitle.has(normTitle)) {
-        matchedCanonical = canonicalByNormTitle.get(normTitle);
-      } else if (normRawCjTitle && canonicalByNormTitle.has(normRawCjTitle)) {
-        matchedCanonical = canonicalByNormTitle.get(normRawCjTitle);
+      } else if (isSpecificNormTitle(normTitle) && canonicalByNormTitle.has(normTitle)) {
+        const cand = canonicalByNormTitle.get(normTitle);
+        const candPid = String(cand.cjPid || cand.rawCjData?.pid || '').trim().toLowerCase();
+        // Only merge different cjPids by title if they also share the same ritualStep (avoids merging Serum + Cream)
+        if (!pidKey || !candPid || pidKey === candPid || cand.ritualStep === prod.ritualStep) {
+          matchedCanonical = cand;
+        }
+      } else if (isSpecificNormTitle(normRawCjTitle) && canonicalByNormTitle.has(normRawCjTitle)) {
+        const cand = canonicalByNormTitle.get(normRawCjTitle);
+        const candPid = String(cand.cjPid || cand.rawCjData?.pid || '').trim().toLowerCase();
+        if (!pidKey || !candPid || pidKey === candPid || cand.ritualStep === prod.ritualStep) {
+          matchedCanonical = cand;
+        }
       } else if (cleanImg && prod.rawCjData && canonicalByImage.has(cleanImg)) {
-        matchedCanonical = canonicalByImage.get(cleanImg);
+        const cand = canonicalByImage.get(cleanImg);
+        if (cand.ritualStep === prod.ritualStep) {
+          matchedCanonical = cand;
+        }
       }
 
       if (matchedCanonical && String(matchedCanonical._id) !== String(prod._id)) {
@@ -3304,7 +3333,6 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
         }
         duplicateGroups.get(canonIdStr).duplicates.push(prod);
       } else {
-        survivors.push(prod);
         if (pidKey) canonicalByPid.set(pidKey, prod);
         if (skuKey) canonicalBySku.set(skuKey, prod);
         if (normTitle) canonicalByNormTitle.set(normTitle, prod);
@@ -3332,8 +3360,9 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       }
     }
 
-    if (metadataUpdates.length > 0) {
-      await Product.bulkWrite(metadataUpdates, { ordered: false }).catch(() => {});
+    const META_CHUNK = 250;
+    for (let i = 0; i < metadataUpdates.length; i += META_CHUNK) {
+      await Product.bulkWrite(metadataUpdates.slice(i, i + META_CHUNK), { ordered: false }).catch(() => {});
     }
 
     let duplicatesPurged = 0;
@@ -3410,38 +3439,20 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       await Product.deleteMany({ _id: { $in: dupIds } }).catch(() => {});
     }
 
-    // 3. Enforce maxCatalogCap: keep all protected custom/locked items + highest-ranked CJ items up to effectiveCap
-    let excessPrunedCount = 0;
-    if (survivors.length > effectiveCap) {
-      const protectedSurvivors = survivors.filter(isProtectedItem);
-      const cjSurvivors = survivors.filter((p) => !isProtectedItem(p));
-      const allowedCjSlots = Math.max(0, effectiveCap - protectedSurvivors.length);
-
-      if (cjSurvivors.length > allowedCjSlots) {
-        const excessItems = cjSurvivors.slice(allowedCjSlots);
-        const excessIds = excessItems.map((p) => p._id);
-        if (excessIds.length > 0) {
-          await Product.deleteMany({ _id: { $in: excessIds } }).catch(() => {});
-          await cleanupPrunedProductReferences(excessIds);
-          excessPrunedCount = excessIds.length;
-        }
-      }
-    }
-
     const activeCatalogTotal = await Product.countDocuments();
     const nowIso = new Date().toISOString();
 
-    await persistCatalogSyncTelemetry({
+    await saveCatalogTelemetrySafe({
       lastSanitizedAt: nowIso,
       lastDuplicatesPurgedCount: duplicatesPurged,
       lastNonBeautyPurgedCount: nonBeautyPurgedCount,
-      lastExcessCapPrunedCount: excessPrunedCount,
-      maxCatalogCap: effectiveCap,
+      lastExcessCapPrunedCount: 0,
+      maxCatalogCap: 0,
       activeCatalogTotal
     });
 
     console.log(
-      `🧹 MongoDB Catalog Sanitization Complete: scanned ${totalScanned}, purged ${nonBeautyPurgedCount} non-skincare, merged ${groupsMerged} duplicate groups (${duplicatesPurged} removed), pruned ${excessPrunedCount} over-cap items (cap=${effectiveCap}) -> ${activeCatalogTotal} active.`
+      `🧹 MongoDB Catalog Sanitization Complete (UNCAPPED): scanned ${totalScanned}, purged ${nonBeautyPurgedCount} non-skincare, merged ${groupsMerged} duplicate groups (${duplicatesPurged} removed) -> ${activeCatalogTotal} active Skincare & Beauty products.`
     );
 
     return {
@@ -3450,8 +3461,8 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       nonBeautyPurgedCount,
       groupsMerged,
       duplicatesPurged,
-      excessPrunedCount,
-      maxCatalogCap: effectiveCap,
+      excessPrunedCount: 0,
+      maxCatalogCap: 0,
       activeCatalogTotal,
       sanitizedAt: nowIso,
       telemetry: cjCatalogSyncTelemetry
@@ -3465,7 +3476,7 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
       duplicatesPurged: 0,
       excessPrunedCount: 0,
       groupsMerged: 0,
-      maxCatalogCap: effectiveCap,
+      maxCatalogCap: 0,
       activeCatalogTotal: await Product.countDocuments().catch(() => 0)
     };
   } finally {
@@ -3473,8 +3484,9 @@ const sanitizeAndDeduplicateCatalog = async (options = {}) => {
   }
 };
 
-// Pulls verified Skincare & Beauty products from CJ Dropshipping using batched MongoDB bulkWrite upserts,
-// prunes stale/discontinued CJ listings via lastSyncedAt, and enforces maxCatalogCap (default 300).
+// UNCAPPED MULTI-PAGE CJ SKINCARE & BEAUTY CRAWLER:
+// Crawls EVERY page (pageNum = 1, 2, 3...) of every discovered Skincare & Beauty category
+// and keyword query via batched MongoDB bulkWrite upserts with zero artificial product cap.
 const syncCJCatalog = async (options = {}) => {
   if (isCjSyncRunning) {
     console.log('⏳ CJ catalog sync is already in progress; skipping duplicate trigger.');
@@ -3485,30 +3497,40 @@ const syncCJCatalog = async (options = {}) => {
       duplicatesPurged: 0,
       excessPrunedCount: 0,
       stalePrunedCount: 0,
+      maxCatalogCap: 0,
       activeTotal: await Product.countDocuments().catch(() => 0),
       telemetry: cjCatalogSyncTelemetry
     };
   }
 
   isCjSyncRunning = true;
+  cjSyncCancelRequested = false;
   const fullCatalog = options.fullCatalog !== undefined ? Boolean(options.fullCatalog) : true;
   const sanitizeAfter = options.sanitizeAfter !== undefined ? Boolean(options.sanitizeAfter) : true;
-  const parsedCap = Number(options.maxCatalogCap);
-  const effectiveCap = Number.isFinite(parsedCap) && parsedCap >= 25
-    ? Math.floor(parsedCap)
-    : CJ_DEFAULT_CATALOG_CAP;
-  const maxPages = fullCatalog
-    ? Math.max(50, Number(options.maxPages) || CJ_MAX_PAGES)
-    : Math.max(1, Number(options.maxPages) || 35);
-  const maxProducts = Math.max(
-    effectiveCap,
-    Number(options.maxProducts) || Math.min(CJ_MAX_PRODUCTS, Math.ceil(effectiveCap * 1.5))
-  );
+  // 0 = Uncapped (default). Optional overrides are only honored if explicitly passed > 0.
+  const maxPages = Number(options.maxPages) > 0 ? Math.floor(Number(options.maxPages)) : CJ_MAX_PAGES;
+  const maxProducts = Number(options.maxProducts) > 0 ? Math.floor(Number(options.maxProducts)) : CJ_MAX_PRODUCTS;
+  const maxPagesPerSource = Number(options.maxPagesPerSource) > 0
+    ? Math.floor(Number(options.maxPagesPerSource))
+    : CJ_MAX_PAGES_PER_SOURCE;
   const pageSize = CJ_PAGE_SIZE;
 
   try {
-    // 1. Pre-sanitize existing catalog before pulling new CJ batches
-    const preSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: effectiveCap });
+    await saveCatalogTelemetrySafe({
+      syncPhase: 'PRE_SANITIZING',
+      lastSyncStatus: 'RUNNING',
+      currentSourceLabel: 'Pre-sanitizing existing MongoDB catalog...',
+      pagesFetched: 0,
+      itemsProcessed: 0,
+      lastNewAddedCount: 0,
+      lastUpdatedCount: 0,
+      startedAt: new Date().toISOString(),
+      cancelRequested: false,
+      lastError: ''
+    });
+
+    // 1. Pre-sanitize existing catalog (removes non-skincare/perfume items & duplicates; no cap)
+    const preSanitize = await sanitizeAndDeduplicateCatalog();
     const purgedCount = preSanitize.nonBeautyPurgedCount || 0;
 
     const headers = getCjHeaders();
@@ -3518,18 +3540,19 @@ const syncCJCatalog = async (options = {}) => {
         purgedCount,
         syncedCount: 0,
         duplicatesPurged: preSanitize.duplicatesPurged || 0,
-        excessPrunedCount: preSanitize.excessPrunedCount || 0,
+        excessPrunedCount: 0,
         stalePrunedCount: 0,
+        maxCatalogCap: 0,
         activeTotal: preSanitize.activeCatalogTotal || 0,
         telemetry: cjCatalogSyncTelemetry
       };
     }
 
     console.log(
-      `🔄 Starting Curated CJ Beauty & Skincare Pull (cap=${effectiveCap}, maxPages=${maxPages}, maxProducts=${maxProducts}, pageSize=${pageSize})...`
+      `🔄 Starting UNCAPPED Multi-Page CJ Skincare & Beauty Crawl (pageSize=${pageSize}, maxPages=${maxPages || 'UNLIMITED'}, maxProducts=${maxProducts || 'UNLIMITED'}, maxPagesPerSource=${maxPagesPerSource})...`
     );
 
-    // Pre-load existing products into memory Maps once so processCjBatch does O(1) lookups instead of N findOne queries
+    // Pre-load existing products into memory Maps once for O(1) lookups during bulkWrite batching
     const existingCatalog = await Product.find({})
       .select(
         '_id title cjPid cjSku normalizedTitleKey customTitleLocked description seoAnswerCapsule markupMultiplier selectedLogisticName shippingCostUsd shippingIncludedInPrice customLabelConfig availableLogistics variants.sku rawCjData.pid'
@@ -3558,10 +3581,11 @@ const syncCJCatalog = async (options = {}) => {
     let totalProcessed = 0;
     let newProductsAdded = 0;
     let updatedProductsCount = 0;
+    let crawlErrorCount = 0;
     const seenKeys = new Set();
     const retailMarkup = 6.5;
 
-    // Batched processor: builds bulkWrite operations for the entire CJ page instead of sequential DB round-trips
+    // Batched page processor: writes an entire CJ page in a single MongoDB bulkWrite call
     const processCjBatch = async (cjProducts, _fromBeautySource = false, sourceLabel = '') => {
       if (!Array.isArray(cjProducts) || cjProducts.length === 0) return 0;
       let batchSaved = 0;
@@ -3569,7 +3593,7 @@ const syncCJCatalog = async (options = {}) => {
       const syncTimestamp = new Date();
 
       for (const item of cjProducts) {
-        if (totalProcessed >= maxProducts) break;
+        if (maxProducts > 0 && totalProcessed >= maxProducts) break;
 
         const rawTitle = (item.nameEn || item.productNameEn || item.productName || '').toString().trim();
         const cjPid = (item.pid || item.productId || '').toString().trim();
@@ -3593,6 +3617,7 @@ const syncCJCatalog = async (options = {}) => {
           continue;
         }
 
+        // Strict Skincare & Facial/Cosmetic Beauty gate (blocks perfume, hair, nail, oral, non-beauty)
         if (!isStrictHealthAndBeautyProduct(rawTitle, realCjCategory, rawDesc)) {
           continue;
         }
@@ -3684,16 +3709,21 @@ const syncCJCatalog = async (options = {}) => {
             ((rawBasePrice * activeMarkup) + shippingAddonUsd + labelAddonUsd).toFixed(2)
         );
         const blueprintLabels = classifyProductForBlueprint(effectiveTitle, category, rawDesc);
-        const cleanedCopy = extractAndCleanProductDescription({
-          title: effectiveTitle,
-          description: existingProd?.customTitleLocked ? existingProd.description : rawDesc,
-          seoAnswerCapsule: existingProd?.seoAnswerCapsule || '',
-          rawCjData: { description: rawDesc },
-          ritualStep: blueprintLabels.ritualStep,
-          skinTypes: blueprintLabels.skinTypes,
-          skinConcerns: blueprintLabels.skinConcerns,
-          keyActives: blueprintLabels.keyActives
-        });
+        const cleanedCopy = typeof extractAndCleanProductDescription === 'function'
+          ? extractAndCleanProductDescription({
+              title: effectiveTitle,
+              description: existingProd?.customTitleLocked ? existingProd.description : rawDesc,
+              seoAnswerCapsule: existingProd?.seoAnswerCapsule || '',
+              rawCjData: { description: rawDesc },
+              ritualStep: blueprintLabels.ritualStep,
+              skinTypes: blueprintLabels.skinTypes,
+              skinConcerns: blueprintLabels.skinConcerns,
+              keyActives: blueprintLabels.keyActives
+            })
+          : {
+              description: String(rawDesc || '').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim(),
+              seoAnswerCapsule: existingProd?.seoAnswerCapsule || ''
+            };
 
         const updatePayload = {
           title: effectiveTitle,
@@ -3738,9 +3768,10 @@ const syncCJCatalog = async (options = {}) => {
           });
           updatedProductsCount++;
         } else {
+          const upsertFilter = cjPid ? { cjPid } : { normalizedTitleKey: effectiveNormTitle };
           bulkOps.push({
             updateOne: {
-              filter: { normalizedTitleKey: effectiveNormTitle },
+              filter: upsertFilter,
               update: { $set: updatePayload },
               upsert: true
             }
@@ -3763,45 +3794,156 @@ const syncCJCatalog = async (options = {}) => {
       return batchSaved;
     };
 
-    const fetchCjProductPage = async (url) => {
-      try {
-        const response = await axios.get(url, { headers, timeout: 15000 });
-        return response.data?.data?.list || response.data?.data?.content || [];
-      } catch (err) {
-        if (err?.response?.status === 429) {
-          await delay(1500);
-          const retryRes = await axios.get(url, { headers, timeout: 15000 }).catch(() => null);
-          return retryRes?.data?.data?.list || retryRes?.data?.data?.content || [];
+    // Resilient single-page fetcher with exponential backoff for HTTP 429 and CJ 1600200 QPS limits
+    const fetchCjProductPage = async (url, maxRetries = 3) => {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const response = await axios.get(url, { headers, timeout: 20000 });
+          const cjCode = Number(response.data?.code || 200);
+          const cjMsg = String(response.data?.message || '');
+          if ((cjCode === 1600200 || /too many requests|qps/i.test(cjMsg)) && attempt < maxRetries) {
+            console.warn(`⏳ CJ QPS limit hit (attempt ${attempt}/${maxRetries}), backing off...`);
+            await delay(1800 * attempt);
+            continue;
+          }
+          const dataBlock = response.data?.data || {};
+          const list = Array.isArray(dataBlock.list)
+            ? dataBlock.list
+            : Array.isArray(dataBlock.content)
+            ? dataBlock.content
+            : [];
+          const total = Number(dataBlock.total || dataBlock.totalRecords || 0);
+          return { ok: true, list, total };
+        } catch (err) {
+          const status = err?.response?.status;
+          if ((status === 429 || status >= 500 || err.code === 'ECONNABORTED') && attempt < maxRetries) {
+            console.warn(`⏳ CJ HTTP ${status || err.code} on attempt ${attempt}/${maxRetries}, backing off...`);
+            await delay(2000 * attempt);
+            continue;
+          }
+          return { ok: false, list: [], total: 0, error: err?.response?.data?.message || err.message };
         }
-        return [];
       }
+      return { ok: false, list: [], total: 0, error: 'Max retries exceeded' };
     };
 
-    // Stage A: Pull directly from discovered CJ Skincare & Beauty Category IDs
-    // (No redundant delay(380) needed — axios request interceptor enforces CJ_RATE_LIMIT_MS = 1100ms globally)
+    // Crawls ALL pages (pageNum = 1, 2, 3...) for a given CJ category or keyword until exhausted
+    const crawlPaginatedSource = async ({ buildUrl, fromBeautySource, sourceLabel, icon }) => {
+      let sourceSavedTotal = 0;
+      let prevFirstSignature = null;
+
+      for (let pageNum = 1; pageNum <= maxPagesPerSource; pageNum++) {
+        if (cjSyncCancelRequested) break;
+        if (maxPages > 0 && pagesFetched >= maxPages) break;
+        if (maxProducts > 0 && totalProcessed >= maxProducts) break;
+
+        pagesFetched++;
+        cjCatalogSyncTelemetry = {
+          ...cjCatalogSyncTelemetry,
+          currentSourceLabel: `${sourceLabel} (page ${pageNum})`,
+          pagesFetched,
+          itemsProcessed: totalProcessed,
+          lastNewAddedCount: newProductsAdded,
+          lastUpdatedCount: updatedProductsCount,
+          cancelRequested: cjSyncCancelRequested
+        };
+        const url = buildUrl(pageNum);
+        const pageRes = await fetchCjProductPage(url);
+
+        if (!pageRes.ok) {
+          crawlErrorCount++;
+          console.warn(`⚠️ CJ crawl error on ${sourceLabel} (page ${pageNum}): ${pageRes.error}`);
+          break;
+        }
+
+        const list = pageRes.list || [];
+        if (list.length === 0) break;
+
+        // Guard against CJ endpoints returning identical page 1 data when pageNum exceeds bounds
+        const firstItemSig = `${list[0]?.pid || list[0]?.productId || list[0]?.productSku || ''}|${list.length}`;
+        if (prevFirstSignature && firstItemSig === prevFirstSignature) {
+          break;
+        }
+        prevFirstSignature = firstItemSig;
+
+        const saved = await processCjBatch(list, fromBeautySource, sourceLabel);
+        sourceSavedTotal += saved;
+        cjCatalogSyncTelemetry = {
+          ...cjCatalogSyncTelemetry,
+          pagesFetched,
+          itemsProcessed: totalProcessed,
+          lastNewAddedCount: newProductsAdded,
+          lastUpdatedCount: updatedProductsCount
+        };
+        if (pagesFetched % 5 === 0) {
+          const liveCount = await Product.countDocuments().catch(() => cjCatalogSyncTelemetry.activeCatalogTotal || 0);
+          await saveCatalogTelemetrySafe({
+            pagesFetched,
+            itemsProcessed: totalProcessed,
+            lastNewAddedCount: newProductsAdded,
+            lastUpdatedCount: updatedProductsCount,
+            activeCatalogTotal: liveCount
+          });
+        }
+
+        if (pageNum === 1 || saved > 0 || pageNum % 5 === 0) {
+          console.log(
+            `${icon} "${sourceLabel}" p.${pageNum}${pageRes.total ? `/${Math.ceil(pageRes.total / pageSize)}` : ''} -> +${saved} verified (Running total: ${totalProcessed})`
+          );
+        }
+
+        if (list.length < pageSize) break;
+        if (pageRes.total > 0 && pageNum * pageSize >= pageRes.total) break;
+      }
+
+      return sourceSavedTotal;
+    };
+
+    // Stage A: Multi-page crawl of ALL discovered CJ Skincare & Beauty leaf categories
+    await saveCatalogTelemetrySafe({
+      syncPhase: 'CATEGORIES',
+      currentSourceLabel: 'Discovering CJ Skincare & Beauty categories...'
+    });
     const beautyCategories = await fetchCjBeautyCategoryIds(headers);
     for (const cat of beautyCategories) {
-      if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
-      pagesFetched++;
-      const url = `${CJ_BASE_URL}/product/list?categoryId=${encodeURIComponent(cat.id)}&pageNum=1&pageSize=${pageSize}`;
-      const list = await fetchCjProductPage(url);
-      const saved = await processCjBatch(list, true, cat.name);
-      console.log(`📂 CJ Beauty Category "${cat.name}" -> +${saved} items (Total processed: ${totalProcessed}/${maxProducts})`);
+      if (cjSyncCancelRequested) break;
+      if (maxPages > 0 && pagesFetched >= maxPages) break;
+      if (maxProducts > 0 && totalProcessed >= maxProducts) break;
+      await crawlPaginatedSource({
+        buildUrl: (pageNum) =>
+          `${CJ_BASE_URL}/product/list?categoryId=${encodeURIComponent(cat.id)}&pageNum=${pageNum}&pageSize=${pageSize}`,
+        fromBeautySource: true,
+        sourceLabel: cat.name,
+        icon: '📂'
+      });
     }
 
-    // Stage B: Sweep strictly curated Skincare & Facial/Cosmetic Beauty keyword queries
+    // Stage B: Multi-page sweep of strictly curated Skincare & Facial/Cosmetic Beauty keyword queries
+    if (!cjSyncCancelRequested) {
+      await saveCatalogTelemetrySafe({
+        syncPhase: 'KEYWORDS',
+        currentSourceLabel: 'Sweeping CJ Skincare & Beauty keywords...'
+      });
+    }
     for (const query of CJ_BEAUTY_SEARCH_QUERIES) {
-      if (pagesFetched >= maxPages || totalProcessed >= maxProducts) break;
-      pagesFetched++;
-      const url = `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&productNameEn=${encodeURIComponent(query)}&pageNum=1&pageSize=${pageSize}`;
-      const list = await fetchCjProductPage(url);
-      const saved = await processCjBatch(list, false, `Skincare & Beauty > ${query}`);
-      console.log(`🔍 CJ Skincare Keyword "${query}" -> +${saved} verified items (Total processed: ${totalProcessed}/${maxProducts})`);
+      if (cjSyncCancelRequested) break;
+      if (maxPages > 0 && pagesFetched >= maxPages) break;
+      if (maxProducts > 0 && totalProcessed >= maxProducts) break;
+      await crawlPaginatedSource({
+        buildUrl: (pageNum) =>
+          `${CJ_BASE_URL}/product/list?keyWord=${encodeURIComponent(query)}&productNameEn=${encodeURIComponent(query)}&pageNum=${pageNum}&pageSize=${pageSize}`,
+        fromBeautySource: false,
+        sourceLabel: `Skincare & Beauty > ${query}`,
+        icon: '🔍'
+      });
     }
 
-    // Stage C: Stale CJ Product Pruning (only if this sync successfully processed >= 50 items so an API outage never wipes inventory)
+    // Stage C: Stale CJ Product Pruning — ONLY runs after a 100% completed, uncapped, error-free full sweep
     let stalePrunedCount = 0;
-    if (totalProcessed >= 50) {
+    const isCompleteUncappedSweep =
+      !cjSyncCancelRequested && fullCatalog && crawlErrorCount === 0 && maxPages === 0 && maxProducts === 0 && totalProcessed >= 50;
+
+    if (isCompleteUncappedSweep) {
       const staleCutoff = new Date(Date.now() - CJ_STALE_PRUNE_DAYS * 24 * 60 * 60 * 1000);
       const staleDocs = await Product.find({
         customTitleLocked: { $ne: true },
@@ -3820,14 +3962,16 @@ const syncCJCatalog = async (options = {}) => {
         await Product.deleteMany({ _id: { $in: staleIds } }).catch(() => {});
         await cleanupPrunedProductReferences(staleIds);
         stalePrunedCount = staleIds.length;
-        console.log(`🗑️ Pruned ${stalePrunedCount} stale/unlisted CJ product(s) older than ${CJ_STALE_PRUNE_DAYS} days.`);
+        console.log(`🗑️ Pruned ${stalePrunedCount} stale/discontinued CJ product(s) older than ${CJ_STALE_PRUNE_DAYS} days.`);
       }
+    } else if (crawlErrorCount > 0) {
+      console.warn(`⚠️ Skipping stale-item pruning because ${crawlErrorCount} CJ page error(s) occurred during this crawl.`);
     }
 
-    // Stage D: Post-Sync Sanitization, Deduplication & Curated Cap Enforcement
+    // Stage D: Post-Sync Sanitization & Deduplication (UNCAPPED)
     let postSanitize = null;
     if (sanitizeAfter) {
-      postSanitize = await sanitizeAndDeduplicateCatalog({ maxCatalogCap: effectiveCap });
+      postSanitize = await sanitizeAndDeduplicateCatalog();
     }
 
     await backfillProductBlueprintLabels(false);
@@ -3838,37 +3982,47 @@ const syncCJCatalog = async (options = {}) => {
       (preSanitize.duplicatesPurged || 0) + (postSanitize?.duplicatesPurged || 0);
     const totalNonBeautyPurged =
       (preSanitize.nonBeautyPurgedCount || 0) + (postSanitize?.nonBeautyPurgedCount || 0);
-    const totalExcessPruned =
-      (preSanitize.excessPrunedCount || 0) + (postSanitize?.excessPrunedCount || 0);
 
-    await persistCatalogSyncTelemetry({
+    const finalStatus = cjSyncCancelRequested
+      ? 'STOPPED'
+      : crawlErrorCount > 0
+      ? 'COMPLETED_WITH_WARNINGS'
+      : 'COMPLETED';
+    await saveCatalogTelemetrySafe({
       lastSyncAt: new Date().toISOString(),
-      lastSyncStatus: 'COMPLETED',
+      lastSyncStatus: finalStatus,
+      syncPhase: finalStatus,
+      currentSourceLabel: '',
+      pagesFetched,
+      itemsProcessed: totalProcessed,
+      cancelRequested: false,
       lastSyncedCount: totalProcessed,
       lastNewAddedCount: newProductsAdded,
       lastUpdatedCount: updatedProductsCount,
       lastSanitizedAt: postSanitize?.sanitizedAt || new Date().toISOString(),
       lastDuplicatesPurgedCount: totalDuplicatesPurged,
       lastNonBeautyPurgedCount: totalNonBeautyPurged,
-      lastExcessCapPrunedCount: totalExcessPruned,
+      lastExcessCapPrunedCount: 0,
       lastStalePrunedCount: stalePrunedCount,
-      maxCatalogCap: effectiveCap,
+      maxCatalogCap: 0,
       activeCatalogTotal: totalInDb,
-      lastError: '',
+      lastError: crawlErrorCount > 0 ? `${crawlErrorCount} CJ page request(s) returned errors.` : '',
       nextScheduledSync: 'Daily at 3:00 AM CST (America/Chicago)'
     });
 
     console.log(
-      `🚀 CJ Sync Complete! Processed ${totalProcessed} (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-beauty, ${totalDuplicatesPurged} duplicates, ${stalePrunedCount} stale, ${totalExcessPruned} over-cap -> ${totalInDb} active (cap=${effectiveCap}).`
+      `🚀 UNCAPPED CJ Skincare & Beauty Crawl Complete! Fetched ${pagesFetched} page(s), processed ${totalProcessed} items (${newProductsAdded} new, ${updatedProductsCount} updated), purged ${totalNonBeautyPurged} non-skincare, ${totalDuplicatesPurged} duplicates, ${stalePrunedCount} stale -> ${totalInDb} active Skincare & Beauty products.`
     );
 
     return {
       status: 'completed',
+      pagesFetched,
+      crawlErrorCount,
       purgedCount: totalNonBeautyPurged,
       duplicatesPurged: totalDuplicatesPurged,
-      excessPrunedCount: totalExcessPruned,
+      excessPrunedCount: 0,
       stalePrunedCount,
-      maxCatalogCap: effectiveCap,
+      maxCatalogCap: 0,
       syncedCount: totalProcessed,
       newProductsAdded,
       updatedProductsCount,
@@ -3876,10 +4030,13 @@ const syncCJCatalog = async (options = {}) => {
       telemetry: cjCatalogSyncTelemetry
     };
   } catch (error) {
-    console.error('❌ Error during CJ sync:', error?.response?.data || error.message);
-    await persistCatalogSyncTelemetry({
+    console.error('❌ Error during uncapped CJ crawl:', error?.response?.data || error.message);
+    await saveCatalogTelemetrySafe({
       lastSyncAt: new Date().toISOString(),
       lastSyncStatus: 'ERROR',
+      syncPhase: 'ERROR',
+      currentSourceLabel: '',
+      cancelRequested: false,
       lastError: error?.response?.data?.message || error.message
     });
     return {
@@ -3889,11 +4046,13 @@ const syncCJCatalog = async (options = {}) => {
       duplicatesPurged: 0,
       excessPrunedCount: 0,
       stalePrunedCount: 0,
+      maxCatalogCap: 0,
       syncedCount: 0,
       telemetry: cjCatalogSyncTelemetry
     };
   } finally {
     isCjSyncRunning = false;
+    cjSyncCancelRequested = false;
   }
 };
 
@@ -4887,15 +5046,21 @@ const recalculateProductRetailPrice = (productDoc, overrides = {}) => {
 
 // Startup migration that backfills wholesalePriceUsd, shippingCostUsd, selectedLogisticName, availableLogistics,
 // customLabelConfig, and shipping-included retail prices across all existing products in MongoDB.
+// Backfills CJ shipping rates, wholesale prices & 3-layer custom branding via 200-doc cursor stream (Phase 3)
 const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
   try {
-    const allProducts = await Product.find({}).lean();
-    if (!allProducts.length) {
-      return { updatedCount: 0, totalCount: 0 };
-    }
+    const CHUNK_SIZE = 200;
+    let bulkOps = [];
+    let updatedCount = 0;
+    let totalCount = 0;
 
-    const bulkOps = [];
-    for (const prod of allProducts) {
+    const cursor = Product.find({})
+      .select('_id price wholesalePriceUsd markupMultiplier estimatedWeightGrams originCountryCode selectedLogisticName shippingCostUsd shippingIncludedInPrice availableLogistics customLabelConfig variants rawCjData.sellPrice rawCjData.price rawCjData.productWeight rawCjData.packWeight rawCjData.weight')
+      .lean()
+      .cursor({ batchSize: CHUNK_SIZE });
+
+    for await (const prod of cursor) {
+      totalCount++;
       const currentAllInCost = Number(prod.wholesalePriceUsd || 2.00) + Math.max(7.84, Number(prod.shippingCostUsd || 7.84));
       const needsBackfill =
         forceAll ||
@@ -4923,7 +5088,7 @@ const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
         inferredWholesale = currentPrice > 0 ? Number((currentPrice / 6.5).toFixed(2)) : 2.50;
       }
 
-      const rawWeight = parseFloat(String(prod.rawCjData?.productWeight || prod.rawCjData?.packWeight || prod.estimatedWeightGrams || '120').split('-')[0].trim());
+      const rawWeight = parseFloat(String(prod.rawCjData?.productWeight || prod.rawCjData?.packWeight || prod.rawCjData?.weight || prod.estimatedWeightGrams || '120').split('-')[0].trim());
       const weightGrams = Math.max(30, Number(rawWeight) || 120);
 
       const workingProd = { ...prod };
@@ -4962,17 +5127,22 @@ const backfillProductShippingAndCustomLabelMeta = async (forceAll = false) => {
           }
         }
       });
-    }
+      updatedCount++;
 
-    const CHUNK_SIZE = 200;
-    for (let i = 0; i < bulkOps.length; i += CHUNK_SIZE) {
-      await Product.bulkWrite(bulkOps.slice(i, i + CHUNK_SIZE), { ordered: false });
+      if (bulkOps.length >= CHUNK_SIZE) {
+        await Product.bulkWrite(bulkOps, { ordered: false });
+        bulkOps = [];
+      }
     }
 
     if (bulkOps.length > 0) {
-      console.log(`✈️ Backfilled CJ shipping rates, wholesale prices & custom label metadata on ${bulkOps.length} product(s) via bulkWrite.`);
+      await Product.bulkWrite(bulkOps, { ordered: false });
     }
-    return { updatedCount: bulkOps.length, totalCount: allProducts.length };
+
+    if (updatedCount > 0) {
+      console.log(`✈️ Backfilled CJ shipping rates, wholesale prices & custom label metadata on ${updatedCount} product(s) via cursor stream.`);
+    }
+    return { updatedCount, totalCount };
   } catch (err) {
     console.warn('⚠️ Error in backfillProductShippingAndCustomLabelMeta:', err.message);
     return { updatedCount: 0, totalCount: 0, error: err.message };
@@ -6345,40 +6515,69 @@ ${pageBullets}
   res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
 });
 
-// 2. /llms-full.txt (Dynamic Full Product Corpus in Clean Markdown)
+// 2. /llms-full.txt (Phase 5: Cursor-Streamed Full Product Corpus in Clean Markdown)
 app.get('/llms-full.txt', async (req, res) => {
   try {
-    const products = mongoose.connection.readyState === 1
-      ? await Product.find({}).lean()
-      : [];
+    const dbReady = mongoose.connection.readyState === 1;
+    const totalCount = dbReady ? await Product.countDocuments().catch(() => 0) : 0;
 
-    let markdown = `# Susan's Beauty Consulting - Full Catalog Corpus\n\n`;
-    markdown += `> Personalized beauty guidance, skincare education, and ongoing membership support.\n\n`;
-    markdown += `## Complete Boutique Inventory (${products.length} Active Items)\n\n`;
-
-    products.forEach((p) => {
-      const price = p.variants?.[0]?.price ?? p.price ?? 0;
-      const step = p.ritualStep || 'Step 3: Serum & Essence';
-      const skinTypes = Array.isArray(p.skinTypes) && p.skinTypes.length > 0 ? p.skinTypes.join(', ') : 'All Skin Types';
-      const concerns = Array.isArray(p.skinConcerns) && p.skinConcerns.length > 0 ? p.skinConcerns.join(', ') : 'Hydration';
-      const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0 ? p.keyActives.join(', ') : 'Botanical Complex';
-      const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
-      const geoSummary = stripHtmlAndMarkdown(p.seoAnswerCapsule || p.description || '');
-
-      markdown += `### ${p.title || 'Boutique Essential'}\n`;
-      markdown += `- **URL:** ${BASE_SEO_URL}/?tab=Boutique&productId=${p._id}\n`;
-      markdown += `- **Price:** ${Number(price).toFixed(2)}\n`;
-      markdown += `- **Ritual Step:** ${step}\n`;
-      markdown += `- **Best For Skin Types:** ${skinTypes}\n`;
-      markdown += `- **Target Skin Concerns:** ${concerns}\n`;
-      markdown += `- **Key Actives:** ${actives}\n`;
-      markdown += `- **Sensitivity Profile:** ${sensitivity}\n`;
-      markdown += `- **GEO Answer Capsule:** ${geoSummary || 'Curated skincare essential.'}\n\n`;
+    res.status(200).set({
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=3600'
     });
 
-    res.status(200).set('Content-Type', 'text/markdown; charset=utf-8').send(markdown);
+    res.write(
+      `# Susan's Beauty Consulting - Full Catalog Corpus\n\n` +
+      `> Personalized beauty guidance, skincare education, and ongoing membership support.\n\n` +
+      `## Complete Boutique Inventory (${totalCount.toLocaleString()} Active Skincare & Beauty Items)\n\n`
+    );
+
+    if (dbReady && totalCount > 0) {
+      const cursor = Product.find({})
+        .select('_id title price variants.price ritualStep skinTypes skinConcerns keyActives sensitivityLabel seoAnswerCapsule description')
+        .sort({ purchaseCount: -1, viewCount: -1, _id: 1 })
+        .lean()
+        .cursor({ batchSize: 200 });
+
+      for await (const p of cursor) {
+        if (res.writableEnded || req.aborted) break;
+        const price = p.variants?.[0]?.price ?? p.price ?? 0;
+        const step = p.ritualStep || 'Step 3: Serum & Essence';
+        const skinTypes = Array.isArray(p.skinTypes) && p.skinTypes.length > 0 ? p.skinTypes.join(', ') : 'All Skin Types';
+        const concerns = Array.isArray(p.skinConcerns) && p.skinConcerns.length > 0 ? p.skinConcerns.join(', ') : 'Hydration';
+        const actives = Array.isArray(p.keyActives) && p.keyActives.length > 0 ? p.keyActives.join(', ') : 'Botanical Complex';
+        const sensitivity = p.sensitivityLabel || 'Gentle • High-Sensitivity Safe';
+        const geoSummary = typeof stripHtmlAndMarkdown === 'function'
+          ? stripHtmlAndMarkdown(p.seoAnswerCapsule || p.description || '')
+          : String(p.seoAnswerCapsule || p.description || '').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+
+        const entry =
+          `### ${p.title || 'Boutique Essential'}\n` +
+          `- **URL:** ${BASE_SEO_URL}/?tab=Boutique&productId=${p._id}\n` +
+          `- **Price:** $${Number(price).toFixed(2)}\n` +
+          `- **Ritual Step:** ${step}\n` +
+          `- **Best For Skin Types:** ${skinTypes}\n` +
+          `- **Target Skin Concerns:** ${concerns}\n` +
+          `- **Key Actives:** ${actives}\n` +
+          `- **Sensitivity Profile:** ${sensitivity}\n` +
+          `- **GEO Answer Capsule:** ${geoSummary || 'Curated skincare essential.'}\n\n`;
+
+        if (!res.write(entry)) {
+          await new Promise((resolve) => res.once('drain', resolve));
+        }
+      }
+    }
+
+    if (!res.writableEnded) {
+      res.end();
+    }
   } catch (error) {
-    res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send('Error generating LLM catalog corpus.');
+    console.error('⚠️ Error streaming /llms-full.txt corpus:', error.message);
+    if (!res.headersSent) {
+      res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send('Error generating LLM catalog corpus.');
+    } else if (!res.writableEnded) {
+      res.end();
+    }
   }
 });
 
@@ -6415,52 +6614,73 @@ Sitemap: ${BASE_SEO_URL}/sitemap.xml
   res.status(200).set('Content-Type', 'text/plain; charset=utf-8').send(robotsTxt);
 });
 
-// 4. /sitemap.xml (Includes All 9 Public SEO Routes + Dynamic Boutique Products)
+// 4. /sitemap.xml (Phase 5: Cursor-Streamed XML 0.9 Sitemap — 9 Public SEO Routes + Up to 45,000 SKUs)
 app.get('/sitemap.xml', async (req, res) => {
   try {
     const todayIso = new Date().toISOString();
 
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-
-    // Include all 9 Nationwide SEO Pages
-    Object.values(PUBLIC_SEO_PAGES).forEach((page) => {
-      xml += '  <url>\n';
-      xml += `    <loc>${BASE_SEO_URL}${page.path}</loc>\n`;
-      xml += `    <lastmod>${todayIso}</lastmod>\n`;
-      xml += `    <changefreq>${page.changefreq}</changefreq>\n`;
-      xml += `    <priority>${page.priority}</priority>\n`;
-      xml += '  </url>\n';
+    res.status(200).set({
+      'Content-Type': 'application/xml; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=7200'
     });
 
-    // Include Dynamic Product Pages if MongoDB is connected
-    if (mongoose.connection.readyState === 1) {
-      const products = await Product.find({}).select('_id lastSyncedAt').lean().catch(() => []);
-      products.forEach((p) => {
-        const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : todayIso;
-        xml += '  <url>\n';
-        xml += `    <loc>${BASE_SEO_URL}/?tab=Boutique&amp;productId=${p._id}</loc>\n`;
-        xml += `    <lastmod>${lastMod}</lastmod>\n`;
-        xml += '    <changefreq>daily</changefreq>\n';
-        xml += '    <priority>0.6</priority>\n';
-        xml += '  </url>\n';
-      });
+    res.write(
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    );
+
+    // Stream all 9 Nationwide Public SEO Pages first
+    for (const page of Object.values(PUBLIC_SEO_PAGES)) {
+      res.write(
+        '  <url>\n' +
+        `    <loc>${BASE_SEO_URL}${page.path}</loc>\n` +
+        `    <lastmod>${todayIso}</lastmod>\n` +
+        `    <changefreq>${page.changefreq}</changefreq>\n` +
+        `    <priority>${page.priority}</priority>\n` +
+        '  </url>\n'
+      );
     }
 
-    xml += '</urlset>';
+    // Stream Dynamic Product Pages via MongoDB cursor (capped at 45,000 for Google 50k XML protocol compliance)
+    if (mongoose.connection.readyState === 1) {
+      const cursor = Product.find({})
+        .select('_id lastSyncedAt')
+        .sort({ purchaseCount: -1, viewCount: -1, _id: 1 })
+        .limit(45000)
+        .lean()
+        .cursor({ batchSize: 250 });
 
-    res
-      .status(200)
-      .set({
-        'Content-Type': 'application/xml; charset=utf-8',
-        'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': 'public, max-age=3600'
-      })
-      .send(xml.trim());
+      for await (const p of cursor) {
+        if (res.writableEnded || req.aborted) break;
+        const lastMod = p.lastSyncedAt ? new Date(p.lastSyncedAt).toISOString() : todayIso;
+        const chunk =
+          '  <url>\n' +
+          `    <loc>${BASE_SEO_URL}/?tab=Boutique&amp;productId=${p._id}</loc>\n` +
+          `    <lastmod>${lastMod}</lastmod>\n` +
+          '    <changefreq>daily</changefreq>\n' +
+          '    <priority>0.6</priority>\n' +
+          '  </url>\n';
+        if (!res.write(chunk)) {
+          await new Promise((resolve) => res.once('drain', resolve));
+        }
+      }
+    }
+
+    if (!res.writableEnded) {
+      res.write('</urlset>');
+      res.end();
+    }
   } catch (error) {
-    res.status(500).set('Content-Type', 'application/xml; charset=utf-8').send(
-      '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
-    );
+    console.error('⚠️ Error streaming /sitemap.xml:', error.message);
+    if (!res.headersSent) {
+      res.status(500).set('Content-Type', 'application/xml; charset=utf-8').send(
+        '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
+      );
+    } else if (!res.writableEnded) {
+      res.write('</urlset>');
+      res.end();
+    }
   }
 });
 
@@ -12116,30 +12336,50 @@ app.delete('/api/users/me/appointments/:id', authenticateToken, async (req, res)
 
 app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { purgeOnly, sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
+    const { purgeOnly, sanitizeOnly, maxPages, maxProducts } = req.body || {};
     if (purgeOnly || sanitizeOnly) {
-      const sanitizeRes = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
-      const products = await Product.find({}).sort({ _id: -1 });
+      const sanitizeRes = await sanitizeAndDeduplicateCatalog();
+      const products = await Product.find({}).sort({ _id: -1 }).limit(300).lean();
       return res.status(200).json({
-        message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeRes.duplicatesPurged || 0} duplicates, and ${sanitizeRes.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
+        message: `🧹 Strict Skincare & Beauty Purge Complete: removed ${sanitizeRes.nonBeautyPurgedCount || 0} perfume/non-skincare items and ${sanitizeRes.duplicatesPurged || 0} duplicates (${sanitizeRes.activeCatalogTotal || 0} unique Skincare & Beauty products active — uncapped) ✧`,
         purgedCount: sanitizeRes.nonBeautyPurgedCount || 0,
         duplicatesPurged: sanitizeRes.duplicatesPurged || 0,
-        excessPrunedCount: sanitizeRes.excessPrunedCount || 0,
-                syncedCount: 0,
-        activeTotal: products.length,
+        excessPrunedCount: 0,
+        syncedCount: 0,
+        activeTotal: sanitizeRes.activeCatalogTotal || products.length,
         syncTelemetry: cjCatalogSyncTelemetry,
         products
       });
     }
 
-    const result = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
-    const products = await Product.find({}).sort({ _id: -1 });
-    res.status(200).json({
-      message: `✨ Strict Skincare & Beauty Sync Complete! Synced ${result.syncedCount || 0} verified items, removed ${result.duplicatesPurged || 0} duplicates & ${result.purgedCount || 0} perfume/non-skincare items (${products.length} unique Skincare & Beauty products active) ✧`,
-      ...result,
-            activeTotal: products.length,
-      syncTelemetry: cjCatalogSyncTelemetry,
-      products
+    if (isCjSyncRunning) {
+      return res.status(202).json({
+        status: 'already_running',
+        started: false,
+        isSyncRunning: true,
+        message: '⏳ An uncapped CJ Skincare & Beauty crawl is already running in the background. Live progress updates every 5 seconds.',
+        syncTelemetry: cjCatalogSyncTelemetry
+      });
+    }
+
+    // Fire-and-forget background execution so Render never hits HTTP 502/504 timeouts
+    setImmediate(() => {
+      syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts }).catch((err) => {
+        console.error('❌ Background CJ sync error:', err?.message || err);
+      });
+    });
+
+    return res.status(202).json({
+      status: 'started',
+      started: true,
+      isSyncRunning: true,
+      message: '🚀 Uncapped CJ Skincare & Beauty crawl started in the background! Live progress will refresh automatically every 5 seconds ✧',
+      syncTelemetry: {
+        ...cjCatalogSyncTelemetry,
+        lastSyncStatus: 'RUNNING',
+        syncPhase: 'PRE_SANITIZING',
+        isSyncRunning: true
+      }
     });
   } catch (error) {
     console.error('Admin CJ Sync Error:', error);
@@ -12147,36 +12387,52 @@ app.post('/api/admin/cj-sync', authenticateToken, requireAdmin, async (req, res)
   }
 });
 
-// POST /api/admin/products/sync-and-sanitize — Pulls strictly Skincare & Beauty products and sanitizes MongoDB (or runs sanitizeOnly)
+// POST /api/admin/products/sync-and-sanitize — Synchronous for sanitizeOnly; Async 202 Background Crawl for full CJ pull
 app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { sanitizeOnly, maxPages, maxProducts, maxCatalogCap } = req.body || {};
+    const { sanitizeOnly, maxPages, maxProducts } = req.body || {};
     if (sanitizeOnly) {
-      const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
-      const products = await Product.find({}).sort({ _id: -1 });
+      const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+      const activeTotal = sanitizeResult.activeCatalogTotal || (await Product.countDocuments());
       return res.status(200).json({
-        message: `🧹 Strict Skincare & Beauty Sanitization Complete! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed), and pruned ${sanitizeResult.excessPrunedCount || 0} over-cap items → ${products.length} unique Skincare & Beauty products active ✧`,
+        message: `🧹 Strict Skincare & Beauty Sanitization Complete (Uncapped)! Purged ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items and merged ${sanitizeResult.groupsMerged || 0} duplicate groups (${sanitizeResult.duplicatesPurged || 0} duplicates removed) → ${activeTotal} unique Skincare & Beauty products active ✧`,
         sanitizeResult,
         duplicatesPurged: sanitizeResult.duplicatesPurged || 0,
         purgedCount: sanitizeResult.nonBeautyPurgedCount || 0,
-        excessPrunedCount: sanitizeResult.excessPrunedCount || 0,
-                activeTotal: products.length,
-        syncTelemetry: cjCatalogSyncTelemetry,
-        products
+        excessPrunedCount: 0,
+        activeTotal,
+        syncTelemetry: cjCatalogSyncTelemetry
       });
     }
 
-    const syncResult = await syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts, maxCatalogCap });
-    const products = await Product.find({}).sort({ _id: -1 });
-    res.status(200).json({
-      message: `✨ Strict Skincare & Beauty Sync + Sanitization Complete! Processed ${syncResult.syncedCount || 0} items, removed ${syncResult.duplicatesPurged || 0} duplicates & ${syncResult.purgedCount || 0} perfume/non-skincare items → ${products.length} unique Skincare & Beauty products active ✧`,
-      syncResult,
-      duplicatesPurged: syncResult.duplicatesPurged || 0,
-      purgedCount: syncResult.purgedCount || 0,
-      syncedCount: syncResult.syncedCount || 0,
-            activeTotal: products.length,
-      syncTelemetry: cjCatalogSyncTelemetry,
-      products
+    if (isCjSyncRunning) {
+      return res.status(202).json({
+        status: 'already_running',
+        started: false,
+        isSyncRunning: true,
+        message: '⏳ An uncapped CJ Skincare & Beauty crawl is already running in the background. Live progress updates automatically.',
+        syncTelemetry: cjCatalogSyncTelemetry
+      });
+    }
+
+    // Start uncapped multi-page crawl asynchronously to prevent HTTP proxy timeouts
+    setImmediate(() => {
+      syncCJCatalog({ fullCatalog: true, sanitizeAfter: true, maxPages, maxProducts }).catch((err) => {
+        console.error('❌ Background sync-and-sanitize error:', err?.message || err);
+      });
+    });
+
+    return res.status(202).json({
+      status: 'started',
+      started: true,
+      isSyncRunning: true,
+      message: '🚀 Uncapped CJ Skincare & Beauty crawl started in the background! Watching live progress every 5 seconds ✧',
+      syncTelemetry: {
+        ...cjCatalogSyncTelemetry,
+        lastSyncStatus: 'RUNNING',
+        syncPhase: 'PRE_SANITIZING',
+        isSyncRunning: true
+      }
     });
   } catch (error) {
     console.error('Sync and Sanitize Error:', error);
@@ -12184,18 +12440,44 @@ app.post('/api/admin/products/sync-and-sanitize', authenticateToken, requireAdmi
   }
 });
 
-// POST /api/admin/products/deduplicate & POST /api/admin/products/strict-skincare-purge — Runs immediate strict Skincare & Beauty purge, deduplication & cap enforcement
+// POST /api/admin/products/sync-stop — Gracefully stops an active background CJ crawl after the current page
+app.post('/api/admin/products/sync-stop', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    if (!isCjSyncRunning) {
+      return res.status(200).json({
+        status: 'idle',
+        isSyncRunning: false,
+        message: 'No CJ crawl is currently running.',
+        syncTelemetry: cjCatalogSyncTelemetry
+      });
+    }
+
+    cjSyncCancelRequested = true;
+    await saveCatalogTelemetrySafe({ cancelRequested: true });
+    console.log("⏹️ Admin requested graceful stop for active CJ Skincare & Beauty crawl.");
+
+    return res.status(200).json({
+      status: 'stopping',
+      isSyncRunning: true,
+      cancelRequested: true,
+      message: '⏹️ Stop requested — finishing the current CJ page and saving all synced products cleanly...',
+      syncTelemetry: cjCatalogSyncTelemetry
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to stop CJ sync.' });
+  }
+});
+
+// POST /api/admin/products/deduplicate & POST /api/admin/products/strict-skincare-purge — Uncapped strict purge & deduplication
 app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincare-purge'], authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { maxCatalogCap } = req.body || {};
-    const sanitizeResult = await sanitizeAndDeduplicateCatalog({ maxCatalogCap });
-    const products = await Product.find({}).sort({ _id: -1 });
+    const sanitizeResult = await sanitizeAndDeduplicateCatalog();
+    const activeTotal = sanitizeResult.activeCatalogTotal || (await Product.countDocuments());
     res.status(200).json({
-      message: `🧹 Strict Skincare & Beauty Purge + Cap Enforcement Complete! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items, ${sanitizeResult.duplicatesPurged || 0} duplicates, and ${sanitizeResult.excessPrunedCount || 0} over-cap listings (${products.length} unique Skincare & Beauty products active) ✧`,
+      message: `🧹 Strict Skincare & Beauty Purge Complete (Uncapped)! Removed ${sanitizeResult.nonBeautyPurgedCount || 0} perfume/non-skincare items and ${sanitizeResult.duplicatesPurged || 0} duplicates (${activeTotal} unique Skincare & Beauty products active) ✧`,
       ...sanitizeResult,
-            activeTotal: products.length,
-      syncTelemetry: cjCatalogSyncTelemetry,
-      products
+      activeTotal,
+      syncTelemetry: cjCatalogSyncTelemetry
     });
   } catch (error) {
     console.error('Deduplicate Catalog Error:', error);
@@ -12203,10 +12485,10 @@ app.post(['/api/admin/products/deduplicate', '/api/admin/products/strict-skincar
   }
 });
 
-// GET /api/admin/products/sync-status — Returns live catalog sanitization & 3:00 AM CST schedule telemetry
+// GET /api/admin/products/sync-status — Returns live background crawl progress & persisted telemetry
 app.get('/api/admin/products/sync-status', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    if (!cjCatalogSyncTelemetry.lastSyncAt && !cjCatalogSyncTelemetry.lastSanitizedAt) {
+    if (!cjCatalogSyncTelemetry.lastSyncAt && !cjCatalogSyncTelemetry.lastSanitizedAt && typeof loadCatalogSyncTelemetry === 'function') {
       await loadCatalogSyncTelemetry();
     }
     const activeTotal = await Product.countDocuments();
@@ -12214,7 +12496,8 @@ app.get('/api/admin/products/sync-status', authenticateToken, requireAdmin, asyn
     res.status(200).json({
       ...cjCatalogSyncTelemetry,
       isSyncRunning: isCjSyncRunning,
-      isSanitizeRunning: isCatalogSanitizeRunning
+      isSanitizeRunning: isCatalogSanitizeRunning,
+      cancelRequested: cjSyncCancelRequested
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to read catalog sync status.' });
@@ -13171,6 +13454,7 @@ app.delete('/api/admin/products/:id', authenticateToken, requireAdmin, async (re
   }
 });
 
+// Phase 4 + Search Fix: Full-Catalog Tokenized Search (never restricted by Blueprint) + Paginated Filtering
 app.get('/api/products', async (req, res) => {
   try {
     const {
@@ -13178,73 +13462,124 @@ app.get('/api/products', async (req, res) => {
       skinType,
       skinConcern,
       ritualStep,
+      onlySensitiveSafe,
+      blueprintOnly,
+      blueprintSkinType,
+      blueprintGoal,
+      blueprintSensitivity,
       search,
       sort,
       page,
       limit,
       paginated,
       includeAdminFields,
+      excludeRawCj,
       full
     } = req.query;
 
-    const filter = {};
+    const andClauses = [];
+    const cleanSearchStr = String(search || '').trim();
+    const hasSearchQuery = cleanSearchStr.length > 0;
+
     if (category && category !== 'All') {
-      filter.tags = new RegExp(`^${escapeRegex(category)}$`, 'i');
+      andClauses.push({ tags: new RegExp(`^${escapeRegex(category)}$`, 'i') });
     }
     if (skinType && skinType !== 'All') {
-      filter.skinTypes = { $in: [new RegExp(`^${escapeRegex(skinType)}$`, 'i'), 'All Skin Types'] };
+      andClauses.push({ skinTypes: { $in: [new RegExp(`^${escapeRegex(skinType)}$`, 'i'), 'All Skin Types'] } });
     }
     if (skinConcern && skinConcern !== 'All') {
-      filter.skinConcerns = new RegExp(`^${escapeRegex(skinConcern)}$`, 'i');
+      andClauses.push({ skinConcerns: new RegExp(`^${escapeRegex(skinConcern)}$`, 'i') });
     }
-    if (ritualStep && ritualStep !== 'All') {
-      filter.ritualStep = new RegExp(escapeRegex(ritualStep), 'i');
+    if (ritualStep && ritualStep !== 'All' && ritualStep !== 'ALL') {
+      andClauses.push({ ritualStep: new RegExp(escapeRegex(ritualStep), 'i') });
     }
-    if (search && String(search).trim()) {
-      const searchRegex = new RegExp(escapeRegex(String(search).trim()), 'i');
-      filter.$or = [
-        { title: searchRegex },
-        { description: searchRegex },
-        { tags: searchRegex },
-        { keyActives: searchRegex }
-      ];
+    if (onlySensitiveSafe === 'true') {
+      andClauses.push({ sensitivitySafe: { $ne: false } });
     }
+
+    // Blueprint-only filtering applies ONLY when explicitly toggled on AND the user is not running a search.
+    // Searching always returns matching products across the full boutique so Blueprint badges act as markers.
+    if (blueprintOnly === 'true' && !hasSearchQuery) {
+      const bpOr = [];
+      if (blueprintGoal && String(blueprintGoal).trim()) {
+        bpOr.push({ skinConcerns: new RegExp(`^${escapeRegex(String(blueprintGoal).trim())}$`, 'i') });
+      }
+      if (blueprintSkinType && String(blueprintSkinType).trim()) {
+        bpOr.push({ skinTypes: { $in: [new RegExp(`^${escapeRegex(String(blueprintSkinType).trim())}$`, 'i'), 'All Skin Types'] } });
+      }
+      if (String(blueprintSensitivity || '').toLowerCase() === 'high') {
+        andClauses.push({ sensitivitySafe: { $ne: false } });
+      }
+      if (bpOr.length > 0) {
+        andClauses.push({ $or: bpOr });
+      }
+    }
+
+    // Tokenized multi-word search: every word in the query can match across title, actives, tags, step, or SKU
+    if (hasSearchQuery) {
+      const searchTokens = cleanSearchStr.split(/\s+/).filter(Boolean).slice(0, 6);
+      for (const token of searchTokens) {
+        const tokenRegex = new RegExp(escapeRegex(token), 'i');
+        andClauses.push({
+          $or: [
+            { title: tokenRegex },
+            { description: tokenRegex },
+            { tags: tokenRegex },
+            { keyActives: tokenRegex },
+            { cjPid: tokenRegex },
+            { cjSku: tokenRegex },
+            { 'variants.sku': tokenRegex },
+            { ritualStep: tokenRegex },
+            { skinTypes: tokenRegex },
+            { skinConcerns: tokenRegex }
+          ]
+        });
+      }
+    }
+
+    const filter = andClauses.length === 0
+      ? {}
+      : andClauses.length === 1
+      ? andClauses[0]
+      : { $and: andClauses };
 
     // Default popularity sort uses the { purchaseCount: -1, viewCount: -1, _id: 1 } index
     let sortSpec = { purchaseCount: -1, viewCount: -1, _id: 1 };
     if (sort === 'price_asc') sortSpec = { price: 1, _id: 1 };
     else if (sort === 'price_desc') sortSpec = { price: -1, _id: 1 };
     else if (sort === 'newest') sortSpec = { lastSyncedAt: -1, _id: 1 };
+    else if (sort === 'shipping_desc') sortSpec = { shippingCostUsd: -1, _id: 1 };
+    else if (sort === 'title_asc') sortSpec = { title: 1, _id: 1 };
 
-    // Admin requests can opt in to full raw CJ / logistics / GEO fields; storefront gets a lightweight payload
     const isAdminPayload = includeAdminFields === 'true' || full === 'true';
     const projection = isAdminPayload
-      ? '-__v'
+      ? (excludeRawCj === 'true' ? '-rawCjData -__v' : '-__v')
       : '-rawCjData -availableLogistics -seoAnswerCapsule -__v';
 
-    if (isAdminPayload) {
+    if (isAdminPayload || hasSearchQuery) {
       res.set('Cache-Control', 'no-store');
     } else {
       res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
     }
 
-    // Backward-compatible optional pagination: returns { products, pagination } only when explicitly requested
     const wantsPagination = paginated === 'true' || page !== undefined;
     if (wantsPagination) {
       const parsedPage = Math.max(1, parseInt(page, 10) || 1);
       const parsedLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 24));
       const skip = (parsedPage - 1) * parsedLimit;
 
-      const [products, total] = await Promise.all([
+      const [products, total, catalogTotal] = await Promise.all([
         Product.find(filter)
           .select(projection)
           .sort(sortSpec)
           .skip(skip)
           .limit(parsedLimit)
           .lean(),
-        Product.countDocuments(filter)
+        Product.countDocuments(filter),
+        Object.keys(filter).length === 0 ? Promise.resolve(null) : Product.countDocuments({})
       ]);
 
+      const resolvedCatalogTotal = catalogTotal === null ? total : catalogTotal;
       const totalPages = Math.max(1, Math.ceil(total / parsedLimit));
       res.set('X-Total-Count', String(total));
       return res.status(200).json({
@@ -13253,18 +13588,18 @@ app.get('/api/products', async (req, res) => {
           page: parsedPage,
           limit: parsedLimit,
           total,
+          catalogTotal: resolvedCatalogTotal,
           totalPages,
           hasMore: parsedPage < totalPages
         }
       });
     }
 
-    // Default array response for full backward compatibility with existing frontend callers
     const query = Product.find(filter).select(projection).sort(sortSpec);
-    if (limit !== undefined) {
-      const parsedLimit = Math.min(500, Math.max(1, parseInt(limit, 10) || 300));
-      query.limit(parsedLimit);
-    }
+    const parsedLimit = limit !== undefined
+      ? Math.min(500, Math.max(1, parseInt(limit, 10) || 200))
+      : 300;
+    query.limit(parsedLimit);
 
     const products = await query.lean();
     res.set('X-Total-Count', String(products.length));
@@ -15649,6 +15984,74 @@ app.post('/api/users/me/billing-portal', authenticateToken, async (req, res) => 
   }
 });
 
+// ---------------- MAILING LIST / DEALS & EVENTS SUBSCRIPTION ROUTES ---------------- //
+
+app.post('/api/newsletter/subscribe', async (req, res) => {
+  try {
+    const { email, name, source } = req.body || {};
+    const cleanEmail = normalizeEmail(email);
+    const cleanName = String(name || '').trim();
+    const cleanSource = String(source || 'boutique_popup').trim();
+
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const existing = await NewsletterSubscriber.findOne({ email: cleanEmail });
+    const alreadySubscribed = Boolean(existing && existing.subscribed);
+
+    const subscriber = await NewsletterSubscriber.findOneAndUpdate(
+      { email: cleanEmail },
+      {
+        $set: {
+          email: cleanEmail,
+          ...(cleanName ? { name: cleanName } : {}),
+          source: cleanSource,
+          subscribed: true,
+          subscribedAt: existing?.subscribedAt || new Date()
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    if (!alreadySubscribed && typeof sendEmail === 'function') {
+      const greetingName = cleanName || 'Beauty Lover';
+      const subject = "Welcome to Susan's VIP Deals & Events List ✧";
+      const htmlContent = `
+        <div style="font-family: 'Georgia', serif; color: #5C5454; max-width: 600px; margin: 0 auto; border: 1px solid #E8C5C8; padding: 36px; border-radius: 16px; background: #FFF9F9;">
+          <h2 style="color: #B38B8F; font-style: italic; text-align: center; margin-top: 0;">You're on the VIP List ✧</h2>
+          <p style="font-size: 1.08rem; line-height: 1.65;">Dear ${escapeHtml(greetingName)},</p>
+          <p style="font-size: 1.05rem; line-height: 1.65;">Thank you for joining <strong>Susan's Beauty Consulting</strong> mailing list! You'll be the first to hear about exclusive boutique deals, seasonal skincare offers, new arrivals, and private Sanctuary events.</p>
+          <p style="font-size: 0.95rem; color: #8A797A; margin-top: 28px; text-align: center;">Warmly,<br/>Susan's Beauty Consulting</p>
+        </div>
+      `;
+      const textContent = `Welcome ${greetingName}! You are now subscribed to Susan's Beauty Consulting deals, seasonal offers, and VIP events.`;
+      sendEmail(cleanEmail, subject, htmlContent, textContent).catch(() => {});
+    }
+
+    return res.status(200).json({
+      success: true,
+      alreadySubscribed,
+      subscriber,
+      message: alreadySubscribed
+        ? "You're already on Susan's VIP Deals & Events list! ✧"
+        : "Welcome! You're now on Susan's VIP Deals & Events list. ✧"
+    });
+  } catch (error) {
+    console.error('Newsletter Subscribe Error:', error);
+    return res.status(500).json({ error: 'Unable to subscribe right now. Please try again.' });
+  }
+});
+
+app.get('/api/admin/newsletter/subscribers', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const subscribers = await NewsletterSubscriber.find({ subscribed: true }).sort({ subscribedAt: -1 }).lean();
+    res.status(200).json({ total: subscribers.length, subscribers });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load newsletter subscribers.' });
+  }
+});
+
 app.post('/api/users/register', authLimiter, async (req, res) => {
   try {
     const { name, username, email, password, phone, membershipTier } = req.body || {};
@@ -15690,6 +16093,13 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
     });
 
     const savedUser = await newUser.save();
+    if (req.body?.marketingOptIn !== false && cleanEmail) {
+      NewsletterSubscriber.findOneAndUpdate(
+        { email: cleanEmail },
+        { $set: { email: cleanEmail, name: cleanName, source: 'landing_signup', subscribed: true, subscribedAt: new Date() } },
+        { upsert: true }
+      ).catch(() => {});
+    }
     const token = jwt.sign({ _id: savedUser._id }, process.env.JWT_SECRET || 'fallback_secret_key', { expiresIn: '24h' });
 
     res.status(201).json({
@@ -22078,9 +22488,22 @@ const startDatabaseAndBackgroundServices = async () => {
     cron.schedule(
       '0 3 * * *',
       () => {
-        console.log('⏰ Running scheduled daily CJ Beauty & Skincare full sync and MongoDB sanitization at 3:00 AM CST...');
-        syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch((error) => {
-          console.error('❌ Scheduled 3:00 AM CST CJ catalog sync failure:', error?.response?.data || error.message);
+        if (isCjSyncRunning) {
+          console.log('⏰ 3:00 AM CST cron skipped — an uncapped CJ Skincare & Beauty crawl is already running.');
+          return;
+        }
+        console.log('⏰ Running scheduled daily UNCAPPED CJ Skincare & Beauty crawl and MongoDB sanitization at 3:00 AM CST...');
+        syncCJCatalog({ fullCatalog: true, sanitizeAfter: true }).catch(async (error) => {
+          const errMsg = error?.response?.data?.message || error.message || String(error);
+          console.error('❌ Scheduled 3:00 AM CST CJ catalog sync failure:', errMsg);
+          if (typeof saveCatalogTelemetrySafe === 'function') {
+            await saveCatalogTelemetrySafe({
+              lastSyncAt: new Date().toISOString(),
+              lastSyncStatus: 'ERROR',
+              syncPhase: 'ERROR',
+              lastError: errMsg
+            }).catch(() => {});
+          }
         });
       },
       { timezone: 'America/Chicago' }
